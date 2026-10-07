@@ -1,0 +1,19 @@
+[package]
+name = "hh-storage"
+description = "Library management, trash, dedupe, integrity scrub, SMART health, second copy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hh-core = { path = "../hh-core" }
+hh-db = { path = "../hh-db" }
+hh-transfer = { path = "../hh-transfer" }
+blake3.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+fs2.workspace = true
+ulid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true

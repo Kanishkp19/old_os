@@ -1,0 +1,13 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- Simple house + hub dot, brand green (#2F6F4E per UI_UX_DESIGN tokens) -->
+    <path
+        android:fillColor="#2F6F4E"
+        android:pathData="M24,6 L42,21 L38,21 L38,40 L10,40 L10,21 L6,21 Z" />
+    <path
+        android:fillColor="#FAFAF7"
+        android:pathData="M24,26 m-5,0 a5,5 0 1,1 10,0 a5,5 0 1,1 -10,0" />
+</vector>

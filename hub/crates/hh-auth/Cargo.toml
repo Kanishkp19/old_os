@@ -1,0 +1,21 @@
+[package]
+name = "hh-auth"
+description = "Hub CA, pairing tokens, device certificate issuance, revocation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hh-core = { path = "../hh-core" }
+hh-db = { path = "../hh-db" }
+rcgen.workspace = true
+sha2.workspace = true
+rand.workspace = true
+base64.workspace = true
+qrcode.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+time = "0.3"
+ulid.workspace = true

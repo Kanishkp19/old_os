@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- हिंदी अनुवाद (M3 लोकलाइज़ेशन आवश्यकता)। स्वर: सरल शब्द, बिना तकनीकी जार्गन —
+     "chunk manifest" नहीं, "भेज रहे हैं"। -->
+<resources>
+    <string name="app_name">होम हब</string>
+
+    <string name="home_not_paired_title">अपने घर से जुड़ें</string>
+    <string name="home_not_paired_body">अपने कंप्यूटर पर होम हब ऐप खोलें, "डिवाइस जोड़ें" चुनें, और वहाँ दिखने वाला कोड स्कैन करें।</string>
+    <string name="action_pair">जोड़ें</string>
+    <string name="home_hub_nearby">घर पास है — सब कुछ तुरंत भेजा जाएगा।</string>
+    <string name="home_hub_away">घर अभी पहुँच में नहीं है। नई चीज़ें आपके घर के वाई-फाई पर लौटने पर भेजी जाएँगी।</string>
+    <string name="home_pending">%1$d आइटम भेजने के लिए बाकी</string>
+
+    <string name="pair_title">अपने घर से जुड़ें</string>
+    <string name="pair_hint">कैमरे को कंप्यूटर पर दिखने वाले कोड की ओर रखें।</string>
+    <string name="pair_success">%1$s से जुड़ गया। अब आपकी तस्वीरें और फ़ाइलें सीधे वहीँ जाएँगी।</string>
+    <string name="pair_failed">वह काम नहीं हुआ: %1$s। सुनिश्चित करें कि कंप्यूटर पर दिखा कोड समाप्त नहीं हुआ है और फिर से कोशिश करें।</string>
+    <string name="action_done">हो गया</string>
+    <string name="action_retry">फिर कोशिश करें</string>
+
+    <string name="transfers_title">भेज रहे हैं</string>
+    <string name="transfers_empty">कुछ भी बाकी नहीं। होम हब पर भेजी गई कोई भी चीज़ यहाँ दिखेगी।</string>
+    <string name="state_queued">इंतज़ार में</string>
+    <string name="state_connecting">आपका घर ढूँढ रहे हैं…</string>
+    <string name="state_uploading">भेज रहे हैं…</string>
+    <string name="state_verifying">जाँच रहे हैं कि सुरक्षित पहुँच गया…</string>
+    <string name="state_done">भेज दिया</string>
+    <string name="state_waiting_retry">जल्द ही फिर कोशिश करेंगे</string>
+    <string name="state_failed">भेजा नहीं जा सका: %1$s</string>
+    <string name="action_clear">हटाएँ</string>
+
+    <string name="remote_title">रिमोट कंट्रोल</string>
+    <string name="remote_connect">नियंत्रित करना शुरू करें</string>
+    <string name="remote_disconnect">रोकें</string>
+    <string name="remote_trackpad_hint">इस जगह को ट्रैकपैड की तरह इस्तेमाल करें</string>
+    <string name="remote_left_click">बायाँ क्लिक</string>
+    <string name="remote_right_click">दायाँ क्लिक</string>
+    <string name="remote_type_hint">अपने कंप्यूटर पर टाइप करें…</string>
+    <string name="action_send">भेजें</string>
+
+    <string name="devices_title">डिवाइस</string>
+    <string name="devices_this_one">यह फ़ोन</string>
+    <string name="action_revoke">हटाएँ</string>
+    <string name="action_cancel">रद्द करें</string>
+    <string name="revoke_title">यह डिवाइस हटाएँ?</string>
+    <string name="revoke_body">%1$s अब आपके घर तक नहीं पहुँच पाएगा। पहले से सेव की गई फ़ाइलें वैसे ही रहेंगी।</string>
+</resources>

@@ -1,0 +1,37 @@
+[package]
+name = "hh-service"
+description = "Home Hub Windows service entry, console mode, background workers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hh-service"
+path = "src/main.rs"
+
+[features]
+# Placeholder so CI's nightly fault-injection job resolves; the real fault
+# injection lives in tools/fault_injection.sh + tools/e2e_sandbox.sh.
+fault-injection = []
+
+[dependencies]
+hh-core = { path = "../hh-core" }
+hh-db = { path = "../hh-db" }
+hh-auth = { path = "../hh-auth" }
+hh-net = { path = "../hh-net" }
+hh-transfer = { path = "../hh-transfer" }
+hh-storage = { path = "../hh-storage" }
+hh-photos = { path = "../hh-photos" }
+hh-remote = { path = "../hh-remote" }
+hh-hw = { path = "../hh-hw" }
+clap.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"

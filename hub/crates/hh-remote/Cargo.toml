@@ -1,0 +1,15 @@
+[package]
+name = "hh-remote"
+description = "Remote input/power/media via platform traits; Session-0 helper IPC protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hh-core = { path = "../hh-core" }
+hh-db = { path = "../hh-db" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+rusqlite.workspace = true

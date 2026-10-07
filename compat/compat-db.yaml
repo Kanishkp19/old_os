@@ -1,0 +1,18 @@
+# Home Hub compatibility database (M3, FR-9.3).
+# Matched case-insensitively against CPU model strings. Signed bundles and
+# over-the-air updates of this file are a Phase 2 hardening item; the
+# bundled copy ships in the binary.
+supported:
+  - match_contains: "Core i5"
+    note: "Typical mid-range target (L2)"
+  - match_contains: "Core i7"
+    note: "Upper reference class (L3)"
+  - match_contains: "Core i3"
+    note: "Low-end floor (L1) — storage and backup fine, streaming limited"
+  - match_contains: "Ryzen 5"
+  - match_contains: "Ryzen 7"
+unsupported:
+  - match_contains: "Atom"
+    note: "Too weak for verified transfers at useful speeds"
+  - match_contains: "Celeron N2"
+    note: "Below floor"

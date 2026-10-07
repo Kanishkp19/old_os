@@ -1,0 +1,18 @@
+[package]
+name = "hh-hw"
+description = "Hardware audit, capability ratings, compat DB, WoL, network info (Phase 2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hh-core = { path = "../hh-core" }
+hh-db = { path = "../hh-db" }
+sysinfo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true

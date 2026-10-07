@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- WiX 4 alternative to the Inno Setup installer (same behavior).
+     Build: wix build installer/wix/Product.wxs -o HomeHubSetup.msi
+     Same contract as homehub.iss: service registration, Private-profile
+     firewall rules for 47800/47802/5353 only, data kept on uninstall. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
+
+  <Package Name="Home Hub" Manufacturer="Home Hub Project" Version="0.1.0"
+           UpgradeCode="8F3A1C2E-5B7D-4E1F-9A2C-000000000002"
+           InstallerVersion="500" Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Home Hub is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="Main" Title="Home Hub" Level="1">
+      <ComponentGroupRef Id="Binaries" />
+      <ComponentRef Id="FirewallApi" />
+      <ComponentRef Id="FirewallPairing" />
+      <ComponentRef Id="FirewallMdns" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="HomeHub" />
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATADIR" Name="HomeHub">
+        <!-- Permanent: never removed on uninstall (user data lives here). -->
+        <Component Id="DataDir" Guid="8F3A1C2E-5B7D-4E1F-9A2C-000000000003" Permanent="yes">
+          <CreateFolder />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="Binaries" Directory="INSTALLFOLDER">
+      <Component Id="ServiceExe" Guid="8F3A1C2E-5B7D-4E1F-9A2C-000000000004">
+        <File Source="..\..\hub\target\release\hh-service.exe" KeyPath="yes" />
+        <ServiceInstall Id="HomeHubSvc" Name="HomeHub" DisplayName="Home Hub"
+                        Type="ownProcess" Start="auto" ErrorControl="normal"
+                        Description="Private home cloud on this machine (LAN only)." />
+        <ServiceControl Id="HomeHubSvcCtl" Name="HomeHub" Start="install"
+                        Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+      <Component Id="ToolsExe" Guid="8F3A1C2E-5B7D-4E1F-9A2C-000000000005">
+        <File Source="..\..\hub\target\release\hh-tools.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- Firewall: Private profile only, program-scoped, LAN ports only. -->
+  <Fragment>
+    <Component Id="FirewallApi" Directory="INSTALLFOLDER"
+               Guid="8F3A1C2E-5B7D-4E1F-9A2C-000000000006">
+      <fw:FirewallException Id="FwApi" Name="Home Hub API" Protocol="tcp"
+                            Port="47800" Profile="private" Scope="localSubnet"
+                            Program="[INSTALLFOLDER]hh-service.exe" />
+    </Component>
+    <Component Id="FirewallPairing" Directory="INSTALLFOLDER"
+               Guid="8F3A1C2E-5B7D-4E1F-9A2C-000000000007">
+      <fw:FirewallException Id="FwPairing" Name="Home Hub Pairing" Protocol="tcp"
+                            Port="47802" Profile="private" Scope="localSubnet"
+                            Program="[INSTALLFOLDER]hh-service.exe" />
+    </Component>
+    <Component Id="FirewallMdns" Directory="INSTALLFOLDER"
+               Guid="8F3A1C2E-5B7D-4E1F-9A2C-000000000008">
+      <fw:FirewallException Id="FwMdns" Name="Home Hub mDNS" Protocol="udp"
+                            Port="5353" Profile="private" Scope="localSubnet"
+                            Program="[INSTALLFOLDER]hh-service.exe" />
+    </Component>
+  </Fragment>
+</Wix>

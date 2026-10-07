@@ -1,0 +1,28 @@
+[package]
+name = "hh-tools"
+description = "Dev/test tooling: fake-client, bench, wake, test-data generator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hh-tools"
+path = "src/main.rs"
+
+[dependencies]
+hh-core = { path = "../hh-core" }
+hh-hw = { path = "../hh-hw" }
+clap.workspace = true
+blake3.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+indicatif.workspace = true
+rand.workspace = true
+base64.workspace = true
+url = "2"
+anyhow.workspace = true

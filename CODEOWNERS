@@ -1,0 +1,5 @@
+# Everything requires review from the maintainer until the team grows.
+* @kanishk
+/hub/crates/hh-auth/ @kanishk
+/hub/crates/hh-transfer/ @kanishk
+/docs/SECURITY.md @kanishk

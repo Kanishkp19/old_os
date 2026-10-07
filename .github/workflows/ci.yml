@@ -1,0 +1,94 @@
+# Home Hub CI
+# Stages per TEST_PLAN.md §8: PR = fmt, clippy, unit, integration, audit/deny.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+        working-directory: hub
+
+  clippy:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: hub
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+        working-directory: hub
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          cargo install cargo-deny --locked
+          cd hub && cargo deny check
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      # The repo ships no Gradle wrapper; provide a CLI-compatible Gradle.
+      # AGP 8.5.2 needs Gradle >= 8.7.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - run: gradle testDebugUnitTest
+        working-directory: android
+
+  nightly-fault-injection:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+        working-directory: hub
+      # Full sandbox e2e: boots the hub on loopback with a throwaway data dir,
+      # pairs, uploads, resumes, and runs the fault-injection gauntlet.
+      - name: sandbox end-to-end
+        run: |
+          chmod +x tools/e2e_sandbox.sh tools/fault_injection.sh
+          tools/e2e_sandbox.sh /tmp/hh-e2e-nightly
+      - run: cargo test --workspace --features hh-service/fault-injection -- --ignored
+        working-directory: hub

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- All user-facing copy lives here (M3 localization requirement). Tone:
+     plain words, no jargon — "Sending" not "uploading chunk manifest". -->
+<resources>
+    <string name="app_name">Home Hub</string>
+
+    <string name="home_not_paired_title">Connect to your Home</string>
+    <string name="home_not_paired_body">Open the Home Hub app on your computer, choose “Add a device”, and scan the code it shows.</string>
+    <string name="action_pair">Connect</string>
+    <string name="home_hub_nearby">Home is nearby — everything sends straight away.</string>
+    <string name="home_hub_away">Home is out of reach right now. New items will send when you’re back on your home Wi-Fi.</string>
+    <string name="home_pending">%1$d item(s) waiting to send</string>
+
+    <string name="pair_title">Connect to your Home</string>
+    <string name="pair_hint">Point the camera at the code shown on your computer.</string>
+    <string name="pair_success">Connected to %1$s. Your photos and files can now go straight to it.</string>
+    <string name="pair_failed">That didn’t work: %1$s. Make sure the code on your computer hasn’t expired and try again.</string>
+    <string name="action_done">Done</string>
+    <string name="action_retry">Try again</string>
+
+    <string name="transfers_title">Sending</string>
+    <string name="transfers_empty">Nothing waiting. Anything you share to Home Hub will appear here.</string>
+    <string name="state_queued">Waiting</string>
+    <string name="state_connecting">Finding your Home…</string>
+    <string name="state_uploading">Sending…</string>
+    <string name="state_verifying">Checking it arrived safely…</string>
+    <string name="state_done">Sent</string>
+    <string name="state_waiting_retry">Will try again soon</string>
+    <string name="state_failed">Couldn’t send: %1$s</string>
+    <string name="action_clear">Clear</string>
+
+    <string name="remote_title">Remote control</string>
+    <string name="remote_connect">Start controlling</string>
+    <string name="remote_disconnect">Stop</string>
+    <string name="remote_trackpad_hint">Use this area like a trackpad</string>
+    <string name="remote_left_click">Left click</string>
+    <string name="remote_right_click">Right click</string>
+    <string name="remote_type_hint">Type to your computer…</string>
+    <string name="action_send">Send</string>
+
+    <string name="devices_title">Devices</string>
+    <string name="devices_this_one">this phone</string>
+    <string name="action_revoke">Remove</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="revoke_title">Remove this device?</string>
+    <string name="revoke_body">%1$s will no longer be able to reach your Home. Files already stored stay where they are.</string>
+</resources>

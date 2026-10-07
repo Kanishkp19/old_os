@@ -5,6 +5,12 @@ Estimates assume 1–2 developers; adjust for team size. Durations are indicativ
 
 ---
 
+## Windows release amendment (2026-10-08)
+
+The approved Windows product plan supersedes the old milestone placement of Browser, YouTube, Music, Notes and Calculator: deliver these in the Windows release, with Tauri 2 / system WebView2 and shared Svelte views. Notes, playlists and browser data stay private to the Windows user. Browser/YouTube have explicit internet access and isolated, unprivileged webviews; core Hub remains offline-capable.
+
+Follow [WINDOWS_PRODUCT_TODO.md](WINDOWS_PRODUCT_TODO.md) for the ten delivery phases and separate validation ledger. Preserve `/v1` compatibility, Rust service/session/tray boundaries, and Inno Setup as canonical installer. Complete implementation before comprehensive testing. Commit/push each phase to `implementation/windows-home-hub`. M6 stays untouched and requires a separate decision after technical validation and household pilot.
+
 ## 0. Milestone overview
 
 | Milestone | Phase | Duration | Exit gate |

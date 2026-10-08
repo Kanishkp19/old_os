@@ -20,21 +20,33 @@ use hh_core::types::{CompleteResponse, CreateTransferRequest, CreateTransferResp
 use hh_core::{Config, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, TRANSFER_IDLE_TTL_MS};
 use hh_db::{Db, TransferRow};
 
-const FSYNC_EVERY_CHUNKS: u32 = 8;
+
 
 #[derive(Clone)]
 pub struct TransferEngine {
     db: Db,
     cfg: Config,
+    mutations: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl TransferEngine {
     pub fn new(db: Db, cfg: Config) -> Self {
-        Self { db, cfg }
+        Self { db, cfg, mutations: std::sync::Arc::new(std::sync::Mutex::new(())) }
     }
 
     /// Create or resume an upload session (API_SPEC §5 `POST /transfers`).
     pub fn create(&self, device_id: &str, req: &CreateTransferRequest) -> Result<CreateTransferResponse> {
+        let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
+        if req.size > (1u64 << 40) { return Err(Error::TooLarge("max file size 1 TiB".into())); }
+        if !["send", "backup"].contains(&req.kind.as_str()) { return Err(Error::BadRequest("unsupported transfer kind".into())); }
+        if let Some(hash) = &req.root_hash { validate_hash(hash)?; }
+        if let Some(rel) = &req.rel_path { paths::sanitize_rel_path(rel)?; }
+        if req.client_item_id.as_ref().is_some_and(|v| v.len() > 1024) { return Err(Error::TooLarge("client item id".into())); }
+        if let Some(source) = &req.backup_source_id {
+            let c = self.db.lock()?;
+            let owned: i64 = c.query_row("SELECT COUNT(*) FROM backup_sources WHERE id=?1 AND device_id=?2 AND enabled=1", rusqlite::params![source,device_id],|r|r.get(0)).map_err(|e| Error::Db(e.to_string()))?;
+            if owned != 1 || req.kind != "backup" || req.client_item_id.is_none() { return Err(Error::ForbiddenScope("photos".into())); }
+        }
         let name = paths::sanitize_component(&req.name)?;
         let chunk_size = req.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE).clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
         let chunk_count = req.size.div_ceil(chunk_size).max(1);
@@ -42,6 +54,9 @@ impl TransferEngine {
         // Idempotency: same client_item_id + size → resume existing session (§6.3).
         if let Some(item) = &req.client_item_id {
             if let Some(t) = self.db.find_resumable(device_id, item, req.size)? {
+                let source: Option<String> = { let c=self.db.lock()?;c.query_row("SELECT backup_source_id FROM transfers WHERE id=?1",[&t.id],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))? };
+                let same_hash = match (&t.expected_root_hash,&req.root_hash) { (Some(a),Some(b))=>a.eq_ignore_ascii_case(b),(None,None)=>true,_=>false };
+                if same_hash && source == req.backup_source_id && t.kind == req.kind {
                 let have = self.db.chunk_bitmap(&t.id)?;
                 return Ok(CreateTransferResponse {
                     transfer_id: t.id,
@@ -50,7 +65,11 @@ impl TransferEngine {
                     have,
                     already_exists: false,
                     existing_file_id: None,
+                    backup_item_id: None,
                 });
+                }
+                self.db.update_transfer_status(&t.id,"aborted",Some("SOURCE_CHANGED"))?;
+                if let Some(tmp)=&t.tmp_path { let _=std::fs::remove_file(tmp); }
             }
         }
 
@@ -64,9 +83,13 @@ impl TransferEngine {
                     have: Default::default(),
                     already_exists: true,
                     existing_file_id: Some(file_id),
+                    backup_item_id: None,
                 });
             }
         }
+
+        if self.db.list_transfers(Some(device_id),Some("open"))?.len() >= 8 { return Err(Error::RateLimited); }
+        if self.db.list_transfers(None,Some("open"))?.len() >= 32 { return Err(Error::RateLimited); }
 
         // Preflight space (507 INSUFFICIENT_STORAGE).
         let free = fs2::free_space(&self.cfg.library_root)
@@ -80,11 +103,11 @@ impl TransferEngine {
         std::fs::create_dir_all(self.cfg.tmp_dir())?;
 
         // Preallocate the .part file (TRD §6.1).
-        let f = File::create(&tmp_path)?;
+        let f = OpenOptions::new().write(true).create_new(true).open(&tmp_path)?;
         f.set_len(req.size)?;
         f.sync_all()?;
 
-        self.db.insert_transfer(
+        if let Err(error) = self.db.insert_transfer(
             &transfer_id,
             device_id,
             &req.kind,
@@ -98,7 +121,11 @@ impl TransferEngine {
             req.client_item_id.as_deref(),
             &tmp_path.to_string_lossy(),
             now_ms() + TRANSFER_IDLE_TTL_MS,
-        )?;
+        ) { let _ = std::fs::remove_file(&tmp_path); return Err(error); }
+        {
+            let c = self.db.lock()?;
+            c.execute("UPDATE transfers SET backup_source_id=?2,target_device_id=?3 WHERE id=?1",rusqlite::params![transfer_id,req.backup_source_id,req.target_device_id]).map_err(|e| Error::Db(e.to_string()))?;
+        }
 
         Ok(CreateTransferResponse {
             transfer_id,
@@ -107,12 +134,15 @@ impl TransferEngine {
             have: Default::default(),
             already_exists: false,
             existing_file_id: None,
+            backup_item_id: None,
         })
     }
 
     /// Verify and persist one chunk (API_SPEC §5 `PUT .../chunks/{n}`).
     /// Idempotent: re-PUT of a verified chunk with the same hash → Ok.
     pub fn put_chunk(&self, transfer_id: &str, idx: u64, header_hash: &str, bytes: &[u8]) -> Result<()> {
+        let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
+        validate_hash(header_hash)?;
         let t = self.must_get_open(transfer_id)?;
         if idx >= t.chunk_count {
             return Err(Error::BadRequest(format!("chunk index {idx} out of range")));
@@ -137,10 +167,8 @@ impl TransferEngine {
 
         let tmp = t.tmp_path.clone().ok_or_else(|| Error::Internal("transfer has no tmp path".into()))?;
         write_at(Path::new(&tmp), bytes, idx * t.chunk_size)?;
-        // fsync periodically; the finalize always fsyncs (AGENTS.md §6).
-        if idx as u32 % FSYNC_EVERY_CHUNKS == 0 {
-            File::options().write(true).open(&tmp)?.sync_data()?;
-        }
+        // SQLite must never advertise bytes that were not flushed to disk.
+        File::options().write(true).open(&tmp)?.sync_data()?;
         self.db.record_chunk(transfer_id, idx, &actual, bytes.len() as u64)?;
         Ok(())
     }
@@ -156,75 +184,80 @@ impl TransferEngine {
 
     /// Finalize: verify whole-file BLAKE3 root, fsync, atomic rename, DB commit.
     pub fn complete(&self, transfer_id: &str, root_hash: &str) -> Result<CompleteResponse> {
-        let t = self.must_get_open(transfer_id)?;
+        let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
+        self.complete_locked(transfer_id, root_hash)
+    }
+
+    fn complete_locked(&self, transfer_id: &str, root_hash: &str) -> Result<CompleteResponse> {
+        validate_hash(root_hash)?;
+        let t = self.db.get_transfer(transfer_id)?.ok_or(Error::TransferGone)?;
+        if t.status == "completed" {
+            let c = self.db.lock()?;
+            let result = c.query_row("SELECT id,hash,size,rel_path FROM files WHERE id=?1 AND deleted_at IS NULL",rusqlite::params![t.result_file_id],|r| Ok(CompleteResponse {file_id:r.get(0)?,hash:r.get(1)?,size:r.get::<_,i64>(2)? as u64,rel_path:r.get(3)?,verified:true,backup_item_id:None})).map_err(|e| Error::Db(e.to_string()))?;
+            if !result.hash.eq_ignore_ascii_case(root_hash) { return Err(Error::RootHashMismatch); }
+            return Ok(result);
+        }
+        if !["open","verifying"].contains(&t.status.as_str()) { return Err(Error::TransferGone); }
+        if t.expected_root_hash.as_ref().is_some_and(|h| !h.eq_ignore_ascii_case(root_hash)) { return Err(Error::RootHashMismatch); }
         let have = self.db.chunk_bitmap(transfer_id)?;
-        if have.count() != t.chunk_count {
-            return Err(Error::Conflict(format!(
-                "{} of {} chunks verified",
-                have.count(),
-                t.chunk_count
-            )));
-        }
+        if have.count() != t.chunk_count { return Err(Error::Conflict("upload has missing chunks".into())); }
         let tmp = PathBuf::from(t.tmp_path.clone().ok_or_else(|| Error::Internal("no tmp path".into()))?);
-
-        // Whole-file verification (TRD §6.1). 422 → client re-verifies source.
-        let file = File::open(&tmp)?;
-        file.sync_all()?; // flush before hashing
-        let computed = hash_file(&file)?;
-        if !computed.eq_ignore_ascii_case(root_hash) {
-            self.db.update_transfer_status(transfer_id, "open", Some("ROOT_HASH_MISMATCH"))?;
-            return Err(Error::RootHashMismatch);
-        }
-
-        // Destination: category folder, collision-safe name (TRD §7.1).
-        let category = paths::category_for_mime(t.mime.as_deref());
-        let dir_rel = match &t.rel_path {
-            Some(rp) => format!("{}/{}", paths::category_dir(category, None), paths::sanitize_rel_path(rp)?),
-            None => paths::category_dir(category, None),
+        let journal: Option<(String,String,String,String,String,String)> = {
+            use rusqlite::OptionalExtension;
+            let c = self.db.lock()?;
+            c.query_row("SELECT file_id,root_id,rel_path,name,category,hash FROM transfer_finalizations WHERE transfer_id=?1",[transfer_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|Error::Db(e.to_string()))?
         };
-        let dir = paths::jail_join(&self.cfg.library_dir(), &dir_rel)?;
-        std::fs::create_dir_all(&dir)?;
-        let name = paths::dedupe_name(&dir, &t.name);
-        let dest = dir.join(&name);
-        let rel_path = format!("{dir_rel}/{name}");
-
-        // fsync → atomic rename (same volume by construction) → DB commit.
-        file.sync_all()?;
-        std::fs::rename(&tmp, &dest)?;
-        if let Ok(dirf) = File::open(&dir) {
-            let _ = dirf.sync_all(); // directory entry durability
+        let (file_id,root_id,rel_path,name,category,computed) = match journal {
+            Some(j) => j,
+            None => {
+                let file = OpenOptions::new().read(true).write(true).open(&tmp)?;
+                file.sync_all()?;
+                let computed = hash_file(&file)?;
+                if !computed.eq_ignore_ascii_case(root_hash) {
+                    self.db.update_transfer_status(transfer_id,"open",Some("ROOT_HASH_MISMATCH"))?;
+                    return Err(Error::RootHashMismatch);
+                }
+                let category = paths::category_for_mime(t.mime.as_deref()).to_owned();
+                let dir_rel = match &t.rel_path {
+                    Some(rp) => format!("{}/{}",paths::category_dir(&category,None),paths::sanitize_rel_path(rp)?),
+                    None => paths::category_dir(&category,None),
+                };
+                let dir = paths::jail_join(&self.cfg.library_dir(),&dir_rel)?;
+                std::fs::create_dir_all(&dir)?;
+                let name = paths::dedupe_name(&dir,&t.name);
+                let rel_path = format!("{dir_rel}/{name}");
+                let file_id = ulid::Ulid::new().to_string();
+                let root_id = self.ensure_library_root()?;
+                let mut c = self.db.lock()?;
+                let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|Error::Db(e.to_string()))?;
+                tx.execute("INSERT INTO transfer_finalizations(transfer_id,file_id,root_id,rel_path,name,category,hash,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![transfer_id,file_id,root_id,rel_path,name,category,computed,now_ms()]).map_err(|e|Error::Db(e.to_string()))?;
+                tx.execute("UPDATE transfers SET status='verifying',updated_at=?2 WHERE id=?1",rusqlite::params![transfer_id,now_ms()]).map_err(|e|Error::Db(e.to_string()))?;
+                tx.commit().map_err(|e|Error::Db(e.to_string()))?;
+                (file_id,root_id,rel_path,name,category,computed)
+            }
+        };
+        if !computed.eq_ignore_ascii_case(root_hash) { return Err(Error::RootHashMismatch); }
+        let dest = paths::jail_join(&self.cfg.library_dir(),&rel_path)?;
+        if tmp.exists() {
+            if dest.exists() { return Err(Error::Conflict("finalization destination exists".into())); }
+            std::fs::rename(&tmp,&dest)?;
+            if let Some(parent) = dest.parent() { if let Ok(f) = File::open(parent) { let _ = f.sync_all(); } }
         }
-
-        let file_id = ulid::Ulid::new().to_string();
-        let root_id = self.ensure_library_root()?;
+        let file = File::open(&dest)?;
+        if file.metadata()?.len() != t.size || !hash_file(&file)?.eq_ignore_ascii_case(&computed) { return Err(Error::RootHashMismatch); }
         let chunk_hashes = self.all_chunk_hashes(transfer_id)?;
-        self.commit_file_rows(
-            &file_id,
-            &root_id,
-            &rel_path,
-            &name,
-            category,
-            &t,
-            &computed,
-            &chunk_hashes,
-        )?;
-        self.db.set_transfer_result(transfer_id, &file_id)?;
-        self.db.update_transfer_status(transfer_id, "completed", None)?;
-
-        Ok(CompleteResponse {
-            file_id,
-            verified: true,
-            hash: computed,
-            size: t.size,
-            rel_path,
-        })
+        self.commit_file_rows(&file_id,&root_id,&rel_path,&name,&category,&t,&computed,&chunk_hashes)?;
+        Ok(CompleteResponse { file_id,verified:true,hash:computed,size:t.size,rel_path,backup_item_id:None })
     }
 
     pub fn abort(&self, transfer_id: &str) -> Result<()> {
+        let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
         let t = self
             .db
             .get_transfer(transfer_id)?
             .ok_or(Error::TransferGone)?;
+        if t.status == "completed" { return Err(Error::Conflict("completed transfer cannot be aborted".into())); }
+        if t.status == "verifying" { return Err(Error::Conflict("finalization in progress; retry completion".into())); }
         if let Some(tmp) = &t.tmp_path {
             let _ = std::fs::remove_file(tmp);
         }
@@ -235,6 +268,28 @@ impl TransferEngine {
     /// Startup reconciliation (AGENTS.md §6): expire idle sessions, delete
     /// orphan .part files older than the TTL.
     pub fn reconcile_on_startup(&self) -> Result<()> {
+        let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
+        for t in self.db.list_transfers(None,Some("verifying"))? {
+            let hash: String = { let c = self.db.lock()?; c.query_row("SELECT hash FROM transfer_finalizations WHERE transfer_id=?1",[&t.id],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))? };
+            self.complete_locked(&t.id,&hash)?;
+        }
+        for t in self.db.list_transfers(None,Some("open"))? {
+            let chunks = self.all_chunk_hashes(&t.id)?;
+            let path = t.tmp_path.as_deref().ok_or_else(||Error::Internal("missing tmp path".into()))?;
+            let mut file = match File::open(path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => { self.db.update_transfer_status(&t.id,"failed",Some("PART_MISSING"))?; continue; },
+                Err(e) => return Err(e.into()),
+            };
+            use std::io::{Read,Seek,SeekFrom};
+            for (idx,hash) in chunks {
+                let mut bytes = vec![0; chunk_len(t.size,t.chunk_size,idx) as usize];
+                let valid = file.seek(SeekFrom::Start(idx*t.chunk_size)).and_then(|_|file.read_exact(&mut bytes)).is_ok() && blake3::hash(&bytes).to_hex().as_str().eq_ignore_ascii_case(&hash);
+                if !valid { let c = self.db.lock()?; c.execute("DELETE FROM transfer_chunks WHERE transfer_id=?1 AND idx=?2",rusqlite::params![t.id,idx as i64]).map_err(|e|Error::Db(e.to_string()))?; }
+            }
+            let c = self.db.lock()?;
+            c.execute("UPDATE transfers SET bytes_verified=(SELECT COALESCE(SUM(size),0) FROM transfer_chunks WHERE transfer_id=?1) WHERE id=?1",[&t.id]).map_err(|e|Error::Db(e.to_string()))?;
+        }
         for path in self.db.expire_idle_transfers(TRANSFER_IDLE_TTL_MS)? {
             let _ = std::fs::remove_file(path);
         }
@@ -260,7 +315,7 @@ impl TransferEngine {
                     })
                     .unwrap_or(false);
                 if mtime_old {
-                    tracing::info!(path = %p.display(), "deleting orphan .part");
+                    tracing::info!("deleting expired orphan partial upload");
                     let _ = std::fs::remove_file(&p);
                 }
             }
@@ -335,7 +390,7 @@ impl TransferEngine {
         chunk_hashes: &[(u64, String)],
     ) -> Result<()> {
         let mut c = self.db.lock()?;
-        let tx = c.transaction().map_err(|e| Error::Db(e.to_string()))?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| Error::Db(e.to_string()))?;
         tx.execute(
             "INSERT INTO files (id, root_id, rel_path, name, category, mime, size, hash,
                 chunk_size, source_mode, origin_device_id, client_item_id, created_at, last_verified_at)
@@ -354,14 +409,21 @@ impl TransferEngine {
                 .map_err(|e| Error::Db(e.to_string()))?;
         }
         drop(st);
+        tx.execute("UPDATE transfers SET result_file_id=?2,status='completed',error_code=NULL,completed_at=?3,updated_at=?3 WHERE id=?1",rusqlite::params![t.id,file_id,now_ms()]).map_err(|e|Error::Db(e.to_string()))?;
+        tx.execute("DELETE FROM transfer_finalizations WHERE transfer_id=?1",[&t.id]).map_err(|e|Error::Db(e.to_string()))?;
         tx.commit().map_err(|e| Error::Db(e.to_string()))?;
         Ok(())
     }
 }
 
+fn validate_hash(hash: &str) -> Result<()> {
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(Error::BadRequest("expected 64 hexadecimal hash characters".into())); }
+    Ok(())
+}
+
 fn chunk_len(file_size: u64, chunk_size: u64, idx: u64) -> u64 {
     let start = idx * chunk_size;
-    (file_size - start).min(chunk_size)
+    file_size.saturating_sub(start).min(chunk_size)
 }
 
 /// Stream-hash an open file with BLAKE3 (off the async reactor — call from
@@ -384,7 +446,12 @@ fn write_at(path: &Path, bytes: &[u8], offset: u64) -> Result<()> {
 fn write_at(path: &Path, bytes: &[u8], offset: u64) -> Result<()> {
     use std::os::windows::fs::FileExt;
     let f = OpenOptions::new().write(true).open(path)?;
-    f.seek_write(bytes, offset)?;
+    let mut written = 0;
+    while written < bytes.len() {
+        let n = f.seek_write(&bytes[written..],offset + written as u64)?;
+        if n == 0 { return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()); }
+        written += n;
+    }
     Ok(())
 }
 
@@ -437,7 +504,7 @@ mod tests {
             client_item_id: Some("item-1".into()),
             root_hash: Some(root.clone()),
             taken_at: None,
-            target_device_id: None,
+            target_device_id: None, backup_source_id: None,
         };
         let r = eng.create("d1", &req).unwrap();
         assert_eq!(r.chunk_count, 2);
@@ -470,7 +537,7 @@ mod tests {
         let req = CreateTransferRequest {
             name: "x.bin".into(), size: 100, mime: None, kind: "send".into(),
             rel_path: None, chunk_size: None, client_item_id: None,
-            root_hash: Some(blake3_hex(&data)), taken_at: None, target_device_id: None,
+            root_hash: Some(blake3_hex(&data)), taken_at: None, target_device_id: None, backup_source_id: None,
         };
         let r = eng.create("d1", &req).unwrap();
         let err = eng.put_chunk(&r.transfer_id, 0, &blake3_hex(b"wrong"), &data).unwrap_err();
@@ -484,7 +551,7 @@ mod tests {
         let req = CreateTransferRequest {
             name: "y.bin".into(), size: 50, mime: None, kind: "send".into(),
             rel_path: None, chunk_size: None, client_item_id: None,
-            root_hash: None, taken_at: None, target_device_id: None,
+            root_hash: None, taken_at: None, target_device_id: None, backup_source_id: None,
         };
         let r = eng.create("d1", &req).unwrap();
         eng.put_chunk(&r.transfer_id, 0, &blake3_hex(&data), &data).unwrap();

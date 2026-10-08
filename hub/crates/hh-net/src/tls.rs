@@ -106,7 +106,7 @@ impl ClientCertVerifier for DeviceCertVerifier {
 
 /// TLS 1.3-only server config requiring device certs (port 47800).
 pub fn server_config_mtls(ca: &HubIdentity, revocation: RevocationList) -> Result<Arc<rustls::ServerConfig>> {
-    let certs = vec![CertificateDer::from(pem_first(&ca.server_cert_pem)?)];
+    let certs = vec![CertificateDer::from(pem_first(&ca.server_cert_pem)?), CertificateDer::from(pem_first(&ca.ca_cert_pem)?)];
     let key = PrivateKeyDer::Pkcs8(pem_key(&ca.server_key_pem())?);
     let verifier = DeviceCertVerifier::new(ca, revocation)?;
     let provider = rustls::crypto::ring::default_provider();
@@ -122,7 +122,7 @@ pub fn server_config_mtls(ca: &HubIdentity, revocation: RevocationList) -> Resul
 
 /// TLS 1.3 server config without client certs (pairing port 47802).
 pub fn server_config_pairing(ca: &HubIdentity) -> Result<Arc<rustls::ServerConfig>> {
-    let certs = vec![CertificateDer::from(pem_first(&ca.server_cert_pem)?)];
+    let certs = vec![CertificateDer::from(pem_first(&ca.server_cert_pem)?), CertificateDer::from(pem_first(&ca.ca_cert_pem)?)];
     let key = PrivateKeyDer::Pkcs8(pem_key(&ca.server_key_pem())?);
     let provider = rustls::crypto::ring::default_provider();
     let mut cfg = rustls::ServerConfig::builder_with_provider(provider.into())
@@ -150,7 +150,7 @@ impl PinnedCaVerifier {
     }
 
     pub fn fingerprint_matches(&self, fp16: &str) -> bool {
-        hh_auth::hub_fingerprint(&self.ca_der).starts_with(&fp16.to_lowercase())
+        fp16.len() == 16 && hh_auth::hub_fingerprint(&self.ca_der).eq_ignore_ascii_case(fp16)
     }
 }
 
@@ -163,26 +163,13 @@ impl ServerCertVerifier for PinnedCaVerifier {
         _ocsp: &[u8],
         _now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-        // The hub presents its server cert; we verify it was issued by the
-        // pinned CA by checking the CA verifies the leaf via webpki is the
-        // production path — here we pin the CA and accept its chain by
-        // signature check through rustls' webpki verifier.
         let mut roots = RootCertStore::empty();
-        roots
-            .add(CertificateDer::from(self.ca_der.clone()))
+        roots.add(CertificateDer::from(self.ca_der.clone()))
             .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
-        let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(|_| rustls::Error::General("webpki build".into()))?;
-        verifier.verify_server_cert(end_entity, &[], &ServerName::IpAddress(
-            rustls::pki_types::IpAddr::V4(rustls::pki_types::Ipv4Addr::from([127, 0, 0, 1])),
-        ), _ocsp, _now)
-        .or_else(|_| {
-            // IP/hostname mismatch is expected on LAN (cert SAN is the hub
-            // name); chain validity is what matters for the threat model.
-            // Re-verify chain only, ignoring the server name.
-            verify_chain_only(end_entity, &self.ca_der)
-        })?;
+        let parsed = rustls::server::ParsedCertificate::try_from(end_entity)?;
+        let provider = rustls::crypto::ring::default_provider();
+        rustls::client::verify_server_cert_signed_by_trust_anchor(&parsed, &roots, _intermediates, _now,
+            provider.signature_verification_algorithms.all)?;
         Ok(ServerCertVerified::assertion())
     }
 
@@ -192,7 +179,7 @@ impl ServerCertVerifier for PinnedCaVerifier {
         _c: &CertificateDer<'_>,
         _d: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(_m, _c, _d, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
     }
 
     fn verify_tls13_signature(
@@ -201,7 +188,7 @@ impl ServerCertVerifier for PinnedCaVerifier {
         _c: &CertificateDer<'_>,
         _d: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(_m, _c, _d, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -211,16 +198,6 @@ impl ServerCertVerifier for PinnedCaVerifier {
             SignatureScheme::RSA_PSS_SHA256,
         ]
     }
-}
-
-fn verify_chain_only(
-    _end_entity: &CertificateDer<'_>,
-    _ca_der: &[u8],
-) -> std::result::Result<ServerCertVerified, rustls::Error> {
-    // NOTE(dev): proper path uses webpki EndEntityCert::verify_for_usage with
-    // the CA as trust anchor and no name check. Left as an explicit TODO for
-    // the Windows milestone; the fake client is a dev tool, never shipped.
-    Err(rustls::Error::General("chain-only verification TODO".into()))
 }
 
 // ---- helpers ----

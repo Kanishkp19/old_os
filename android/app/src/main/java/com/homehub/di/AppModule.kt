@@ -18,7 +18,7 @@ object AppModule {
     @Singleton
     fun provideQueueDb(@ApplicationContext context: Context): QueueDb =
         Room.databaseBuilder(context, QueueDb::class.java, "homehub.db")
-            .fallbackToDestructiveMigration() // queue is rebuildable; trust rows re-pair
+            .addMigrations(QueueDb.MIGRATION_1_2)
             .build()
 
     @Provides fun provideQueueDao(db: QueueDb) = db.queueDao()

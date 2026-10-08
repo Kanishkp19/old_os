@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     /// Friendly name, e.g. "Kanishk's Home Hub".
     pub hub_name: String,
@@ -60,6 +61,7 @@ impl Config {
             &self.data_dir,
             &self.log_dir,
             &self.library_root,
+            &self.library_dir(),
             &self.tmp_dir(),
             &self.thumbs_dir(),
         ] {
@@ -92,21 +94,26 @@ impl Config {
         self.data_dir.join("ca.key.enc")
     }
 
-    pub fn load_or_default(path: &std::path::Path) -> Result<Self> {
-        if path.exists() {
-            let text = std::fs::read_to_string(path)?;
-            serde_json::from_str(&text).map_err(|e| Error::Internal(format!("config parse: {e}")))
-        } else {
-            let cfg = Config::default();
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let text = serde_json::to_string_pretty(&cfg)
-                .map_err(|e| Error::Internal(format!("config encode: {e}")))?;
-            std::fs::write(path, text)?;
-            Ok(cfg)
+    pub fn save(&self, path: &std::path::Path) -> Result<()> {
+        if let Some(parent)=path.parent(){std::fs::create_dir_all(parent)?;}
+        let text=serde_json::to_vec_pretty(self).map_err(|e|Error::Internal(format!("config encode: {e}")))?;
+        let temp=path.with_extension(format!("json-{}.tmp",ulid::Ulid::new()));
+        let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        use std::io::Write;
+        file.write_all(&text)?;file.sync_all()?;drop(file);
+        std::fs::rename(temp,path)?;
+        Ok(())
+    }
+
+    pub fn load_or_create(path:&std::path::Path, defaults:Self)->Result<Self>{
+        match std::fs::read_to_string(path){
+            Ok(text)=>serde_json::from_str(&text).map_err(|e|Error::Internal(format!("config parse: {e}"))),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{defaults.save(path)?;Ok(defaults)},
+            Err(e)=>Err(e.into()),
         }
     }
+    pub fn load_or_default(path: &std::path::Path) -> Result<Self> { Self::load_or_create(path,Self::default()) }
+
 }
 
 #[cfg(windows)]

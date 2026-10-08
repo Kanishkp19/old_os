@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, Sse};
-use axum::response::Response;
+use axum::response::{Response, IntoResponse};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
 use hh_core::error::Error;
@@ -95,6 +95,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/backup/sources/{id}/diff", post(backup_diff))
         .route("/v1/backup/sources/{id}/summary", get(backup_summary))
         .route("/v1/backup/sources/{id}/verified-items", get(backup_verified_items))
+        .route("/v1/backup/sources/{id}/cleanup-lease", post(cleanup_lease))
+        .route("/v1/backup/cleanup-leases/{id}/complete", post(cleanup_finish))
         .route("/v1/backup/items/{id}/confirm-local-freed", post(confirm_local_freed))
         .route("/v1/duplicates", get(list_duplicates))
         .route("/v1/duplicates/{group_id}/resolve", post(resolve_duplicates))
@@ -120,7 +122,46 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/hardware/audit", get(hardware_audit))
         .route("/v1/hardware/audit/run", post(hardware_audit_run))
         .route("/v1/network", get(network_info))
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), authorize))
         .with_state(state)
+}
+
+/// Revalidate certificates/scopes on every request, including keep-alive H2.
+async fn authorize(State(s): State<AppState>, mut req: axum::extract::Request, next: axum::middleware::Next) -> ApiResult<Response> {
+    let identity = req.extensions().get::<PeerIdentityExt>().map(|p|p.0.clone()).ok_or(Error::Unauthenticated)?;
+    let device = s.db.device_by_id(&identity.device_id)?.ok_or(Error::Unauthenticated)?;
+    if device.status != "active" || s.db.is_serial_revoked(&identity.cert_serial)? { return Err(Error::DeviceRevoked.into()); }
+    if device.cert_serial != identity.cert_serial || device.cert_expires_at <= hh_core::time::now_ms() { return Err(Error::Unauthenticated.into()); }
+    if s.db.get_setting("sharing.paused")?.as_deref() == Some("true") { return Err(Error::StorageUnavailable("sharing paused".into()).into()); }
+    let path = req.uri().path();
+    if !path.contains("/chunks/") && !s.rate_limiter.check(&identity.device_id) { return Err(Error::RateLimited.into()); }
+    let fresh = PeerIdentity { scopes: device.scopes, ..identity };
+    if let Some(rest) = path.strip_prefix("/v1/transfers/") {
+        let tid = rest.split('/').next().unwrap_or("");
+        let transfer = s.db.get_transfer(tid)?.ok_or(Error::TransferGone)?;
+        if transfer.device_id != fresh.device_id { return Err(Error::ForbiddenScope("transfer owner".into()).into()); }
+    }
+    if let Some(rest) = path.strip_prefix("/v1/backup/sources/").or_else(||path.strip_prefix("/v1/backup/items/")) {
+        let sid = rest.split('/').next().unwrap_or("");
+        if s.photos.get_source(sid)?.device_id != fresh.device_id { return Err(Error::ForbiddenScope("backup owner".into()).into()); }
+    }
+    req.extensions_mut().insert(PeerIdentityExt(fresh));
+    Ok(next.run(req).await)
+}
+
+#[derive(Deserialize)]
+struct LeaseReq { client_item_ids: Vec<String> }
+async fn cleanup_lease(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>, Path(id): Path<String>, Json(req): Json<LeaseReq>) -> ApiResult<Json<serde_json::Value>> {
+    let peer = ident(ext)?; require_scope(&peer,"photos")?;
+    Ok(Json(serde_json::json!(s.photos.create_cleanup_lease(&id,&peer.device_id,&req.client_item_ids)?)))
+}
+#[derive(Deserialize)]
+struct LeaseFinishReq { freed_client_item_ids: Vec<String> }
+async fn cleanup_finish(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>, Path(id): Path<String>, Json(req): Json<LeaseFinishReq>) -> ApiResult<Json<serde_json::Value>> {
+    let peer = ident(ext)?; require_scope(&peer,"photos")?;
+    s.photos.finish_cleanup_lease(&id,&peer.device_id,&req.freed_client_item_ids)?;
+    Ok(Json(serde_json::json!({"completed":true})))
 }
 
 // ---- info / status ----
@@ -203,20 +244,28 @@ async fn get_status(State(s): State<AppState>) -> ApiResult<Json<HubStatus>> {
     }))
 }
 
-async fn events(State(s): State<AppState>) -> Sse<impl futures::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+async fn events(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>) -> ApiResult<Sse<impl futures::Stream<Item = Result<SseEvent, std::convert::Infallible>>>> {
+    let peer = ident(ext)?;
     let rx = s.events.subscribe();
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Ok(ev) => {
-                let sse = SseEvent::default()
-                    .event(ev.event)
-                    .data(ev.data.to_string());
-                Some((Ok(sse), rx))
+    let stream = futures::stream::unfold((rx,s.db.clone(),peer), |(mut rx,db,peer)| async move {
+        loop {
+            let device = db.device_by_id(&peer.device_id).ok().flatten()?;
+            if device.status != "active" || device.cert_serial != peer.cert_serial || device.cert_expires_at <= hh_core::time::now_ms() || db.get_setting("sharing.paused").ok().flatten().as_deref() == Some("true") { return None; }
+            match tokio::time::timeout(std::time::Duration::from_secs(1),rx.recv()).await {
+                Ok(Ok(ev)) => {
+                    if let Some(tid) = ev.data.get("transfer_id").and_then(|v|v.as_str()) {
+                        if db.get_transfer(tid).ok().flatten().map(|t|t.device_id != peer.device_id).unwrap_or(true) { continue; }
+                    }
+                    let sse = SseEvent::default().event(ev.event).data(ev.data.to_string());
+                    return Some((Ok(sse),(rx,db,peer)));
+                },
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => return None,
+                Err(_) => continue,
             }
-            Err(_) => None,
         }
     });
-    Sse::new(stream)
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
 
 // ---- devices ----
@@ -293,7 +342,13 @@ async fn renew_cert(
     if ms_left > 30 * 24 * 3600 * 1000 {
         return Err(Error::Conflict("cert not due for renewal (>30 days left)".into()).into());
     }
-    let (cert_pem, _serial, expires) = s.ca.renew_device_cert(&body, &id.device_id)?;
+    let csr = if body.trim_start().starts_with('{') {
+        serde_json::from_str::<serde_json::Value>(&body).map_err(|_|Error::BadRequest("invalid renewal request".into()))?
+            .get("csr_pem").and_then(|v|v.as_str()).ok_or_else(||Error::BadRequest("csr_pem required".into()))?.to_owned()
+    } else { body };
+    let (cert_pem, serial, expires) = s.ca.renew_device_cert(&csr, &id.device_id)?;
+    s.db.renew_device(&id.device_id,&id.cert_serial,&cert_pem,&serial,expires)?;
+    s.revocation.revoke(&id.cert_serial);
     Ok(Json(serde_json::json!({"cert_pem": cert_pem, "cert_expires_at": expires})))
 }
 
@@ -309,7 +364,14 @@ async fn create_transfer(
     if req.size > 1 << 40 {
         return Err(Error::TooLarge("max file size 1 TiB".into()).into());
     }
-    let resp = s.transfers.create(&id.device_id, &req)?;
+    if req.backup_source_id.is_some() { require_scope(&id,"photos")?; }
+    let engine = s.transfers.clone();
+    let device_id = id.device_id.clone();
+    let input = req.clone();
+    let mut resp = tokio::task::spawn_blocking(move ||engine.create(&device_id,&input)).await.map_err(|e|Error::Internal(e.to_string()))??;
+    if let (Some(source),Some(item),Some(file_id),Some(hash)) = (&req.backup_source_id,&req.client_item_id,&resp.existing_file_id,&req.root_hash) {
+        resp.backup_item_id = Some(s.photos.mark_transfer_verified(source,&id.device_id,item,file_id,hash)?);
+    }
     let code = if resp.have.count() > 0 { StatusCode::OK } else { StatusCode::CREATED };
     Ok((code, Json(resp)))
 }
@@ -330,7 +392,7 @@ async fn list_transfers(
 ) -> ApiResult<Json<Vec<TransferStatus>>> {
     let peer = ident(ext)?;
     require_scope(&peer, "transfer")?;
-    let rows = s.db.list_transfers(None, None)?;
+    let rows = s.db.list_transfers(Some(&peer.device_id), None)?;
     let mut out = Vec::new();
     for t in rows {
         let have = s.db.chunk_bitmap(&t.id)?;
@@ -378,9 +440,16 @@ async fn complete_transfer(
     require_scope(&peer, "transfer")?;
     let engine = s.transfers.clone();
     let id2 = id.clone();
-    let resp = tokio::task::spawn_blocking(move || engine.complete(&id2, &req.root_hash))
+    let mut resp = tokio::task::spawn_blocking(move || engine.complete(&id2, &req.root_hash))
         .await
         .map_err(|e| Error::Internal(e.to_string()))??;
+    let backup: (Option<String>,Option<String>) = {
+        let c = s.db.lock()?;
+        c.query_row("SELECT backup_source_id,client_item_id FROM transfers WHERE id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|Error::Db(e.to_string()))?
+    };
+    if let (Some(source),Some(item)) = backup {
+        resp.backup_item_id = Some(s.photos.mark_transfer_verified(&source,&peer.device_id,&item,&resp.file_id,&resp.hash)?);
+    }
     // Media hook: register metadata + enqueue thumbnails (TRD §8).
     if resp.rel_path.starts_with("Photos/") || resp.rel_path.starts_with("Videos/") {
         let path = s.storage.file_disk_path(&resp.file_id)?;
@@ -449,37 +518,42 @@ async fn file_content(
     let meta = s.storage.get_file(&id)?;
     let path = s.storage.file_disk_path(&id)?;
 
-    // Range support (API_SPEC §6).
-    if let Some(range) = headers.get("range").and_then(|v| v.to_str().ok()) {
-        if let Some((start, end)) = parse_range(range, meta.size) {
-            let len = end - start + 1;
-            let mut file = std::fs::File::open(&path).map_err(Error::from)?;
-            use std::io::{Read, Seek, SeekFrom};
-            file.seek(SeekFrom::Start(start)).map_err(Error::from)?;
-            let mut buf = vec![0u8; len as usize];
-            file.read_exact(&mut buf).map_err(Error::from)?;
-            return Ok(Response::builder()
-                .status(StatusCode::PARTIAL_CONTENT)
-                .header("content-range", format!("bytes {start}-{end}/{}", meta.size))
-                .header("content-type", meta.mime.clone().unwrap_or_else(|| "application/octet-stream".into()))
-                .body(Body::from(buf))
-                .unwrap());
-        }
-    }
-    let bytes = tokio::fs::read(&path).await.map_err(Error::from)?;
-    Ok(Response::builder()
-        .header("content-type", meta.mime.clone().unwrap_or_else(|| "application/octet-stream".into()))
-        .header("content-length", meta.size)
-        .body(Body::from(bytes))
-        .unwrap())
+    stream_file(path, &meta, &headers).await
 }
 
-fn parse_range(header: &str, size: u64) -> Option<(u64, u64)> {
+/// Streaming bounded-memory downloads, shared by local and mTLS routes.
+pub(crate) async fn stream_file(path: std::path::PathBuf, meta: &FileObject, headers: &HeaderMap) -> ApiResult<Response> {
+    use tokio::io::{AsyncReadExt,AsyncSeekExt};
+    let mut file = tokio::fs::File::open(path).await.map_err(Error::from)?;
+    let range = headers.get("range").map(|r|r.to_str().ok().and_then(|v|parse_range(v,meta.size)));
+    if matches!(range,Some(None)) {
+        return Response::builder().status(StatusCode::RANGE_NOT_SATISFIABLE).header("content-range",format!("bytes */{}",meta.size))
+            .body(Body::empty()).map_err(|e|Error::Internal(e.to_string()).into());
+    }
+    let (start,len,status) = match range.flatten() { Some((a,b)) => (a,b-a+1,StatusCode::PARTIAL_CONTENT),None => (0,meta.size,StatusCode::OK) };
+    file.seek(std::io::SeekFrom::Start(start)).await.map_err(Error::from)?;
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(file.take(len)));
+    let filename = meta.name.replace(['"','\\','\r','\n'],"_");
+    let mut response = Response::builder().status(status).header("content-type",meta.mime.as_deref().unwrap_or("application/octet-stream"))
+        .header("content-length",len).header("accept-ranges","bytes").header("x-content-type-options","nosniff")
+        .header("content-security-policy","sandbox").header("content-disposition",format!("attachment; filename=\"{filename}\""));
+    if status == StatusCode::PARTIAL_CONTENT { response = response.header("content-range",format!("bytes {start}-{}/{}",start+len-1,meta.size)); }
+    response.body(body).map_err(|e|Error::Internal(e.to_string()).into())
+}
+
+fn parse_range(header: &str, size: u64) -> Option<(u64,u64)> {
+    if size == 0 { return None; }
     let spec = header.strip_prefix("bytes=")?;
-    let (a, b) = spec.split_once('-')?;
+    if spec.contains(',') { return None; }
+    let (a,b) = spec.split_once('-')?;
+    if a.is_empty() {
+        let suffix: u64 = b.parse().ok()?;
+        if suffix == 0 { return None; }
+        return Some((size.saturating_sub(suffix),size-1));
+    }
     let start: u64 = a.parse().ok()?;
-    let end: u64 = if b.is_empty() { size.saturating_sub(1) } else { b.parse::<u64>().ok()?.min(size - 1) };
-    if start > end { None } else { Some((start, end)) }
+    let end: u64 = if b.is_empty() {size-1} else { b.parse::<u64>().ok()?.min(size-1) };
+    if start >= size || start > end {None} else {Some((start,end))}
 }
 
 async fn file_manifest(
@@ -870,6 +944,9 @@ async fn remote_input_ws(
         loop {
             match tokio::time::timeout(idle, socket.recv()).await {
                 Ok(Some(Ok(axum::extract::ws::Message::Text(text)))) => {
+                    let allowed = s.db.device_by_id(&device).ok().flatten().map(|d|d.status == "active" && d.cert_serial == peer.cert_serial && d.has_scope("remote")).unwrap_or(false)
+                        && s.db.get_setting("sharing.paused").ok().flatten().as_deref() != Some("true");
+                    if !allowed { let _ = socket.close().await; break; }
                     if let Err(e) = remote.handle_input(&device, text.as_str()) {
                         let _ = socket
                             .send(axum::extract::ws::Message::Text(
@@ -1060,6 +1137,7 @@ async fn update_check(
 #[derive(Deserialize)]
 struct ScreenStartReq {
     offer_sdp: String,
+    direction: Option<String>,
     preset: Option<hh_stream::Preset>,
 }
 
@@ -1075,7 +1153,10 @@ async fn screen_start(
         .latest_audit()?
         .and_then(|v| v.get("rating_streaming").and_then(|r| r.as_str().map(String::from)))
         .unwrap_or_else(|| "limited".into());
-    let kind = if req.offer_sdp.contains("cast") { "cast" } else { "view" };
+    let kind = req.direction.as_deref().unwrap_or("view");
+    if !["view","cast"].contains(&kind) { return Err(Error::BadRequest("direction must be view or cast".into()).into()); }
+    let kind: &'static str = if kind == "cast" {"cast"} else {"view"};
+    if !s.cfg.features.screen { return Err(Error::StorageUnavailable("screen sharing disabled".into()).into()); }
     // Preferred path (M4): the helper's real media host captures the screen
     // and answers the offer itself. When no helper is running, or the helper
     // was built without the `screen` feature, fall back to the in-hub
@@ -1091,6 +1172,7 @@ async fn screen_start(
             Ok(v) => {
                 let session_id = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("helper").to_string();
                 let answer = v.get("answer_sdp").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.insert(session_id.clone(),peer.device_id.clone());
                 return Ok(Json(serde_json::json!({
                     "session_id": session_id,
                     "preset": req.preset,
@@ -1105,6 +1187,7 @@ async fn screen_start(
     }
     let (session_id, preset, answer) =
         s.stream.start_session(&peer.device_id, kind, req.preset, &rating, &req.offer_sdp)?;
+    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.insert(session_id.clone(),peer.device_id.clone());
     Ok(Json(serde_json::json!({
         "session_id": session_id,
         "preset": preset,
@@ -1118,8 +1201,11 @@ async fn screen_stop(
     ext: Option<Extension<PeerIdentityExt>>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let _ = ident(ext)?;
-    s.stream.stop_session(&id)?;
+    let peer = ident(ext)?; require_scope(&peer,"remote")?;
+    let owner = s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.get(&id).cloned().ok_or_else(||Error::NotFound("screen session".into()))?;
+    if owner != peer.device_id { return Err(Error::ForbiddenScope("screen owner".into()).into()); }
+    if s.stream.active_sessions().iter().any(|session|session.id == id) { s.stream.stop_session(&id)?; }
+    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.remove(&id);
     // Also stop any helper-hosted media session (no-op when none active).
     if let Some(h) = &s.helper {
         let h = h.clone();

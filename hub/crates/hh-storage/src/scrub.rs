@@ -34,7 +34,9 @@ impl StorageService {
         let mut checked = 0;
         let mut mismatched = 0;
         for (id, rel, expected) in candidates {
-            let path = hh_core::paths::jail_join(&self.cfg.library_dir(), &rel)?;
+            let c=self.db.lock()?;
+            let path=crate::library::disk_path(&c,&id,false)?;
+            drop(c);
             let outcome = match std::fs::File::open(&path) {
                 Ok(f) => hh_transfer::hash_file(&f),
                 Err(_) => {
@@ -68,16 +70,21 @@ impl StorageService {
                         "INTEGRITY_MISMATCH",
                         "A stored file failed its integrity check. If you have a second copy, we'll repair from it.",
                     )?;
-                    // Repair from second copy if available (ST-06).
-                    if let Some(second) = &self.cfg.second_copy_root {
-                        let src = second.join(&rel);
-                        if let Ok(f) = std::fs::File::open(&src) {
-                            if let Ok(h) = hh_transfer::hash_file(&f) {
-                                if h.eq_ignore_ascii_case(&expected) {
-                                    let _ = std::fs::copy(&src, &path);
-                                    self.record_integrity_event(Some(&id), "repaired_from_copy", None)?;
-                                }
-                            }
+                    // A cleanup lease may still have an Android system dialog
+                    // open. Preserve its copy and expose the integrity failure.
+                    let c=self.db.lock()?;
+                    if crate::library::assert_mutable(&c,&id).is_ok() {
+                        let copies:Vec<(String,String)>={let mut st=c.prepare("SELECT r.path,s.rel_path FROM second_copy_files s JOIN storage_roots r ON r.id=s.target_root_id WHERE s.file_id=?1 AND s.hash=?2 AND r.is_active=1").map_err(db_e)?;let rows=st.query_map(params![id,expected],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_e)?;rows.collect::<std::result::Result<_,_>>().map_err(db_e)?};
+                        for (root,rel) in copies {
+                            let repair=(||->Result<()> {
+                                let src=hh_core::paths::jail_join(std::path::Path::new(&root),&rel)?;
+                                let temp=path.with_file_name(format!(".hh-repair-{}",ulid::Ulid::new()));
+                                crate::verified_copy(&src,&temp,&expected)?;
+                                crate::atomic_replace(&temp,&path)?;
+                                c.execute("UPDATE files SET last_verified_at=?2 WHERE id=?1",params![id,now_ms()]).map_err(db_e)?;
+                                Ok(())
+                            })();
+                            match repair {Ok(())=>{c.execute("INSERT INTO integrity_events(id,file_id,kind,detected_at) VALUES(?1,?2,'repaired_from_copy',?3)",params![ulid::Ulid::new().to_string(),id,now_ms()]).map_err(db_e)?;break;},Err(e)=>tracing::warn!(file_id=%id,error=%e,"integrity repair did not succeed")}
                         }
                     }
                 }

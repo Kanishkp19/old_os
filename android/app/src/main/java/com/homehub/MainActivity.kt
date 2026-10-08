@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.*
 import com.homehub.queue.QueueRepository
 import com.homehub.ui.home.HomeScreen
@@ -34,35 +35,30 @@ class MainActivity : ComponentActivity() {
                 Scaffold(
                     bottomBar = {
                         NavigationBar {
-                            NavigationBarItem(
-                                selected = currentRoute == "home",
-                                onClick = { nav.navigate("home") { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
-                                icon = {},
-                                label = { Text("Home") }
-                            )
-                            NavigationBarItem(
-                                selected = currentRoute == "transfers",
-                                onClick = { nav.navigate("transfers") { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
-                                icon = {},
-                                label = { Text("Transfers") }
-                            )
-                            NavigationBarItem(
-                                selected = currentRoute == "remote",
-                                onClick = { nav.navigate("remote") { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
-                                icon = {},
-                                label = { Text("Remote") }
-                            )
-                            NavigationBarItem(
-                                selected = currentRoute == "devices",
-                                onClick = { nav.navigate("devices") { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
-                                icon = {},
-                                label = { Text("Devices") }
-                            )
+                            listOf("home" to com.homehub.R.string.nav_home,
+                                "photos" to com.homehub.R.string.nav_photos, "files" to com.homehub.R.string.nav_files,
+                                "remote" to com.homehub.R.string.nav_remote, "more" to com.homehub.R.string.nav_more).forEach { (route, label) ->
+                                NavigationBarItem(selected = currentRoute == route,
+                                    onClick = { nav.navigate(route) { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
+                                    icon = {}, label = { Text(androidx.compose.ui.res.stringResource(label)) })
+                            }
                         }
                     }
                 ) { padding ->
                     NavHost(nav, startDestination = "home", modifier = Modifier.padding(padding)) {
-                        composable("home") { HomeScreen(onPair = { nav.navigate("pair") }) }
+                        composable("home") { HomeScreen(onPair = { nav.navigate("pair") }, onBackup = { nav.navigate("backup") }) }
+                        composable("photos") { com.homehub.ui.library.LibraryScreen(photos = true) }
+                        composable("files") { com.homehub.ui.library.LibraryScreen() }
+                        composable("backup") { com.homehub.ui.backup.BackupScreen() }
+                        composable("settings") { com.homehub.ui.backup.BackupScreen(settingsOnly = true) }
+                        composable("more") {
+                            androidx.compose.foundation.layout.Column(Modifier.padding(20.dp)) {
+                                listOf("backup" to R.string.nav_backup, "transfers" to R.string.nav_transfers,
+                                    "devices" to R.string.nav_devices, "settings" to R.string.nav_settings).forEach { (route, label) ->
+                                    TextButton(onClick = { nav.navigate(route) }) { Text(androidx.compose.ui.res.stringResource(label)) }
+                                }
+                            }
+                        }
                         composable("pair") { PairScreen(onDone = { nav.popBackStack() }) }
                         composable("transfers") { TransfersScreen() }
                         composable("remote") { RemoteScreen() }

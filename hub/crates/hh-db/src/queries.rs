@@ -94,6 +94,26 @@ impl Db {
         Ok(())
     }
 
+    /// Insert an identity and consume its pairing token in one transaction.
+    pub fn insert_paired_device(&self, d: &DeviceRow, cert_pem: &str, token_id: &str) -> Result<()> {
+        let mut c = self.lock()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        tx.execute("INSERT INTO devices (id,name,platform,model,app_version,public_key,cert_pem,cert_serial,cert_expires_at,scopes,paired_at,status) VALUES (?1,?2,?3,?4,?5,'',?6,?7,?8,?9,?10,'active')",
+            params![d.id,d.name,d.platform,d.model,d.app_version,cert_pem,d.cert_serial,d.cert_expires_at,d.scopes.join(","),d.paired_at]).map_err(db_err)?;
+        let changed = tx.execute("UPDATE pairing_tokens SET used_at=?2,used_by_device_id=?3 WHERE id=?1 AND used_at IS NULL AND expires_at>?2 AND attempts<5",params![token_id,now_ms(),d.id]).map_err(db_err)?;
+        if changed != 1 { return Err(Error::InvalidToken); }
+        tx.commit().map_err(db_err)
+    }
+
+    /// Replace the current certificate and revoke the old serial atomically.
+    pub fn renew_device(&self, id: &str, old_serial: &str, cert: &str, serial: &str, expires: i64) -> Result<()> {
+        let mut c = self.lock()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        if tx.execute("UPDATE devices SET cert_pem=?3,cert_serial=?4,cert_expires_at=?5 WHERE id=?1 AND cert_serial=?2 AND status='active'",params![id,old_serial,cert,serial,expires]).map_err(db_err)? != 1 { return Err(Error::Unauthenticated); }
+        tx.execute("INSERT INTO revoked_certs(cert_serial,device_id,revoked_at,reason) VALUES(?1,?2,?3,'renewed')",params![old_serial,id,now_ms()]).map_err(db_err)?;
+        tx.commit().map_err(db_err)
+    }
+
     pub fn device_by_id(&self, id: &str) -> Result<Option<DeviceRow>> {
         let c = self.lock()?;
         opt(c.query_row(
@@ -133,7 +153,7 @@ impl Db {
     /// Revocation is immediate: status flip + revocation row, same tx (FR-2.5).
     pub fn revoke_device(&self, id: &str, reason: &str) -> Result<()> {
         let mut c = self.lock()?;
-        let tx = c.transaction().map_err(db_err)?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
         let serial: Option<String> = tx
             .query_row("SELECT cert_serial FROM devices WHERE id=?1", params![id], |r| r.get(0))
             .optional()
@@ -343,7 +363,7 @@ impl Db {
 
     pub fn record_chunk(&self, transfer_id: &str, idx: u64, hash: &str, size: u64) -> Result<()> {
         let mut c = self.lock()?;
-        let tx = c.transaction().map_err(db_err)?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
         tx.execute(
             "INSERT OR REPLACE INTO transfer_chunks (transfer_id, idx, hash, size, verified_at)
              VALUES (?1,?2,?3,?4,?5)",

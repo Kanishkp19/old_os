@@ -43,13 +43,12 @@ fn main() -> Result<()> {
     // pinned explicitly before any TLS config is built.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args = Args::parse();
-    let mut cfg = Config::default();
-    if let Some(d) = args.data_dir {
-        cfg.data_dir = d.into();
-    }
-    if let Some(l) = args.library_root {
-        cfg.library_root = l.into();
-    }
+    let mut defaults = Config::default();
+    if let Some(d)=&args.data_dir { defaults.data_dir=d.into();defaults.log_dir=defaults.data_dir.join("logs"); }
+    let config_path=defaults.data_dir.join("config.json");
+    let mut cfg=Config::load_or_create(&config_path,defaults)?;
+    if let Some(d)=args.data_dir {cfg.data_dir=d.into();}
+    if let Some(l)=args.library_root {cfg.library_root=l.into();}
     cfg.ensure_dirs()?;
     init_logging(&cfg);
 
@@ -135,6 +134,7 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
 
     // Startup reconciliation: orphan .part cleanup (AGENTS.md §6).
     state.transfers.reconcile_on_startup()?;
+    state.storage.recover_storage_jobs()?;
 
     // LAN addresses for QR payload hints.
     if let Ok(net) = state.hw.network_info() {
@@ -169,10 +169,14 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
     let dash_token = hh_net::dashboard::new_token();
     // Persist for same-user local clients (tray, scripts). Loopback-only
     // listener + user-profile ACL keep this a local secret.
-    let _ = std::fs::write(
-        std::path::Path::new(&cfg.data_dir).join("dashboard_token"),
-        &dash_token,
-    );
+    let token_path=cfg.data_dir.join("dashboard_token");
+    {
+        use std::io::Write;
+        let mut options=std::fs::OpenOptions::new();options.write(true).create(true).truncate(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(&token_path)?;file.write_all(dash_token.as_bytes())?;file.sync_all()?;
+        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&token_path,std::fs::Permissions::from_mode(0o600))?;}
+    }
     let dashboard = hh_net::serve::serve_dashboard(state.clone(), dash_token);
 
     tracing::info!("hub ready: api :47800, dashboard http://127.0.0.1:47801, pairing :47802");
@@ -189,6 +193,23 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
 }
 
 fn spawn_workers(state: AppState) {
+    {
+        let s=state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                let interval=s.db.get_setting("second_copy.interval_hours").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(24).clamp(1,720)*3600*1000;
+                let configured=s.db.get_setting("second_copy.root").ok().flatten().is_some_and(|v|!v.is_empty()) || s.cfg.second_copy_root.is_some();
+                let due=s.storage.last_second_copy_age_ms().ok().flatten().map(|age|age>=interval).unwrap_or(true);
+                if configured && due && s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false) {
+                    let storage=s.storage.clone();
+                    match tokio::task::spawn_blocking(move||storage.run_second_copy()).await {
+                        Ok(Ok(_))=>{},Ok(Err(error))=>tracing::warn!(%error,"scheduled second copy failed"),Err(error)=>tracing::warn!(%error,"second copy worker failed"),
+                    }
+                }
+            }
+        });
+    }
     // Thumbnail worker: idle-priority, small batches (TRD §3).
     {
         let s = state.clone();
@@ -219,7 +240,7 @@ fn spawn_workers(state: AppState) {
             loop {
                 let storage = s.storage.clone();
                 let _ = tokio::task::spawn_blocking(move || {
-                    storage.collect_health(&noop::Unsupported)
+                    storage.collect_health(&hh_storage::health::NativeDiskHealth)
                 })
                 .await;
                 let _ = s.storage.check_free_space_alerts();
@@ -233,8 +254,10 @@ fn spawn_workers(state: AppState) {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                let _ = s.transfers.reconcile_on_startup();
-                let _ = s.storage.purge_expired_trash();
+                let transfers=s.transfers.clone();
+                if let Err(error)=tokio::task::spawn_blocking(move||transfers.reconcile_on_startup()).await {tracing::warn!(%error,"transfer reconciliation worker failed");}
+                let storage=s.storage.clone();
+                if let Err(error)=tokio::task::spawn_blocking(move||storage.purge_expired_trash()).await {tracing::warn!(%error,"trash retention worker failed");}
             }
         });
     }
@@ -278,10 +301,11 @@ mod windows_service {
         // The SCM stop/shutdown controls resolve the shared runtime's stop
         // signal, exactly like Ctrl+C in console mode.
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let stop_tx=std::sync::Mutex::new(Some(stop_tx));
         let handler = move |control: ServiceControl| -> ServiceControlHandlerResult {
             match control {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
-                    let _ = stop_tx.send(());
+                    if let Ok(mut tx)=stop_tx.lock(){if let Some(tx)=tx.take(){let _=tx.send(());}}
                     ServiceControlHandlerResult::NoError
                 }
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,

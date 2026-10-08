@@ -32,6 +32,7 @@ pub fn new_token() -> String {
 
 /// Self-contained router (state baked in), ready for `axum::serve`.
 pub fn router(app: AppState, token: String) -> Router {
+    let state = DashboardState { app, token };
     Router::new()
         .route("/", get(index))
         .route("/app.js", get(js))
@@ -51,7 +52,10 @@ pub fn router(app: AppState, token: String) -> Router {
         .route("/api/update", get(update))
         .route("/api/second-copy", get(second_copy_get).post(second_copy_set))
         .route("/api/similar", get(similar))
-        .with_state(DashboardState { app, token })
+        .merge(crate::admin::router())
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), local_authorize))
+        .with_state(state)
 }
 
 fn check_token(st: &DashboardState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -73,13 +77,42 @@ fn check_token(st: &DashboardState, headers: &HeaderMap) -> Result<(), StatusCod
     Err(StatusCode::UNAUTHORIZED)
 }
 
-async fn index(State(st): State<DashboardState>) -> impl IntoResponse {
-    let html = INDEX_HTML.replace("__HH_TOKEN__", &st.token);
-    (
-        [(axum::http::header::SET_COOKIE, format!("hh_local={}; Path=/; SameSite=Strict", st.token))],
-        Html(html),
-    )
+async fn index() -> impl IntoResponse {
+    // Loading a public page grants no privileges. Authorized native clients
+    // exchange their same-user secret at POST /api/session.
+    Html(INDEX_HTML.replace("__HH_TOKEN__", ""))
 }
+
+fn allowed_host(value: &str) -> bool {
+    matches!(value,"127.0.0.1:47801" | "localhost:47801")
+}
+fn allowed_origin(value: &str) -> bool {
+    matches!(value,"http://127.0.0.1:47801" | "http://localhost:47801")
+}
+async fn local_authorize(State(st): State<DashboardState>, req: axum::extract::Request, next: axum::middleware::Next) -> Result<Response,StatusCode> {
+    let headers = req.headers();
+    if !headers.get("host").and_then(|v|v.to_str().ok()).is_some_and(allowed_host) { return Err(StatusCode::FORBIDDEN); }
+    if headers.get("origin").and_then(|v|v.to_str().ok()).is_some_and(|o|!allowed_origin(o)) { return Err(StatusCode::FORBIDDEN); }
+    if headers.get("sec-fetch-site").and_then(|v|v.to_str().ok()).is_some_and(|v|v == "cross-site") { return Err(StatusCode::FORBIDDEN); }
+    if req.uri().path().starts_with("/api/") {
+        check_token(&st,headers)?;
+        if !matches!(*req.method(),axum::http::Method::GET | axum::http::Method::HEAD) {
+            let explicit = headers.get("x-hh-local").and_then(|v|v.to_str().ok()).is_some_and(|v|v == st.token);
+            let csrf = headers.get("x-hh-csrf").and_then(|v|v.to_str().ok()).is_some_and(|v|v == st.token);
+            let origin = headers.get("origin").and_then(|v|v.to_str().ok()).is_some_and(allowed_origin);
+            if !explicit && !(origin && csrf) { return Err(StatusCode::FORBIDDEN); }
+        }
+    }
+    let mut response = next.run(req).await;
+    response.headers_mut().insert("x-content-type-options",axum::http::HeaderValue::from_static("nosniff"));
+    response.headers_mut().insert("referrer-policy",axum::http::HeaderValue::from_static("no-referrer"));
+    if !req_path_is_attachment(&response) {
+        response.headers_mut().insert("content-security-policy",axum::http::HeaderValue::from_static("default-src 'self'; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"));
+    }
+    response.headers_mut().insert("cache-control",axum::http::HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+fn req_path_is_attachment(response: &Response) -> bool { response.headers().contains_key("content-disposition") }
 
 async fn js() -> impl IntoResponse {
     ([("content-type", "text/javascript")], APP_JS)
@@ -131,11 +164,8 @@ struct QrQ {
 
 async fn pair_qr(State(st): State<DashboardState>, headers: HeaderMap, Query(_q): Query<QrQ>) -> Result<Response, StatusCode> {
     check_token(&st, &headers)?;
-    if !st.app.pairing.is_open() {
-        st.app.pairing.open_window().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
     let (hub_id, name) = st.app.db.hub_identity().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let window = st.app.pairing.open_window().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let window = st.app.pairing.current_window().map_err(|_| StatusCode::CONFLICT)?;
     let fp = st.app.ca.fingerprint().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let addrs: Vec<String> = st
         .app
@@ -194,12 +224,12 @@ async fn alerts(State(st): State<DashboardState>, headers: HeaderMap) -> Result<
     Ok(Json(serde_json::json!({ "items": items })))
 }
 
-async fn files(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+#[derive(Deserialize)]
+struct FilesQuery { category:Option<String>,q:Option<String>,cursor:Option<String>,sort:Option<String>,limit:Option<u32> }
+async fn files(State(st): State<DashboardState>, headers: HeaderMap, Query(q):Query<FilesQuery>) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let page = st.app.storage.list_files(None, None, None, 100).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(serde_json::json!({
-        "items": page.items,
-    })))
+    let page=st.app.storage.list_files_page(q.category.as_deref(),q.q.as_deref(),q.cursor.as_deref(),q.sort.as_deref(),q.limit.unwrap_or(100)).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!(page)))
 }
 
 async fn file_content_dash(
@@ -210,12 +240,7 @@ async fn file_content_dash(
     check_token(&st, &headers)?;
     let meta = st.app.storage.get_file(&id).map_err(|_| StatusCode::NOT_FOUND)?;
     let path = st.app.storage.file_disk_path(&id).map_err(|_| StatusCode::NOT_FOUND)?;
-    let bytes = tokio::fs::read(&path).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Response::builder()
-        .header("content-type", meta.mime.unwrap_or_else(|| "application/octet-stream".into()))
-        .header("content-disposition", format!("inline; filename=\"{}\"", meta.name))
-        .body(Body::from(bytes))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+    crate::routes::stream_file(path,&meta,&headers).await.map_err(|e|StatusCode::from_u16(e.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
 }
 
 async fn file_thumb_dash(
@@ -233,7 +258,7 @@ async fn file_thumb_dash(
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     }
-    file_content_dash(State(st), headers, Path(id)).await
+    Err(StatusCode::NOT_FOUND)
 }
 
 // ---- W1.4: security activity ----
@@ -257,7 +282,7 @@ async fn activity(State(st): State<DashboardState>, headers: HeaderMap, Query(q)
         "total": total,
         "items": rows.iter().map(|r| serde_json::json!({
             "ts": r.ts,
-            "device": r.device_id.as_ref().and_then(|d| names.get(d)).unwrap_or(r.device_id.as_deref().unwrap_or("system")),
+            "device": r.device_id.as_ref().and_then(|d| names.get(d)).map(|s|s.as_str()).unwrap_or(r.device_id.as_deref().unwrap_or("system")),
             "action": r.action,
             "detail": r.detail,
         })).collect::<Vec<_>>()
@@ -348,7 +373,7 @@ fn hh_service_diagnostics(app: &AppState) -> serde_json::Value {
     let devices = app.db.list_devices().map(|d| d.len()).unwrap_or(0);
     let open_transfers = app.db.list_transfers(None, Some("open")).map(|t| t.len()).unwrap_or(0);
     let total_transfers = app.db.list_transfers(None, None).map(|t| t.len()).unwrap_or(0);
-    let (audit_total, _) = app.db.list_audit(None, 1, 0).unwrap_or((vec![], 0));
+    let (_, audit_total) = app.db.list_audit(None, 1, 0).unwrap_or((vec![], 0));
     let last_audit = app
         .hw
         .latest_audit()

@@ -33,6 +33,7 @@ data class DeviceRow(
 @HiltViewModel
 class DevicesViewModel @Inject constructor(
     private val hub: HubClient,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
 ) : ViewModel() {
 
     private val _devices = MutableStateFlow<List<DeviceRow>>(emptyList())
@@ -50,7 +51,7 @@ class DevicesViewModel @Inject constructor(
                     name = d.getString("name"),
                     platform = d.optString("platform", "?"),
                     status = d.getString("status"),
-                    isSelf = d.optBoolean("is_self", false),
+                    isSelf = d.optBoolean("is_self", false) || d.getString("id") == context.getSharedPreferences("homehub_auth", android.content.Context.MODE_PRIVATE).getString("device_id", null),
                 )
             }
             _error.value = null
@@ -60,8 +61,7 @@ class DevicesViewModel @Inject constructor(
     }
 
     fun revoke(id: String) = viewModelScope.launch {
-        runCatching { hub.revokeDevice(id) }
-        refresh()
+        try { hub.revokeDevice(id); refresh() } catch (e: Exception) { _error.value = e.message }
     }
 }
 

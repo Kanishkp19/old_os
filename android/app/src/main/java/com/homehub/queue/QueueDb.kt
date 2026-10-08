@@ -29,6 +29,10 @@ data class QueueItem(
     @ColumnInfo(name = "last_error") val lastError: String?,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(name = "backup_source_id") val backupSourceId: String? = null,
+    @ColumnInfo(name = "taken_at") val takenAt: Long? = null,
+    @ColumnInfo(name = "result_file_id") val resultFileId: String? = null,
+    @ColumnInfo(name = "bytes_sent", defaultValue = "0") val bytesSent: Long = 0,
 ) {
     companion object {
         const val QUEUED = "queued"
@@ -65,11 +69,23 @@ interface QueueDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: QueueItem)
 
-    @Query("UPDATE queue_items SET state = :state, transfer_id = COALESCE(:transferId, transfer_id), root_hash = COALESCE(:rootHash, root_hash), attempts = :attempts, next_attempt_at = :nextAttemptAt, last_error = :lastError, updated_at = :now WHERE id = :id")
+    @Query("UPDATE queue_items SET state = :state, transfer_id = :transferId, root_hash = :rootHash, attempts = :attempts, next_attempt_at = :nextAttemptAt, last_error = :lastError, updated_at = :now WHERE id = :id")
     suspend fun updateProgress(
         id: String, state: String, transferId: String?, rootHash: String?,
         attempts: Int, nextAttemptAt: Long?, lastError: String?, now: Long,
     )
+
+    @Query("SELECT * FROM queue_items WHERE hub_id = :hubId AND client_item_id = :clientItemId AND kind = :kind ORDER BY created_at DESC LIMIT 1")
+    suspend fun findSource(hubId: String, clientItemId: String, kind: String): QueueItem?
+
+    @Query("UPDATE queue_items SET bytes_sent = :bytes, updated_at = :now WHERE id = :id")
+    suspend fun setBytes(id: String, bytes: Long, now: Long)
+
+    @Query("UPDATE queue_items SET result_file_id = :fileId WHERE id = :id")
+    suspend fun setResult(id: String, fileId: String)
+
+    @Query("UPDATE queue_items SET state='queued' WHERE state IN ('connecting','uploading','verifying')")
+    suspend fun recoverInterrupted()
 
     @Query("SELECT COUNT(*) FROM queue_items WHERE state != 'done' AND state != 'failed_perm'")
     fun observePendingCount(): Flow<Int>
@@ -96,8 +112,18 @@ interface HubTrustDao {
     suspend fun updateAddr(hubId: String, addr: String)
 }
 
-@Database(entities = [QueueItem::class, HubTrust::class], version = 1, exportSchema = true)
+@Database(entities = [QueueItem::class, HubTrust::class], version = 2, exportSchema = true)
 abstract class QueueDb : RoomDatabase() {
+    companion object {
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN backup_source_id TEXT")
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN taken_at INTEGER")
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN result_file_id TEXT")
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN bytes_sent INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+    }
     abstract fun queueDao(): QueueDao
     abstract fun hubTrustDao(): HubTrustDao
 }

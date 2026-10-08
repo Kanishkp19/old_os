@@ -102,3 +102,37 @@ impl StorageService {
         Ok(rows)
     }
 }
+
+/// Windows Storage Management health; unsupported SMART fields remain None.
+/// Uses Microsoft's local Get-PhysicalDisk and Get-StorageReliabilityCounter.
+pub struct NativeDiskHealth;
+impl DiskHealth for NativeDiskHealth {
+    fn list(&self)->Result<Vec<hh_core::platform::DiskInfo>> {
+        #[cfg(windows)] {
+            if let Ok(rows)=physical_disks(){return Ok(rows.iter().map(|r|hh_core::platform::DiskInfo{
+                id:r["UniqueId"].as_str().unwrap_or("unknown").to_string(),model:r["FriendlyName"].as_str().map(str::to_string),serial:r["SerialNumber"].as_str().map(str::to_string),media_type:match r["MediaType"].as_u64(){Some(3)=>"hdd",Some(4)=>"ssd",_=>"unknown"}.into(),size_bytes:r["Size"].as_u64().unwrap_or(0)}).collect());}
+        }
+        Ok(sysinfo::Disks::new_with_refreshed_list().iter().map(|d|hh_core::platform::DiskInfo{id:d.mount_point().to_string_lossy().to_string(),model:Some(d.name().to_string_lossy().to_string()),serial:None,media_type:"unknown".into(),size_bytes:d.total_space()}).collect())
+    }
+    fn smart(&self,id:&str)->Result<hh_core::platform::SmartReport> {
+        let mut report=hh_core::platform::SmartReport{health:"unknown".into(),predict_failure:None,temperature_c:None,power_on_hours:None,reallocated_sectors:None,pending_sectors:None,raw_json:None};
+        #[cfg(not(windows))] let _=id;
+        #[cfg(windows)] if let Ok(rows)=physical_disks(){if let Some(row)=rows.iter().find(|r|r["UniqueId"].as_str()==Some(id)) {
+            // Numeric enum values are emitted by ConvertTo-Json.
+            report.health=match row["HealthStatus"].as_u64(){Some(0)=>"good",Some(1)=>"caution",Some(2)=>"failing",_=>"unknown"}.into();
+            report.temperature_c=row["Temperature"].as_i64().filter(|n|*n>0).map(|n|n as i32);
+            report.power_on_hours=row["PowerOnHours"].as_u64();report.raw_json=Some(row.to_string());
+        }}
+        Ok(report)
+    }
+}
+#[cfg(windows)]
+fn physical_disks()->Result<Vec<serde_json::Value>> {
+    use std::process::{Command,Stdio};use std::io::Read;use std::os::windows::process::CommandExt;
+    let script="$ErrorActionPreference='Stop'; @((Get-PhysicalDisk | ForEach-Object { $d=$_; $r=$null; try {$r=$d | Get-StorageReliabilityCounter} catch {}; [pscustomobject]@{UniqueId=$d.UniqueId;FriendlyName=$d.FriendlyName;SerialNumber=$d.SerialNumber;Size=$d.Size;MediaType=[int]$d.MediaType;HealthStatus=[int]$d.HealthStatus;Temperature=$r.Temperature;PowerOnHours=$r.PowerOnHours} })) | ConvertTo-Json -Compress";
+    let mut child=Command::new("powershell.exe").args(["-NoLogo","-NoProfile","-NonInteractive","-Command",script]).creation_flags(0x08000000).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+    let start=std::time::Instant::now();loop{if let Some(status)=child.try_wait()?{if !status.success(){return Err(hh_core::Error::StorageUnavailable("disk health provider unavailable".into()));}break;}if start.elapsed()>std::time::Duration::from_secs(15){let _=child.kill();let _=child.wait();return Err(hh_core::Error::StorageUnavailable("disk health provider timeout".into()));}std::thread::sleep(std::time::Duration::from_millis(50));}
+    let mut bytes=Vec::new();if let Some(stdout)=child.stdout.take(){stdout.take(1024*1024).read_to_end(&mut bytes)?;}
+    let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|hh_core::Error::Internal(e.to_string()))?;
+    Ok(match value {serde_json::Value::Array(v)=>v,serde_json::Value::Object(_)=>vec![value],_=>Vec::new()})
+}

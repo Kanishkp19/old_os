@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 hh-core = { path = "../hh-core" }
 hh-db = { path = "../hh-db" }
+hh-transfer = { path = "../hh-transfer" }
 image.workspace = true
 kamadak-exif.workspace = true
 tokio.workspace = true

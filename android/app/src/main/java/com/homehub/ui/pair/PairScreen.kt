@@ -126,9 +126,9 @@ fun PairScreen(onDone: () -> Unit, vm: PairViewModel = hiltViewModel()) {
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Camera permission is needed to scan the QR code.")
+                            Text(stringResource(R.string.pair_camera_permission))
                             Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                                Text("Grant Camera Permission")
+                                Text(stringResource(R.string.pair_grant_camera))
                             }
                         }
                     }
@@ -138,7 +138,7 @@ fun PairScreen(onDone: () -> Unit, vm: PairViewModel = hiltViewModel()) {
                 OutlinedTextField(
                     value = manualInput,
                     onValueChange = { manualInput = it },
-                    label = { Text("Or paste pairing URL / code") },
+                    label = { Text(stringResource(R.string.pair_paste)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
@@ -147,7 +147,7 @@ fun PairScreen(onDone: () -> Unit, vm: PairViewModel = hiltViewModel()) {
                         onClick = { vm.onQrScanned(manualInput.trim()) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Connect with Code")
+                        Text(stringResource(R.string.pair_connect_code))
                     }
                 }
             }
@@ -171,6 +171,15 @@ private fun QrScanner(onCode: (String) -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val analyzer = remember { BarcodeScanning.getClient() }
     val executor = remember { Executors.newSingleThreadExecutor() }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            analyzer.close(); executor.shutdown()
+            ProcessCameraProvider.getInstance(context).addListener({
+                runCatching { ProcessCameraProvider.getInstance(context).get().unbindAll() }
+            }, ContextCompat.getMainExecutor(context))
+        }
+    }
 
     AndroidView(
         modifier = Modifier.fillMaxWidth().height(320.dp),

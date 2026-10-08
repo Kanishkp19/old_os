@@ -132,6 +132,8 @@ pub struct CreateTransferRequest {
     pub taken_at: Option<i64>,
     #[serde(default)]
     pub target_device_id: Option<String>,
+    #[serde(default)]
+    pub backup_source_id: Option<String>,
 }
 
 fn default_kind() -> String {
@@ -146,6 +148,8 @@ pub struct CreateTransferResponse {
     pub have: ChunkBitmap,
     pub already_exists: bool,
     pub existing_file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_item_id: Option<String>,
 }
 
 /// Verified-chunk bitmap, encoded as inclusive ranges [[start,end], ...].
@@ -158,6 +162,7 @@ pub struct ChunkBitmap {
 impl ChunkBitmap {
     pub fn from_chunks(mut chunks: Vec<u64>) -> Self {
         chunks.sort_unstable();
+        chunks.dedup();
         let mut ranges: Vec<(u64, u64)> = Vec::new();
         for c in chunks {
             if let Some(last) = ranges.last_mut() {
@@ -204,6 +209,8 @@ pub struct CompleteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompleteResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_item_id: Option<String>,
     pub file_id: String,
     pub verified: bool,
     pub hash: String,

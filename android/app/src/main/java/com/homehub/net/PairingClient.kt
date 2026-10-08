@@ -57,41 +57,52 @@ class PairingClient @Inject constructor(
     suspend fun pair(payload: QrPayload): PairResult = withContext(Dispatchers.IO) {
         val addr = payload.addrs.firstOrNull() ?: error("no hub address in QR")
 
-        // 1. Generate device keypair in AndroidKeyStore (non-exportable).
-        val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (ks.containsAlias("homehub-device")) {
-            runCatching { ks.deleteEntry("homehub-device") }
+        // Bootstrap carries no token. Its certificate and CA are both verified
+        // against the fingerprint physically scanned from the Hub.
+        val bootstrapTrust = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) = Unit
+            override fun getAcceptedIssuers() = emptyArray<X509Certificate>()
         }
-        val kpg = KeyPairGenerator.getInstance("EC", "AndroidKeyStore")
-        kpg.initialize(
-            android.security.keystore.KeyGenParameterSpec.Builder(
-                "homehub-device",
-                android.security.keystore.KeyProperties.PURPOSE_SIGN or android.security.keystore.KeyProperties.PURPOSE_VERIFY,
-            ).setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-                .setDigests(
-                    android.security.keystore.KeyProperties.DIGEST_NONE,
-                    android.security.keystore.KeyProperties.DIGEST_SHA256,
-                )
-                .build()
-        )
-        val kp = kpg.generateKeyPair()
-
-        // 2. Connect to the pairing endpoint over TLS.
-        // During pairing (T3: TOFU via QR fingerprint), the client connects
-        // over TLS without client cert, sends the CSR + one-time token, and
-        // verifies the issued CA cert against the pinned QR fingerprint.
-        val pinning = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
-            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
-            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        val bootstrapSsl = SSLContext.getInstance("TLSv1.3").apply {
+            init(null, arrayOf<TrustManager>(bootstrapTrust), java.security.SecureRandom())
         }
-        val ssl = SSLContext.getInstance("TLSv1.3")
-        ssl.init(null, arrayOf<TrustManager>(pinning), java.security.SecureRandom())
-        val client = OkHttpClient.Builder()
-            .sslSocketFactory(ssl.socketFactory, pinning)
+        val bootstrap = OkHttpClient.Builder()
+            .sslSocketFactory(bootstrapSsl.socketFactory, bootstrapTrust)
             .hostnameVerifier { _, _ -> true }
-            .build()
+            .followRedirects(false).followSslRedirects(false).build()
+        val cf = java.security.cert.CertificateFactory.getInstance("X.509")
+        val caCert = bootstrap.newCall(Request.Builder().url("https://$addr/pair/ca").get().build())
+            .execute().use { response ->
+                require(response.isSuccessful) { "Unable to verify Home (${response.code})" }
+                val pem = JSONObject(requireNotNull(response.body).string()).getString("ca_cert_pem")
+                val ca = cf.generateCertificate(pem.byteInputStream()) as X509Certificate
+                PinnedCaTrustManager.verifyFingerprint(ca, payload.caFingerprint)
+                val leaf = response.handshake?.peerCertificates?.firstOrNull() as? X509Certificate
+                    ?: error("Home did not provide a certificate")
+                PinnedCaTrustManager(ca).checkServerTrusted(arrayOf(leaf), "EC")
+                ca
+            }
+        bootstrap.connectionPool.evictAll()
+        val pinning = PinnedCaTrustManager(caCert)
+        val ssl = SSLContext.getInstance("TLSv1.3").apply {
+            init(null, arrayOf<TrustManager>(pinning), java.security.SecureRandom())
+        }
+        val client = OkHttpClient.Builder().sslSocketFactory(ssl.socketFactory, pinning)
+            .hostnameVerifier { _, _ -> true }.followRedirects(false).followSslRedirects(false).build()
 
+        // Keep the current identity usable if an attempted re-pair fails.
+        val alias = "homehub-device-${java.util.UUID.randomUUID()}"
+        val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val kpg = KeyPairGenerator.getInstance("EC", "AndroidKeyStore")
+        kpg.initialize(android.security.keystore.KeyGenParameterSpec.Builder(
+            alias, android.security.keystore.KeyProperties.PURPOSE_SIGN or
+                android.security.keystore.KeyProperties.PURPOSE_VERIFY,
+        ).setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+            .setDigests(android.security.keystore.KeyProperties.DIGEST_NONE,
+                android.security.keystore.KeyProperties.DIGEST_SHA256).build())
+        val kp = kpg.generateKeyPair()
+        try {
         // 3. Build a minimal PKCS#10 CSR (ECDSA P-256 + SHA-256).
         val csrPem = buildCsr(kp, "homehub")
 
@@ -103,28 +114,25 @@ class PairingClient @Inject constructor(
             put("app_version", "0.1.0")
             put("csr_pem", csrPem)
         }
-        val resp = client.newCall(
-            Request.Builder().url("https://$addr/pair")
-                .post(body.toString().toRequestBody("application/json".toMediaType())).build()
-        ).execute()
-        if (!resp.isSuccessful) error("pairing failed: ${resp.code}")
-        val json = JSONObject(resp.body!!.string())
-
-        // 4. Cryptographically verify the CA certificate from the Hub matches the QR fingerprint.
+        val json = client.newCall(Request.Builder().url("https://$addr/pair")
+            .post(body.toString().toRequestBody("application/json".toMediaType())).build())
+            .execute().use { response ->
+                require(response.isSuccessful) { "Pairing failed (${response.code})" }
+                JSONObject(requireNotNull(response.body).string())
+            }
         val caCertPem = json.getString("ca_cert_pem")
+        val issuedCa = cf.generateCertificate(caCertPem.byteInputStream()) as X509Certificate
+        require(issuedCa.encoded.contentEquals(caCert.encoded)) { "Home identity changed during pairing" }
         val clientCertPem = json.getString("cert_pem")
-        val cf = java.security.cert.CertificateFactory.getInstance("X.509")
-        val caCert = cf.generateCertificate(caCertPem.byteInputStream()) as X509Certificate
-        val fp = sha256Hex(caCert.encoded).take(16)
-        if (!fp.equals(payload.caFingerprint.lowercase(), ignoreCase = true)) {
-            throw java.security.cert.CertificateException("CA fingerprint mismatch (possible rogue hub): expected ${payload.caFingerprint}, got $fp")
-        }
-
-        // Persist client certificate in SharedPreferences for mTLS authentication
-        context.getSharedPreferences("homehub_auth", Context.MODE_PRIVATE)
-            .edit()
-            .putString("client_cert_pem", clientCertPem)
-            .apply()
+        val issuedCert = cf.generateCertificate(clientCertPem.byteInputStream()) as X509Certificate
+        issuedCert.verify(caCert.publicKey)
+        issuedCert.checkValidity()
+        require(issuedCert.publicKey.encoded.contentEquals(kp.public.encoded)) { "Incorrect device certificate" }
+        val prefs = context.getSharedPreferences("homehub_auth", Context.MODE_PRIVATE)
+        val oldAlias = prefs.getString("key_alias", "homehub-device")
+        require(prefs.edit().putString("client_cert_pem", clientCertPem)
+            .putString("key_alias", alias).putString("device_id", json.getString("device_id")).commit())
+        if (oldAlias != alias && oldAlias != null) runCatching { ks.deleteEntry(oldAlias) }
 
         PairResult(
             deviceId = json.getString("device_id"),
@@ -134,6 +142,11 @@ class PairingClient @Inject constructor(
             scopes = json.getJSONArray("scopes").let { arr -> (0 until arr.length()).map { arr.getString(it) } },
             hubName = json.getJSONObject("hub").getString("name"),
         )
+        } catch (e: Exception) {
+            if (context.getSharedPreferences("homehub_auth", Context.MODE_PRIVATE).getString("key_alias", null) != alias)
+                runCatching { ks.deleteEntry(alias) }
+            throw e
+        }
     }
 
     private fun sha256Hex(b: ByteArray): String =
@@ -158,8 +171,8 @@ class PairingClient @Inject constructor(
         val algEc = byteArrayOf(0x06, 0x07, 0x2A, 0x86.toByte(), 0x48, 0xCE.toByte(), 0x3D, 0x02, 0x01)
         val algP256 = byteArrayOf(0x06, 0x08, 0x2A, 0x86.toByte(), 0x48, 0xCE.toByte(), 0x3D, 0x03, 0x01, 0x07)
         val algSeq = der(0x30, algEc + algP256)
-        val pubPoint = extractEcPoint(kp.public.encoded)
-        val spki = der(0x30, algSeq + der(0x03, byteArrayOf(0x00) + pubPoint))
+        
+        val spki = kp.public.encoded
         val attrs = der(0xA0.toByte(), byteArrayOf())
         val cri = der(0x30, byteArrayOf(0x02, 0x01, 0x00) + subject + spki + attrs)
         // Sign with SHA256withECDSA via JCA (AndroidKeyStore key).
@@ -177,7 +190,8 @@ class PairingClient @Inject constructor(
         val len = if (content.size < 128) {
             byteArrayOf(content.size.toByte())
         } else {
-            byteArrayOf(0x81.toByte(), content.size.toByte())
+            if (content.size < 256) byteArrayOf(0x81.toByte(), content.size.toByte())
+            else byteArrayOf(0x82.toByte(), (content.size shr 8).toByte(), content.size.toByte())
         }
         return byteArrayOf(tag) + len + content
     }

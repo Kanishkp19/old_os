@@ -108,115 +108,124 @@ impl PhotoService {
         Ok(())
     }
 
-    /// Diff the device's camera roll against hub state (API_SPEC §7).
+    /// Discovery never treats a previously verified row as current unless
+    /// the current source hash and the freshly read Hub content both match.
     pub fn diff(&self, source_id: &str, items: &[DiffItem]) -> Result<DiffResponse> {
+        if items.len() > 2000 { return Err(Error::TooLarge("backup discovery batch".into())); }
+        let source = self.get_source(source_id)?;
+        if !source.enabled { return Err(Error::Conflict("backup source is disabled".into())); }
         let mut needed = Vec::new();
-        let mut already = 0u64;
-        {
-            let mut c = self.db.lock()?;
-            let tx = c.transaction().map_err(db_e)?;
-            for item in items {
-                let row: Option<(String, Option<String>)> = tx
-                    .query_row(
-                        "SELECT status, hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
-                        params![source_id, item.client_item_id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .ok();
-                let needs_upload = match row {
-                    Some((status, _)) if status == "verified" => false,
-                    _ => true,
+        let mut already = 0;
+        let mut c = self.db.lock()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
+        for item in items {
+            let mut found = None;
+            if let Some(hash) = &item.hash {
+                let candidates: Vec<String> = {
+                    let mut st = tx.prepare("SELECT id FROM files WHERE hash=?1 AND size=?2 AND deleted_at IS NULL").map_err(db_e)?;
+                    let rows = st.query_map(params![hash, item.size as i64], |r| r.get(0)).map_err(db_e)?;
+                    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db_e)?
                 };
-                // Cross-source dedupe: identical hash already stored → mark verified
-                // without re-upload (PB-03 resume without duplicates).
-                if needs_upload {
-                    if let Some(hash) = &item.hash {
-                        let dup: Option<String> = tx
-                            .query_row(
-                                "SELECT id FROM files WHERE hash=?1 AND deleted_at IS NULL LIMIT 1",
-                                params![hash],
-                                |r| r.get(0),
-                            )
-                            .ok();
-                        if let Some(file_id) = dup {
-                            tx.execute(
-                                "INSERT INTO backup_items (id, source_id, client_item_id, file_id, hash, status, verified_at)
-                                 VALUES (?1,?2,?3,?4,?5,'verified',?6)
-                                 ON CONFLICT(source_id, client_item_id)
-                                 DO UPDATE SET status='verified', file_id=excluded.file_id, hash=excluded.hash, verified_at=excluded.verified_at",
-                                params![ulid::Ulid::new().to_string(), source_id, item.client_item_id, file_id, hash, now_ms()],
-                            )
-                            .map_err(db_e)?;
-                            already += 1;
-                            continue;
-                        }
-                    }
-                    tx.execute(
-                        "INSERT INTO backup_items (id, source_id, client_item_id, hash, status)
-                         VALUES (?1,?2,?3,?4,'pending')
-                         ON CONFLICT(source_id, client_item_id) DO NOTHING",
-                        params![ulid::Ulid::new().to_string(), source_id, item.client_item_id, item.hash],
-                    )
-                    .map_err(db_e)?;
-                    needed.push(item.client_item_id.clone());
-                } else {
-                    already += 1;
+                for id in candidates {
+                    if verify_file(&tx, &id, hash, Some(item.size)).is_ok() { found = Some(id); break; }
                 }
             }
-            tx.execute("UPDATE backup_sources SET last_run_at=?2 WHERE id=?1", params![source_id, now_ms()])
-                .map_err(db_e)?;
-            tx.commit().map_err(db_e)?;
+            let status = if found.is_some() { "verified" } else { "pending" };
+            tx.execute(
+                "INSERT INTO backup_items(id,source_id,client_item_id,file_id,hash,status,verified_at,expected_size)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+                 ON CONFLICT(source_id,client_item_id) DO UPDATE SET file_id=excluded.file_id,
+                 hash=excluded.hash,status=excluded.status,verified_at=excluded.verified_at,
+                 expected_size=excluded.expected_size,
+                 local_freed_at=CASE WHEN backup_items.hash=excluded.hash THEN backup_items.local_freed_at ELSE NULL END",
+                params![ulid::Ulid::new().to_string(),source_id,item.client_item_id,found,item.hash,status,
+                    if status=="verified" {Some(now_ms())} else {None},item.size as i64]).map_err(db_e)?;
+            if status == "verified" { already += 1; } else { needed.push(item.client_item_id.clone()); }
         }
-        Ok(DiffResponse {
-            new_photos: needed.len() as u64, // refined client-side by mime
-            new_videos: 0,
-            already_backed_up: already,
-            needed,
-        })
+        tx.execute("UPDATE backup_sources SET last_run_at=?2 WHERE id=?1",params![source_id,now_ms()]).map_err(db_e)?;
+        tx.commit().map_err(db_e)?;
+        Ok(DiffResponse {new_photos:needed.len() as u64,new_videos:0,already_backed_up:already,needed})
     }
 
-    /// Mark an item verified after its transfer completed (called by the
-    /// transfer-complete hook when kind = backup).
-    pub fn mark_item_verified(&self, source_id: &str, client_item_id: &str, file_id: &str, hash: &str) -> Result<()> {
+    /// Called only after transfer finalization; additionally verifies source
+    /// ownership and current file bytes before setting deletion eligibility.
+    pub fn mark_transfer_verified(&self, source_id:&str, device_id:&str, client_item_id:&str,
+        file_id:&str, expected_hash:&str) -> Result<String> {
+        let source = self.get_source(source_id)?;
+        if source.device_id != device_id || !source.enabled { return Err(Error::ForbiddenScope("backup source".into())); }
         let c = self.db.lock()?;
-        c.execute(
-            "INSERT INTO backup_items (id, source_id, client_item_id, file_id, hash, status, verified_at)
-             VALUES (?1,?2,?3,?4,?5,'verified',?6)
-             ON CONFLICT(source_id, client_item_id)
-             DO UPDATE SET status='verified', file_id=excluded.file_id, hash=excluded.hash, verified_at=excluded.verified_at",
-            params![ulid::Ulid::new().to_string(), source_id, client_item_id, file_id, hash, now_ms()],
-        )
-        .map_err(db_e)?;
+        let expected_size: Option<i64> = c.query_row("SELECT expected_size FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
+            params![source_id,client_item_id],|r|r.get(0)).ok().flatten();
+        verify_file(&c,file_id,expected_hash,expected_size.map(|n|n as u64))?;
+        let id: String = c.query_row("SELECT id FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
+            params![source_id,client_item_id],|r|r.get(0)).unwrap_or_else(|_|ulid::Ulid::new().to_string());
+        c.execute("INSERT INTO backup_items(id,source_id,client_item_id,file_id,hash,status,verified_at)
+            VALUES(?1,?2,?3,?4,?5,'verified',?6) ON CONFLICT(source_id,client_item_id) DO UPDATE SET
+            file_id=excluded.file_id,hash=excluded.hash,status='verified',verified_at=excluded.verified_at",
+            params![id,source_id,client_item_id,file_id,expected_hash,now_ms()]).map_err(db_e)?;
+        Ok(id)
+    }
+
+    pub fn mark_item_verified(&self, source_id:&str, client_item_id:&str, file_id:&str, hash:&str)->Result<()> {
+        let source=self.get_source(source_id)?;
+        self.mark_transfer_verified(source_id,&source.device_id,client_item_id,file_id,hash).map(|_|())
+    }
+
+    /// Legacy bookkeeping remains safe but does not grant deletion permission.
+    pub fn confirm_local_freed(&self, source_id:&str, client_item_id:&str)->Result<()> {
+        let c=self.db.lock()?;
+        let row:(String,String)=c.query_row("SELECT file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified'",
+            params![source_id,client_item_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_e)?;
+        verify_file(&c,&row.0,&row.1,None)?;
+        c.execute("UPDATE backup_items SET local_freed_at=?3 WHERE source_id=?1 AND client_item_id=?2",
+            params![source_id,client_item_id,now_ms()]).map_err(db_e)?;
         Ok(())
     }
 
-    /// Client reports the local copy was removed (FR-5.3 bookkeeping).
-    pub fn confirm_local_freed(&self, source_id: &str, client_item_id: &str) -> Result<()> {
-        let c = self.db.lock()?;
-        let status: Option<String> = c
-            .query_row(
-                "SELECT status FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
-                params![source_id, client_item_id],
-                |r| r.get(0),
-            )
-            .ok();
-        if status.as_deref() != Some("verified") {
-            return Err(Error::Conflict("item is not verified on the Hub; refusing to confirm free".into()));
+    pub fn create_cleanup_lease(&self,source_id:&str,device_id:&str,ids:&[String])->Result<CleanupLease> {
+        if ids.is_empty() || ids.len()>500 { return Err(Error::BadRequest("select 1–500 cleanup items".into())); }
+        let source=self.get_source(source_id)?;
+        if source.device_id!=device_id { return Err(Error::ForbiddenScope("backup source".into())); }
+        let lease_id=ulid::Ulid::new().to_string();
+        let mut c=self.db.lock()?;
+        let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
+        tx.execute("INSERT INTO cleanup_leases(id,source_id,device_id,created_at) VALUES(?1,?2,?3,?4)",params![lease_id,source_id,device_id,now_ms()]).map_err(db_e)?;
+        let mut items=Vec::new();
+        for client_id in ids {
+            let row: Option<(String,String)> = tx.query_row("SELECT file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified' AND local_freed_at IS NULL",
+                params![source_id,client_id],|r|Ok((r.get(0)?,r.get(1)?))).ok();
+            if let Some((file_id,hash))=row {
+                if let Ok(size)=verify_file(&tx,&file_id,&hash,None) {
+                    tx.execute("INSERT OR IGNORE INTO cleanup_lease_items(lease_id,file_id,client_item_id,hash,size) VALUES(?1,?2,?3,?4,?5)",params![lease_id,file_id,client_id,hash,size as i64]).map_err(db_e)?;
+                    items.push(CleanupItem {client_item_id:client_id.clone(),file_id,hash,size});
+                }
+            }
         }
-        c.execute(
-            "UPDATE backup_items SET local_freed_at=?3 WHERE source_id=?1 AND client_item_id=?2",
-            params![source_id, client_item_id, now_ms()],
-        )
-        .map_err(db_e)?;
+        tx.commit().map_err(db_e)?;
+        Ok(CleanupLease{lease_id,items})
+    }
+
+    pub fn finish_cleanup_lease(&self,id:&str,device_id:&str,freed:&[String])->Result<()> {
+        let mut c=self.db.lock()?;
+        let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
+        let (source,owner,state):(String,String,String)=tx.query_row("SELECT source_id,device_id,state FROM cleanup_leases WHERE id=?1",params![id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_e)?;
+        if owner!=device_id {return Err(Error::ForbiddenScope("cleanup lease".into()));}
+        if state=="completed" {return Ok(());}
+        for client_id in freed {
+            let hash:String=tx.query_row("SELECT hash FROM cleanup_lease_items WHERE lease_id=?1 AND client_item_id=?2",params![id,client_id],|r|r.get(0)).map_err(|_|Error::BadRequest("item not in cleanup lease".into()))?;
+            tx.execute("UPDATE backup_items SET local_freed_at=?4 WHERE source_id=?1 AND client_item_id=?2 AND hash=?3 AND status='verified'",params![source,client_id,hash,now_ms()]).map_err(db_e)?;
+        }
+        tx.execute("UPDATE cleanup_leases SET state='completed' WHERE id=?1",params![id]).map_err(db_e)?;
+        tx.commit().map_err(db_e)?;
         Ok(())
     }
 
     pub fn summary(&self, source_id: &str) -> Result<BackupSummary> {
         let c = self.db.lock()?;
         let mut st = c
-            .prepare("SELECT status, COUNT(*), COALESCE(SUM(f.size),0)
+            .prepare("SELECT status, COUNT(*), COALESCE(SUM(CASE WHEN b.local_freed_at IS NULL THEN f.size ELSE 0 END),0)
                       FROM backup_items b LEFT JOIN files f ON f.id = b.file_id
-                      WHERE b.source_id=?1 GROUP BY status")
+                      WHERE b.source_id=?1 AND (f.deleted_at IS NULL OR f.id IS NULL) GROUP BY status")
             .map_err(db_e)?;
         let rows: Vec<(String, i64, i64)> = st
             .query_map(params![source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -241,4 +250,20 @@ impl PhotoService {
         }
         Ok(s)
     }
+}
+
+#[derive(Debug,Clone,Serialize)]
+pub struct CleanupItem { pub client_item_id:String,pub file_id:String,pub hash:String,pub size:u64 }
+#[derive(Debug,Clone,Serialize)]
+pub struct CleanupLease { pub lease_id:String,pub items:Vec<CleanupItem> }
+
+fn verify_file(c:&rusqlite::Connection,id:&str,hash:&str,size:Option<u64>)->Result<u64> {
+    let (root,rel,stored_hash,stored_size):(String,String,String,i64)=c.query_row(
+        "SELECT r.path,f.rel_path,f.hash,f.size FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE f.id=?1 AND f.deleted_at IS NULL AND r.is_active=1",
+        params![id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_e)?;
+    if !stored_hash.eq_ignore_ascii_case(hash) || size.is_some_and(|n|n!=stored_size as u64) {return Err(Error::RootHashMismatch);}
+    let path=hh_core::paths::jail_join(std::path::Path::new(&root),&rel)?;
+    let file=std::fs::File::open(path)?;
+    if file.metadata()?.len()!=stored_size as u64 || !hh_transfer::hash_file(&file)?.eq_ignore_ascii_case(hash) {return Err(Error::RootHashMismatch);}
+    Ok(stored_size as u64)
 }

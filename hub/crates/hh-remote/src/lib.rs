@@ -60,7 +60,8 @@ impl RemoteService {
     }
 
     fn check_enabled(&self) -> Result<()> {
-        if !self.enabled {
+        let enabled=self.db.get_setting("remote.enabled")?.map(|v|v=="true"||v=="1").unwrap_or(self.enabled);
+        if self.db.get_setting("sharing.paused")?.as_deref()==Some("true") || !enabled {
             return Err(Error::ForbiddenScope("remote".into()));
         }
         Ok(())

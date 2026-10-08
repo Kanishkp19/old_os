@@ -40,7 +40,13 @@ class UploadWorker @AssistedInject constructor(
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        pipeline.processDue()
-        Result.success()
+        setForeground(getForegroundInfo())
+        val pending = pipeline.processDue { item ->
+            setForeground(TransferNotifications.foreground(applicationContext, item))
+        }
+        if (pending) Result.retry() else {
+            TransferNotifications.completed(applicationContext)
+            Result.success()
+        }
     }
 }

@@ -8,6 +8,10 @@ import javax.inject.Inject
 
 @HiltAndroidApp
 class HomeHubApp : Application(), Configuration.Provider {
+    @Inject lateinit var backup: com.homehub.backup.BackupRepository
+
+    override fun onCreate() { super.onCreate(); backup.schedule() }
+
     @Inject lateinit var workerFactory: HiltWorkerFactory
 
     override val workManagerConfiguration: Configuration

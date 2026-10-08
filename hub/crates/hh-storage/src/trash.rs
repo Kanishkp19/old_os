@@ -12,8 +12,9 @@ use crate::{db_e, StorageService};
 impl StorageService {
     pub fn trash_file(&self, id: &str, by_device: Option<&str>) -> Result<()> {
         let mut c = self.db.lock()?;
+        crate::library::assert_mutable(&c,id)?;
         let tx = c.transaction().map_err(db_e)?;
-        tx.execute("UPDATE files SET deleted_at=?2 WHERE id=?1", params![id, now_ms()])
+        tx.execute("UPDATE files SET deleted_at=?2 WHERE id=?1 AND deleted_at IS NULL", params![id, now_ms()])
             .map_err(db_e)?;
         tx.execute(
             "INSERT OR REPLACE INTO trash (file_id, trashed_at, trashed_by_device_id, purge_after)
@@ -71,15 +72,23 @@ impl StorageService {
     /// Explicit purge (admin scope) — the only hard delete in the system,
     /// and only from trash (AGENTS.md §2.2).
     pub fn purge_file(&self, id: &str) -> Result<()> {
-        let path = self.file_disk_path(id).ok();
-        let mut c = self.db.lock()?;
-        let tx = c.transaction().map_err(db_e)?;
-        tx.execute("DELETE FROM files WHERE id=?1", params![id]).map_err(db_e)?;
-        tx.commit().map_err(db_e)?;
-        drop(c);
-        if let Some(p) = path {
-            let _ = std::fs::remove_file(p);
+        let mut c=self.db.lock()?;
+        crate::library::assert_mutable(&c,id)?;
+        let trashed:i64=c.query_row("SELECT COUNT(*) FROM trash t JOIN files f ON f.id=t.file_id WHERE f.id=?1 AND f.deleted_at IS NOT NULL",params![id],|r|r.get(0)).map_err(db_e)?;
+        if trashed!=1 {return Err(hh_core::Error::Conflict("only trashed files may be purged".into()));}
+        let path=crate::library::disk_path(&c,id,true)?;
+        // Keep the row and error visible if the drive or file operation fails.
+        match std::fs::remove_file(&path) {
+            Ok(())=>{},
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound && path.parent().is_some_and(|p|p.exists())=>{},
+            Err(e)=>return Err(e.into())
         }
+        let tx=c.transaction().map_err(db_e)?;
+        tx.execute("UPDATE backup_items SET file_id=NULL,status='pending',verified_at=NULL WHERE file_id=?1",params![id]).map_err(db_e)?;
+        tx.execute("UPDATE integrity_events SET file_id=NULL WHERE file_id=?1",params![id]).map_err(db_e)?;
+        tx.execute("DELETE FROM cleanup_lease_items WHERE file_id=?1",params![id]).map_err(db_e)?;
+        tx.execute("DELETE FROM files WHERE id=?1",params![id]).map_err(db_e)?;
+        tx.commit().map_err(db_e)?;
         Ok(())
     }
 
@@ -99,8 +108,10 @@ impl StorageService {
         };
         let mut n = 0;
         for id in expired {
-            self.purge_file(&id)?;
-            n += 1;
+            match self.purge_file(&id) {
+                Ok(())=>n+=1,
+                Err(e)=>tracing::warn!(file_id=%id,error=%e,"trash purge retained for retry"),
+            }
         }
         Ok(n)
     }

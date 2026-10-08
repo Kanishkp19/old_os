@@ -8,6 +8,7 @@
 
 pub mod dedupe;
 pub mod health;
+pub mod jobs;
 pub mod library;
 pub mod perceptual;
 pub mod scrub;
@@ -74,7 +75,8 @@ impl StorageService {
 
         let free = fs2::free_space(&self.cfg.library_root).unwrap_or(0);
         let total = fs2::total_space(&self.cfg.library_root).unwrap_or(0);
-        let copies = if self.cfg.second_copy_root.is_some() { 2 } else { 1 };
+        let coverage=self.copy_coverage()?;
+        let copies=if coverage["all_protected"].as_bool()==Some(true){2}else{1};
         Ok(LibrarySummary { categories, free_bytes: free, total_bytes: total, copies })
     }
 
@@ -98,4 +100,40 @@ impl StorageService {
         }
         Ok(())
     }
+}
+
+/// Publish without overwriting another file. On Windows rename fails if the
+/// destination exists; on Unix a same-volume hard link provides exclusivity.
+pub(crate) fn publish_file(src:&std::path::Path,dst:&std::path::Path)->Result<()> {
+    #[cfg(windows)] {std::fs::rename(src,dst)?;}
+    #[cfg(not(windows))] {std::fs::hard_link(src,dst)?;std::fs::remove_file(src)?;}
+    Ok(())
+}
+
+pub(crate) fn verified_copy(src:&std::path::Path,dst:&std::path::Path,expected:&str)->Result<()> {
+    if let Some(p)=dst.parent(){std::fs::create_dir_all(p)?;}
+    let tmp=dst.with_file_name(format!(".hh-copy-{}",ulid::Ulid::new()));
+    let result=(||->Result<()> {
+        let mut input=std::fs::File::open(src)?;
+        let mut output=std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        std::io::copy(&mut input,&mut output)?;output.sync_all()?;drop(output);
+        let f=std::fs::File::open(&tmp)?;
+        if !hh_transfer::hash_file(&f)?.eq_ignore_ascii_case(expected) {return Err(hh_core::Error::RootHashMismatch);}
+        drop(f);publish_file(&tmp,dst)?;Ok(())
+    })();
+    if result.is_err(){let _=std::fs::remove_file(tmp);}
+    result
+}
+
+/// Replace only with a fully verified same-volume temporary file.
+pub(crate) fn atomic_replace(src:&std::path::Path,dst:&std::path::Path)->Result<()> {
+    #[cfg(not(windows))] {std::fs::rename(src,dst)?;}
+    #[cfg(windows)] {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name="kernel32")] extern "system" {fn ReplaceFileW(replaced:*const u16,replacement:*const u16,backup:*const u16,flags:u32,exclude:*mut std::ffi::c_void,reserved:*mut std::ffi::c_void)->i32;}
+        let a:Vec<u16>=dst.as_os_str().encode_wide().chain(Some(0)).collect();
+        let b:Vec<u16>=src.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe{ReplaceFileW(a.as_ptr(),b.as_ptr(),std::ptr::null(),0,std::ptr::null_mut(),std::ptr::null_mut())}==0 {return Err(std::io::Error::last_os_error().into());}
+    }
+    Ok(())
 }

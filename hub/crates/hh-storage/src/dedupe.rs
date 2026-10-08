@@ -129,6 +129,9 @@ impl StorageService {
                 .map_err(db_e)?;
             rows
         };
+        if !members.iter().any(|id|id==keep_file_id) { return Err(hh_core::Error::BadRequest("keeper is not a group member".into())); }
+        // Preflight every member before any destructive action.
+        { let c=self.db.lock()?; for fid in &members { if fid!=keep_file_id {crate::library::assert_mutable(&c,fid)?;} } }
         for fid in members {
             if fid != keep_file_id {
                 self.trash_file(&fid, None)?;

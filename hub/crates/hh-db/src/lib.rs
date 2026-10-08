@@ -23,6 +23,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_photos.sql"),
     include_str!("../migrations/0005_health.sql"),
     include_str!("../migrations/0006_system.sql"),
+    include_str!("../migrations/0007_reliability.sql"),
+    include_str!("../migrations/0008_storage_safety.sql"),
 ];
 
 #[derive(Clone)]
@@ -106,9 +108,9 @@ impl Db {
             if version <= current {
                 continue;
             }
-            self.backup_before_migration(current)?;
+            self.backup_before_migration(version - 1)?;
             let mut c = self.lock()?;
-            let tx = c.transaction().map_err(db_err)?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
             tx.execute_batch(sql).map_err(db_err)?;
             if current == 0 && version == 1 {
                 // First boot: single hub identity row. CA fields are filled by
@@ -135,7 +137,10 @@ impl Db {
             return Ok(());
         }
         let bak = self.path.with_extension(format!("db.bak-{from_version}"));
+        let c = self.lock()?;
+        c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(db_err)?;
         std::fs::copy(&self.path, &bak)?;
+        drop(c);
         // prune older backups, keep last 3
         let mut backups: Vec<PathBuf> = std::fs::read_dir(self.path.parent().unwrap_or(Path::new(".")))?
             .filter_map(|e| e.ok().map(|e| e.path()))

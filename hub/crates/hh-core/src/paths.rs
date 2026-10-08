@@ -85,6 +85,16 @@ pub fn jail_join(root: &Path, rel: &str) -> Result<PathBuf> {
     if !out.starts_with(root) {
         return Err(Error::BadRequest("path escapes root".into()));
     }
+    // Resolve every existing ancestor, including symlinks/junctions. A new
+    // destination may not exist yet, so validate its nearest existing parent.
+    let canonical_root = root.canonicalize()?;
+    let mut existing = out.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(|| Error::BadRequest("invalid destination".into()))?;
+    }
+    if !existing.canonicalize()?.starts_with(&canonical_root) {
+        return Err(Error::BadRequest("path escapes root".into()));
+    }
     Ok(out)
 }
 

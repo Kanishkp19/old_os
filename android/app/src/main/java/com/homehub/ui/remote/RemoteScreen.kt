@@ -1,7 +1,20 @@
 package com.homehub.ui.remote
 
 import android.view.MotionEvent
+import android.app.Activity
+import android.content.Intent
+import android.content.Context
+import android.media.projection.MediaProjectionManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import com.homehub.screen.ScreenSession
+import com.homehub.screen.ScreenCastService
+import dagger.hilt.android.qualifiers.ApplicationContext
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +45,8 @@ import javax.inject.Inject
 @HiltViewModel
 class RemoteViewModel @Inject constructor(
     private val hub: HubClient,
+    val screen: ScreenSession,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private var ws: WebSocket? = null
@@ -39,34 +54,37 @@ class RemoteViewModel @Inject constructor(
     private var pendingDy = 0
     private var flushing = false
 
+    val error = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    private var connecting = false
     val connected = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     fun connect() {
-        if (ws != null) return
+        if (ws != null || connecting) return
+        connecting = true
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 hub.openRemoteInput(object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
-                        connected.value = true
+                        connected.value = true; connecting = false
                     }
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                        connected.value = false; ws = null
+                        connected.value = false; connecting = false; ws = null
                     }
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
-                        connected.value = false; ws = null
+                        connected.value = false; connecting = false; ws = null
                     }
                 })
-            }.onSuccess { ws = it }
+            }.onSuccess { ws = it; cacheWake() }.onFailure { connecting = false; error.value = it.message }
         }
     }
 
-    fun disconnect() { ws?.close(1000, "done"); ws = null; connected.value = false }
+    fun disconnect() { ws?.close(1000, "done"); ws = null; connecting = false; connected.value = false }
 
     fun onMove(dx: Float, dy: Float) {
         pendingDx += dx.toInt(); pendingDy += dy.toInt()
         if (!flushing) {
             flushing = true
-            viewModelScope.launch(Dispatchers.IO) {
+            viewModelScope.launch {
                 kotlinx.coroutines.delay(16) // ~60 msg/s, well under the 500/s limit
                 val msg = JSONObject()
                     .put("t", "mv").put("dx", pendingDx).put("dy", pendingDy).toString()
@@ -85,19 +103,101 @@ class RemoteViewModel @Inject constructor(
     fun sendText(s: String) =
         ws?.send(JSONObject().put("t", "text").put("s", s).toString())
 
-    override fun onCleared() = disconnect()
+    fun power(action: String) = viewModelScope.launch {
+        try { hub.post("/v1/remote/power", JSONObject().put("action", action).put("confirm", true)); error.value = null }
+        catch (e: Exception) { error.value = e.message }
+    }
+    fun media(key: String) = viewModelScope.launch {
+        try { hub.post("/v1/remote/media", JSONObject().put("key", key)); error.value = null }
+        catch (e: Exception) { error.value = e.message }
+    }
+    private fun cacheWake() = viewModelScope.launch {
+        runCatching { hub.get("/v1/remote/wake-info") }.onSuccess {
+            context.getSharedPreferences("homehub_wake", Context.MODE_PRIVATE).edit().putString("info", it.toString()).apply()
+        }
+    }
+    fun wake() = viewModelScope.launch(Dispatchers.IO) {
+        try {
+            val raw = context.getSharedPreferences("homehub_wake", Context.MODE_PRIVATE).getString("info", null)
+                ?: hub.get("/v1/remote/wake-info").toString()
+            val macs = JSONObject(raw).getJSONArray("macs")
+            require(macs.length() > 0) { context.getString(R.string.wake_unavailable) }
+            java.net.DatagramSocket().use { socket ->
+                socket.broadcast = true
+                for (i in 0 until macs.length()) {
+                    val bytes = macs.getJSONObject(i).getString("mac").split(':', '-').map {
+                        require(it.length == 2); it.toInt(16).toByte()
+                    }.toByteArray()
+                    require(bytes.size == 6)
+                    val packet = ByteArray(102) { 0xff.toByte() }
+                    repeat(16) { bytes.copyInto(packet, 6 + it * 6) }
+                    socket.send(java.net.DatagramPacket(packet, packet.size, java.net.InetAddress.getByName("255.255.255.255"), 9))
+                }
+            }
+            error.value = context.getString(R.string.wake_attempted)
+        } catch (e: Exception) { error.value = e.message }
+    }
+    override fun onCleared() { disconnect(); if (screen.status.value != "casting") screen.stop() }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun RemoteScreen(vm: RemoteViewModel = hiltViewModel()) {
     val connected by vm.connected.collectAsState()
+    val error by vm.error.collectAsState()
+    val screenState by vm.screen.status.collectAsState()
+    val screenError by vm.screen.error.collectAsState()
+    val remoteVideo by vm.screen.remoteVideo.collectAsState()
+    val context = LocalContext.current
+    var powerAction by remember { mutableStateOf<String?>(null) }
+    var screenConsent by remember { mutableStateOf(false) }
+    val projection = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            androidx.core.content.ContextCompat.startForegroundService(context,
+                Intent(context, ScreenCastService::class.java).putExtra("projection", result.data))
+        }
+    }
+    DisposableEffect(Unit) { onDispose { vm.disconnect(); if (vm.screen.status.value != "casting") vm.screen.stop() } }
     var lastX by remember { mutableStateOf(0f) }
     var lastY by remember { mutableStateOf(0f) }
     var typedText by remember { mutableStateOf("") }
 
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.remote_title), style = MaterialTheme.typography.headlineSmall)
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        screenError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            TextButton(onClick = vm::wake) { Text(stringResource(R.string.remote_wake)) }
+            TextButton(onClick = { powerAction = "sleep" }) { Text(stringResource(R.string.remote_sleep)) }
+            TextButton(onClick = { powerAction = "restart" }) { Text(stringResource(R.string.remote_restart)) }
+            TextButton(onClick = { powerAction = "shutdown" }) { Text(stringResource(R.string.remote_shutdown)) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            TextButton(onClick = { vm.media("play_pause") }) { Text(stringResource(R.string.media_play_pause)) }
+            TextButton(onClick = { vm.media("prev") }) { Text(stringResource(R.string.media_prev)) }
+            TextButton(onClick = { vm.media("next") }) { Text(stringResource(R.string.media_next)) }
+            TextButton(onClick = { vm.media("mute") }) { Text(stringResource(R.string.media_mute)) }
+        }
+        Row {
+            TextButton(onClick = { vm.media("vol_down") }) { Text(stringResource(R.string.media_vol_down)) }
+            TextButton(onClick = { vm.media("vol_up") }) { Text(stringResource(R.string.media_vol_up)) }
+        }
+        if (screenState == "idle") Row {
+            TextButton(onClick = vm.screen::startView) { Text(stringResource(R.string.screen_view)) }
+            TextButton(onClick = { screenConsent = true }) { Text(stringResource(R.string.screen_cast)) }
+        } else TextButton(onClick = vm.screen::stop) { Text(stringResource(R.string.screen_stop)) }
+        remoteVideo?.let { track ->
+            val eglContext = vm.screen.eglContext()
+            if (eglContext != null) {
+                val renderer = remember(track) { org.webrtc.SurfaceViewRenderer(context).apply { init(eglContext, null) } }
+                DisposableEffect(track, renderer) {
+                    track.addSink(renderer)
+                    onDispose { track.removeSink(renderer); renderer.release() }
+                }
+                AndroidView(factory = { renderer }, modifier = Modifier.fillMaxWidth().height(220.dp))
+            }
+        }
+
 
         if (!connected) {
             Button(onClick = vm::connect, modifier = Modifier.align(Alignment.CenterHorizontally)) {
@@ -108,7 +208,7 @@ fun RemoteScreen(vm: RemoteViewModel = hiltViewModel()) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
+                    .height(220.dp)
                     .pointerInteropFilter { ev ->
                         when (ev.action) {
                             MotionEvent.ACTION_DOWN -> { lastX = ev.x; lastY = ev.y }
@@ -153,4 +253,15 @@ fun RemoteScreen(vm: RemoteViewModel = hiltViewModel()) {
             }
         }
     }
+    powerAction?.let { action -> AlertDialog(onDismissRequest = { powerAction = null },
+        title = { Text(stringResource(R.string.remote_power_confirm)) }, text = { Text(stringResource(R.string.remote_power_body)) },
+        confirmButton = { TextButton(onClick = { vm.power(action); powerAction = null }) { Text(stringResource(R.string.action_done)) } },
+        dismissButton = { TextButton(onClick = { powerAction = null }) { Text(stringResource(R.string.action_cancel)) } }) }
+    if (screenConsent) AlertDialog(onDismissRequest = { screenConsent = false }, title = { Text(stringResource(R.string.screen_cast)) },
+        text = { Text(stringResource(R.string.screen_consent)) }, confirmButton = { TextButton(onClick = {
+            screenConsent = false
+            val manager = context.getSystemService(MediaProjectionManager::class.java)
+            projection.launch(manager.createScreenCaptureIntent())
+        }) { Text(stringResource(R.string.cleanup_continue)) } }, dismissButton = { TextButton(onClick = { screenConsent = false }) { Text(stringResource(R.string.action_cancel)) } })
+
 }

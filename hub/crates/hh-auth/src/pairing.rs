@@ -27,6 +27,17 @@ pub struct PairingWindow {
     pub code_expires_at: i64,
     /// Failed 6-digit-code attempts this window (low entropy → hard cap).
     code_attempts: u32,
+    token_attempts: u32,
+    pending: Option<PendingPair>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingPair {
+    pub request_id: String,
+    pub device_name: String,
+    pub platform: String,
+    #[serde(skip)]
+    approved: bool,
 }
 
 pub struct PairingManager {
@@ -58,6 +69,8 @@ impl PairingManager {
             expires_at: now + PAIR_TOKEN_TTL_MS,
             code_expires_at: now + PAIR_CODE_TTL_MS,
             code_attempts: 0,
+            token_attempts: 0,
+            pending: None,
         };
         self.db
             .insert_pairing_token(&ulid::Ulid::new().to_string(), &token_hash, window.expires_at)?;
@@ -133,6 +146,64 @@ impl PairingManager {
             return Err(Error::PairingLocked);
         }
         Err(Error::InvalidToken)
+    }
+
+    /// Stable current window for QR redraws; only explicit open rotates it.
+    pub fn current_window(&self) -> Result<PairingWindow> {
+        self.window.lock().map_err(|_| Error::Internal("pairing mutex poisoned".into()))?
+            .as_ref().filter(|w| w.expires_at > now_ms()).cloned().ok_or(Error::PairingClosed)
+    }
+
+    pub fn pending(&self) -> Result<Option<PendingPair>> { Ok(self.current_window()?.pending) }
+
+    /// Confirmation is bound to the exact request and current window.
+    pub fn confirm(&self, request_id: &str, allow: bool) -> Result<()> {
+        let mut guard = self.window.lock().map_err(|_| Error::Internal("pairing mutex poisoned".into()))?;
+        let w = guard.as_mut().filter(|w| w.expires_at > now_ms()).ok_or(Error::PairingClosed)?;
+        let p = w.pending.as_mut().filter(|p| p.request_id == request_id).ok_or(Error::InvalidToken)?;
+        if allow { p.approved = true; } else { *guard = None; }
+        Ok(())
+    }
+
+    /// Serialize validation, confirmation, certificate issuance and the atomic
+    /// device/token DB commit. Invalid tokens count against this window.
+    pub fn claim<T>(&self, req: &hh_core::types::PairRequest, confirm_qr: bool, action: impl FnOnce(&str) -> Result<T>) -> Result<T> {
+        let mut guard = self.window.lock().map_err(|_| Error::Internal("pairing mutex poisoned".into()))?;
+        let w = guard.as_mut().filter(|w| w.expires_at > now_ms()).ok_or(Error::PairingClosed)?;
+        let manual = req.code.is_some();
+        if let Some(token) = &req.token {
+            if manual { return Err(Error::BadRequest("choose token or code".into())); }
+            if hex_sha256(token.as_bytes()) != w.token_hash {
+                w.token_attempts += 1;
+                let locked = w.token_attempts >= MAX_TOKEN_ATTEMPTS as u32;
+                if locked { *guard = None; return Err(Error::PairingLocked); }
+                return Err(Error::InvalidToken);
+            }
+        } else if let Some(code) = &req.code {
+            if w.code_expires_at <= now_ms() { return Err(Error::TokenExpired); }
+            if code != &w.manual_code {
+                w.code_attempts += 1;
+                if w.code_attempts >= MAX_CODE_ATTEMPTS { *guard = None; return Err(Error::PairingLocked); }
+                return Err(Error::InvalidToken);
+            }
+        } else { return Err(Error::BadRequest("token or code required".into())); }
+        if manual || confirm_qr {
+            let encoded = serde_json::to_vec(req).map_err(|e| Error::Internal(e.to_string()))?;
+            let request_id = hex_sha256(&encoded);
+            match &w.pending {
+                Some(p) if p.request_id == request_id && p.approved => {},
+                Some(p) if p.request_id != request_id => return Err(Error::PairingLocked),
+                _ => {
+                    w.pending = Some(PendingPair { request_id, device_name: req.device_name.clone(), platform: req.platform.clone(), approved: false });
+                    return Err(Error::PairingLocked);
+                }
+            }
+        }
+        let row = self.db.get_pairing_token(&w.token_hash)?.ok_or(Error::InvalidToken)?;
+        if row.2.is_some() { return Err(Error::InvalidToken); }
+        let result = action(&row.0)?;
+        *guard = None;
+        Ok(result)
     }
 
     pub fn burn(&self, token_row_id: &str, device_id: &str) -> Result<()> {

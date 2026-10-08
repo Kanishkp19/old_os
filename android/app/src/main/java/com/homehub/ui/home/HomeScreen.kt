@@ -59,7 +59,7 @@ class HomeViewModel @Inject constructor(
             .contains("client_cert_pem")
         val canSign = try {
             val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            val key = ks.getKey("homehub-device", null) as? java.security.PrivateKey
+            val key = ks.getKey(context.getSharedPreferences("homehub_auth", Context.MODE_PRIVATE).getString("key_alias", "homehub-device"), null) as? java.security.PrivateKey
             if (key != null) {
                 val sig = java.security.Signature.getInstance("NONEwithECDSA")
                 sig.initSign(key)
@@ -114,10 +114,10 @@ class HomeViewModel @Inject constructor(
 }
 
 @Composable
-fun HomeScreen(onPair: () -> Unit, vm: HomeViewModel = hiltViewModel()) {
+fun HomeScreen(onPair: () -> Unit, onBackup: () -> Unit = {}, vm: HomeViewModel = hiltViewModel()) {
     val s by vm.state.collectAsState()
     val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetMultipleContents()
+        ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) vm.enqueue(uris)
     }
@@ -150,16 +150,16 @@ fun HomeScreen(onPair: () -> Unit, vm: HomeViewModel = hiltViewModel()) {
                 ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            "Pairing update required",
+                            stringResource(R.string.home_repair_title),
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                         )
                         Text(
-                            "To send files securely over mutual TLS, please scan the QR code on your computer once more.",
+                            stringResource(R.string.home_repair_body),
                             color = MaterialTheme.colorScheme.onErrorContainer,
                         )
                         Button(onClick = onPair, modifier = Modifier.align(Alignment.End)) {
-                            Text("Scan QR Code to finish setup")
+                            Text(stringResource(R.string.home_repair_action))
                         }
                     }
                 }
@@ -175,7 +175,7 @@ fun HomeScreen(onPair: () -> Unit, vm: HomeViewModel = hiltViewModel()) {
                         ) {
                             Text(s.hubName, style = MaterialTheme.typography.titleMedium)
                             TextButton(onClick = onPair) {
-                                Text("Re-pair")
+                                Text(stringResource(R.string.home_repair))
                             }
                         }
                         Text(
@@ -195,24 +195,25 @@ fun HomeScreen(onPair: () -> Unit, vm: HomeViewModel = hiltViewModel()) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Button(
-                            onClick = { filePicker.launch("*/*") },
+                            onClick = { filePicker.launch(arrayOf("*/*")) },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("Choose file to send")
+                            Text(stringResource(R.string.home_choose_file))
                         }
                         if (s.pendingCount > 0) {
                             OutlinedButton(onClick = { vm.retryUploads() }) {
-                                Text("Send now (${s.pendingCount})")
+                                Text(stringResource(R.string.home_send_now, s.pendingCount))
                             }
                         }
                     }
                 }
             }
 
+            item { Button(onClick = onBackup, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.backup_now)) } }
             if (s.queueItems.isNotEmpty()) {
                 item {
                     Text(
-                        "Transfers",
+                        stringResource(R.string.home_transfers),
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 8.dp),
                     )
@@ -242,12 +243,12 @@ fun HomeScreen(onPair: () -> Unit, vm: HomeViewModel = hiltViewModel()) {
 }
 
 @Composable
-private fun stateText(item: QueueItem): String = when (item.state) {
-    QueueItem.QUEUED -> "Waiting to send"
-    QueueItem.CONNECTING -> "Connecting to Home…"
-    QueueItem.UPLOADING -> "Sending…"
-    QueueItem.VERIFYING -> "Checking it arrived safely…"
-    QueueItem.DONE -> "Sent"
-    QueueItem.FAILED_RETRY -> "Will retry soon" + (item.lastError?.let { ": $it" } ?: "")
-    else -> "Couldn't send: " + (item.lastError ?: "")
-}
+private fun stateText(item: QueueItem): String = stringResource(when (item.state) {
+    QueueItem.QUEUED -> R.string.home_waiting
+    QueueItem.CONNECTING -> R.string.home_connecting
+    QueueItem.UPLOADING -> R.string.home_sending
+    QueueItem.VERIFYING -> R.string.home_verifying
+    QueueItem.DONE -> R.string.home_sent
+    QueueItem.FAILED_RETRY -> R.string.home_retry
+    else -> R.string.home_failed
+}) + if (item.lastError != null) ": ${item.lastError}" else ""

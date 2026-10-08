@@ -36,10 +36,8 @@ pub fn collect() -> Result<HardwareReport> {
     let disks = Disks::new_with_refreshed_list();
     let nets = Networks::new_with_refreshed_list();
 
-    let ethernet_mbps = nets
-        .iter()
-        .find(|(name, _)| name.to_lowercase().contains("eth"))
-        .map(|_| 1000u32); // link speed needs OS APIs; conservative default
+    // Interface names do not prove link speed. Unknown until OS reports it.
+    let ethernet_mbps = None;
     let wifi_standard = nets
         .iter()
         .find(|(name, _)| {

@@ -30,7 +30,6 @@ class QueueRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val db: QueueDb,
     private val trustStore: HubTrustStore,
-    private val uploadPipeline: com.homehub.workers.UploadPipeline,
 ) {
     fun observeQueue() = db.queueDao().observeAll()
     fun observePendingCount() = db.queueDao().observePendingCount()
@@ -50,66 +49,66 @@ class QueueRepository @Inject constructor(
         enqueueUris(uris, kind = "send")
     }
 
-    /** Enqueue explicit URIs (share sheet, file picker, or photo backup scan). */
-    @OptIn(DelicateCoroutinesApi::class)
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    val enqueueError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Application-owned scope persists the queue before WorkManager starts. */
     fun enqueueUris(uris: List<Uri>, kind: String) {
-        // Fire-and-forget on the IO dispatcher; the share sheet must not wait.
-        GlobalScope.launch(Dispatchers.IO) {
-            val trust = trustStore.load() ?: return@launch // not paired: nothing to send to
-            val now = System.currentTimeMillis()
-            for (uri in uris) {
-                // Keep read permission across reboots where the provider allows it.
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
+        scope.launch {
+            try { enqueuePersisted(uris, kind) }
+            catch (e: Exception) { enqueueError.value = "Unable to queue the selected file" }
+        }
+    }
+    suspend fun enqueuePersisted(uris: List<Uri>, kind: String, backupSourceId: String? = null) = withContext(Dispatchers.IO) {
+        val trust = trustStore.load() ?: error("Connect to your Home first")
+        for (uri0 in uris) {
+            var uri = uri0
+            // ACTION_SEND grants are temporary. Preserve a private snapshot when
+            // the provider cannot grant durable access; backup uses MediaStore.
+            if (kind == "send" && uri.scheme == "content") {
+                val durable = runCatching { context.contentResolver.takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION) }.isSuccess
+                if (!durable) {
+                    val sourceMeta = SourceReader.meta(context, uri)
+                    val folder = java.io.File(context.filesDir, "queue-sources").apply { mkdirs() }
+                    val snapshot = java.io.File(folder, java.util.UUID.randomUUID().toString())
+                    try {
+                        context.contentResolver.openInputStream(uri)?.use { input -> snapshot.outputStream().use { output ->
+                            input.copyTo(output); output.fd.sync()
+                        } } ?: error("This file is no longer available")
+                        uri = Uri.fromFile(snapshot)
+                        enqueueOne(trust.hubId, uri, sourceMeta.copy(size = snapshot.length(), modified = snapshot.lastModified()), kind, backupSourceId)
+                        continue
+                    } catch (e: Exception) { snapshot.delete(); throw e }
                 }
-                val meta = resolveMeta(uri)
-                val clientItemId = clientItemIdFor(uri, meta)
-                db.queueDao().upsert(
-                    QueueItem(
-                        id = newUlid(now),
-                        hubId = trust.hubId,
-                        sourceUri = uri.toString(),
-                        clientItemId = clientItemId,
-                        name = meta.name,
-                        size = meta.size,
-                        mime = meta.mime,
-                        kind = kind,
-                        rootHash = null,              // hashed lazily by the worker
-                        sourceMtime = meta.mtime,
-                        transferId = null,
-                        state = QueueItem.QUEUED,
-                        attempts = 0,
-                        nextAttemptAt = null,
-                        lastError = null,
-                        createdAt = now,
-                        updatedAt = now,
-                    )
-                )
             }
-            scheduleUpload()
+            enqueueOne(trust.hubId, uri, SourceReader.meta(context, uri), kind, backupSourceId)
         }
+        scheduleUpload()
     }
-
-    /** Kick the upload pipeline. Idempotent — one named work chain. */
+    private suspend fun enqueueOne(hubId: String, uri: Uri, meta: SourceMeta, kind: String, backupSourceId: String?) {
+        val now = System.currentTimeMillis()
+        val clientId = SourceReader.identity(uri, meta)
+        val existing = db.queueDao().findSource(hubId, clientId, kind)
+        if (existing != null) {
+            if (kind == "backup" && existing.state == QueueItem.DONE) db.queueDao().upsert(existing.copy(
+                state = QueueItem.QUEUED, transferId = null, resultFileId = null, bytesSent = 0, updatedAt = now))
+            return
+        }
+        db.queueDao().upsert(QueueItem(newUlid(now), hubId, uri.toString(), clientId,
+            meta.name, meta.size, meta.mime, kind, null, meta.modified, null,
+            QueueItem.QUEUED, createdAt = now, updatedAt = now,
+            backupSourceId = backupSourceId, takenAt = meta.takenAt))
+    }
+    /** One named append chain avoids cancelling an active upload. */
     fun scheduleUpload() {
-        runCatching {
-            val req = OneTimeWorkRequestBuilder<UploadWorker>()
-                .setExpedited(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                .build()
-            WorkManager.getInstance(context)
-                .enqueueUniqueWork("homehub-upload", ExistingWorkPolicy.REPLACE, req)
-        }
-        @OptIn(DelicateCoroutinesApi::class)
-        GlobalScope.launch(Dispatchers.IO) {
-            uploadPipeline.processDue()
-        }
+        val req = OneTimeWorkRequestBuilder<UploadWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(androidx.work.BackoffPolicy.EXPONENTIAL, 1, java.util.concurrent.TimeUnit.MINUTES)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork("homehub-upload", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
     }
-
-    fun enqueue(uris: List<Uri>) {
-        enqueueUris(uris, kind = "send")
-    }
+    fun enqueue(uris: List<Uri>) = enqueueUris(uris, "send")
 
     suspend fun retry(itemId: String) = withContext(Dispatchers.IO) {
         db.queueDao().get(itemId)?.let {
@@ -119,7 +118,7 @@ class QueueRepository @Inject constructor(
                 lastError = null, now = System.currentTimeMillis(),
             )
             scheduleUpload()
-            uploadPipeline.processDue()
+
         }
     }
 
@@ -127,43 +126,10 @@ class QueueRepository @Inject constructor(
         val now = System.currentTimeMillis()
         db.queueDao().resetAllPending(now)
         scheduleUpload()
-        uploadPipeline.processDue()
+
     }
 
     suspend fun remove(itemId: String) = db.queueDao().delete(itemId)
-
-    private data class Meta(val name: String, val size: Long, val mime: String?, val mtime: Long?)
-
-    private fun resolveMeta(uri: Uri): Meta {
-        var name = "file"
-        var size = -1L
-        runCatching {
-            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    c.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }
-                        ?.let { name = c.getString(it) ?: name }
-                    c.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 }
-                        ?.let { size = c.getLong(it) }
-                }
-            }
-        }
-        val mime = context.contentResolver.getType(uri)
-        val mtime = runCatching {
-            context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize; null }
-        }.getOrNull()
-        return Meta(name = name, size = if (size >= 0) size else 0L, mime = mime, mtime = mtime)
-    }
-
-    /**
-     * Stable dedupe key for resume + Hub-side dedupe (API_SPEC §12):
-     * sha256(uri | size | mtime?) — regenerated identically for the same source.
-     */
-    private fun clientItemIdFor(uri: Uri, meta: Meta): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        md.update(uri.toString().toByteArray())
-        md.update(meta.size.toString().toByteArray())
-        return md.digest().joinToString("") { "%02x".format(it) }.take(32)
-    }
 
     private fun newUlid(now: Long): String {
         // Crockford-base32 ULID: 48-bit time + 80-bit random.

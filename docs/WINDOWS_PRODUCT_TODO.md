@@ -16,70 +16,70 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - [x] Trace runtime to snapshot and record provenance
 - [x] Establish implementation branch and excludes
 - [~] Repair syntax/dependencies/config/contract defects
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 1 — Security and transfers
 
 - [~] Pinned pairing, atomic consent/token limits, renewal and revocation
 - [~] Durable chunk/finalization recovery and source identity
 - [~] Authorization, streaming Range downloads and pause-sharing
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 2 — Windows interface
 
 - [~] Tauri/Svelte launcher and shared dashboard
 - [~] Guided setup, persisted settings and device administration
 - [~] Notifications, accessibility and English/Hindi
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 3 — Files and import
 
 - [~] Stable browsing, search/sort, rename/copy/move and trash recovery
 - [~] Keep/Import/Later with verified copies and external-data protection
 - [~] Durable jobs, library moves and duplicate review
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 4 — Photos and phone cleanup
 
 - [~] Android incremental MediaStore queue and scheduling
 - [~] Backup linkage, gallery metadata/thumbnails and viewer
 - [~] Fresh hash cleanup leases and confirmed system deletion
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 5 — Protection and hardware
 
 - [ ] Verified per-file second copies and reconnection
 - [ ] Scrub atomic repairs, low-space/health warnings
 - [ ] Hardware/network/wake capability reporting
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 6 — Remote and screens
 
 - [ ] Permission-scoped remote input and authenticated bounded helper IPC
 - [ ] Real Windows capture/rendering and explicit video-only direction
 - [ ] Reliable session stop/revoke/disconnect and quality control
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 7 — Companions
 
 - [ ] Android workflows and recovery states
 - [ ] Reproducible Apple projects with secure identities and persistent queues
 - [ ] macOS browsing/relay/viewer and iOS share/photo backup
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 8 — Everyday apps
 
 - [~] Isolated native browser tabs, downloads, permissions and bookmarks
 - [~] Isolated YouTube window and fallback
 - [~] Private offline Notes/playlists, Music and safe Calculator
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ### Phase 9 — Installation and operations
 
 - [ ] Canonical Inno installer and all runtime components
 - [ ] Service/login/firewall/ACL/data-preserving upgrade and uninstall
 - [ ] Opt-in signed updates, recovery, bounded logs and scrubbed diagnostics
-- [ ] Phase commit and push recorded
+- [ ] Completed phase commit and push recorded
 
 ## Validation — all pending
 
@@ -101,3 +101,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - Source edits are not yet built or deployed. Original demonstrated application remains running.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.
+
+## Checkpoint 2026-10-08
+
+Three implementation workers were interrupted by the account usage limit. Their edits are preserved as an explicitly untested checkpoint, not completed phases. No acceptance row is passed. Frontend App.svelte, native screen/helper integration, Apple companions, installer/operations, remaining localization and full testing remain incomplete. Resume from `IMPLEMENTATION_STATE.md`.

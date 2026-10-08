@@ -36,8 +36,8 @@ class HubTrustStore @Inject constructor(
 
     suspend fun savePairing(payload: QrPayload, result: PairingClient.PairResult) {
         val rawAddr = payload.addrs.firstOrNull() ?: ""
-        val host = rawAddr.substringBefore(':')
-        val addr = if (host.isNotEmpty()) "$host:47800" else rawAddr
+        val host = okhttp3.HttpUrl.Builder().scheme("https").host("localhost").build().resolve("https://$rawAddr")?.host.orEmpty()
+        val addr = if (host.isNotEmpty()) if (host.contains(':')) "[$host]:47800" else "$host:47800" else rawAddr
         db.hubTrustDao().upsert(
             HubTrust(
                 hubId = payload.hubId,
@@ -51,8 +51,8 @@ class HubTrustStore @Inject constructor(
     }
 
     suspend fun updateAddr(hubId: String, addr: String) {
-        val host = addr.substringBefore(':')
-        val apiAddr = if (host.isNotEmpty()) "$host:47800" else addr
+        val host = okhttp3.HttpUrl.Builder().scheme("https").host("localhost").build().resolve("https://$addr")?.host.orEmpty()
+        val apiAddr = if (host.isNotEmpty()) if (host.contains(':')) "[$host]:47800" else "$host:47800" else addr
         db.hubTrustDao().updateAddr(hubId, apiAddr)
     }
 }

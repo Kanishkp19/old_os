@@ -8,6 +8,7 @@
 //! Source IPs are restricted to LAN ranges (SECURITY §7, threat T13).
 
 pub mod dashboard;
+pub mod admin;
 pub mod mdns;
 pub mod pair_server;
 pub mod ratelimit;
@@ -47,6 +48,8 @@ pub struct AppState {
     pub hw: HwService,
     pub stream: StreamService,
     pub events: EventBus,
+    pub rate_limiter: Arc<crate::ratelimit::RateLimiter>,
+    pub screen_owners: Arc<std::sync::Mutex<std::collections::HashMap<String,String>>>,
     pub started_at_ms: i64,
     /// LAN addresses for QR payload `a=` hints (refreshed on network change).
     pub lan_addrs: Arc<std::sync::RwLock<Vec<String>>>,
@@ -75,6 +78,8 @@ impl AppState {
             hw: HwService::new(db.clone(), cfg.clone()),
             stream: StreamService::new(),
             events: EventBus::new(tx),
+            rate_limiter: Arc::new(crate::ratelimit::RateLimiter::default()),
+            screen_owners: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             started_at_ms: hh_core::time::now_ms(),
             lan_addrs: Arc::new(std::sync::RwLock::new(vec![])),
             db,
@@ -124,6 +129,7 @@ pub mod serve {
     pub async fn serve_api(state: AppState, acceptor: TlsAcceptor) -> Result<()> {
         let listener = TcpListener::bind(("0.0.0.0", API_PORT)).await?;
         tracing::info!(port = API_PORT, "mTLS API listening");
+        let connections=std::sync::Arc::new(tokio::sync::Semaphore::new(128));
         loop {
             let (tcp, peer) = match listener.accept().await {
                 Ok(x) => x,
@@ -138,15 +144,19 @@ pub mod serve {
                 drop(tcp);
                 continue;
             }
+            let permit=match connections.clone().try_acquire_owned(){Ok(p)=>p,Err(_)=>{drop(tcp);continue;}};
             let acceptor = acceptor.clone();
             let state = state.clone();
             tokio::spawn(async move {
-                let tls = match acceptor.accept(tcp).await {
+                let _permit=permit;
+                let tls = match tokio::time::timeout(std::time::Duration::from_secs(10),acceptor.accept(tcp)).await {
+                    Ok(result)=>match result {
                     Ok(t) => t,
                     Err(e) => {
                         tracing::warn!(error = ?e, "mTLS accept failed");
                         return;
                     }
+                    },Err(_)=>return,
                 };
                 // Resolve device identity from the peer certificate.
                 let identity = tls
@@ -161,7 +171,7 @@ pub mod serve {
                             .device_by_id(&device_id)
                             .ok()
                             .flatten()
-                            .filter(|d| d.status == "active")
+                            .filter(|d| d.status == "active" && d.cert_serial == serial)
                             .map(|d| crate::tls::PeerIdentity {
                                 device_id,
                                 cert_serial: serial,
@@ -192,6 +202,7 @@ pub mod serve {
     pub async fn serve_pairing(state: AppState, acceptor: TlsAcceptor) -> Result<()> {
         let listener = TcpListener::bind(("0.0.0.0", PAIRING_PORT)).await?;
         tracing::info!(port = PAIRING_PORT, "pairing endpoint listening");
+        let connections=std::sync::Arc::new(tokio::sync::Semaphore::new(32));
         loop {
             let (tcp, peer) = match listener.accept().await {
                 Ok(x) => x,
@@ -204,12 +215,16 @@ pub mod serve {
                 drop(tcp);
                 continue;
             }
+            let permit=match connections.clone().try_acquire_owned(){Ok(p)=>p,Err(_)=>{drop(tcp);continue;}};
             let acceptor = acceptor.clone();
             let state = state.clone();
             tokio::spawn(async move {
-                let tls = match acceptor.accept(tcp).await {
+                let _permit=permit;
+                let tls = match tokio::time::timeout(std::time::Duration::from_secs(10),acceptor.accept(tcp)).await {
+                    Ok(result)=>match result {
                     Ok(t) => t,
                     Err(_) => return,
+                    },Err(_)=>return,
                 };
                 let router = crate::pair_server::router(state);
                 let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {

@@ -6,6 +6,11 @@ import com.homehub.net.Blake3
 import com.homehub.net.HubClient
 import com.homehub.queue.QueueDao
 import com.homehub.queue.QueueItem
+import com.homehub.queue.SourceReader
+import com.homehub.backup.BackupRules
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.sync.Mutex
 import org.json.JSONObject
@@ -32,22 +37,25 @@ class UploadPipeline @Inject constructor(
 
     private val mutex = Mutex()
 
-    suspend fun processDue() {
-        if (!mutex.tryLock()) return
+    suspend fun processDue(onProgress: suspend (QueueItem) -> Unit = {}): Boolean {
+        if (!mutex.tryLock()) return true
         try {
+            queueDao.recoverInterrupted()
             val now = System.currentTimeMillis()
             val due = queueDao.due(now)
-            if (due.isEmpty()) return
+            if (due.isEmpty()) return false
 
             for (item in due) {
-                processItem(item)
+                currentCoroutineContext().ensureActive()
+                if (item.kind != "backup" || BackupRules.allowed(context)) processItem(item, onProgress)
             }
+            return queueDao.due(Long.MAX_VALUE).isNotEmpty()
         } finally {
             mutex.unlock()
         }
     }
 
-    private suspend fun processItem(item0: QueueItem) {
+    private suspend fun processItem(item0: QueueItem, onProgress: suspend (QueueItem) -> Unit) {
         var item = item0
         fun now() = System.currentTimeMillis()
         suspend fun set(
@@ -56,16 +64,36 @@ class UploadPipeline @Inject constructor(
             attempts: Int = item.attempts, nextAttemptAt: Long? = null
         ) {
             queueDao.updateProgress(item.id, state, transferId, rootHash, attempts, nextAttemptAt, error, now())
-            item = queueDao.get(item.id) ?: item
+            item = queueDao.get(item.id) ?: throw CancellationException("Transfer removed")
+            onProgress(item)
         }
 
         try {
             set(QueueItem.CONNECTING)
-            hub.info() // reachability + cert validity check
+            require(hub.info().getString("hub_id") == item.hubId) { "This file belongs to another Home" }
 
-            // Lazy whole-file root hash (computed once, persisted).
-            if (item.rootHash == null) {
-                set(QueueItem.CONNECTING, rootHash = hashWholeFile(Uri.parse(item.sourceUri)))
+            val uri = Uri.parse(item.sourceUri)
+            val meta = SourceReader.meta(context, uri)
+            val (hash, actualSize) = SourceReader.hash(context, uri)
+            if ((item.rootHash != null && item.rootHash != hash) ||
+                (item.size >= 0 && item.size != actualSize) ||
+                (item.sourceMtime != null && meta.modified != item.sourceMtime)) {
+                item.transferId?.let { runCatching { hub.delete("/v1/transfers/$it") } }
+                // Changing generations cannot resume chunks from the previous source.
+                val refreshed = meta.copy(size = actualSize)
+                item = item.copy(size = actualSize, sourceMtime = meta.modified,
+                    clientItemId = SourceReader.identity(uri, refreshed), rootHash = hash,
+                    transferId = null, state = QueueItem.CONNECTING, bytesSent = 0)
+                queueDao.upsert(item)
+                if (item.kind == "backup") {
+                    val source = requireNotNull(item.backupSourceId)
+                    hub.post("/v1/backup/sources/$source/diff", org.json.JSONArray().put(JSONObject()
+                        .put("client_item_id", item.clientItemId).put("size", actualSize)
+                        .put("taken_at", item.takenAt).put("hash", hash)))
+                }
+            } else if (item.rootHash == null || item.size < 0) {
+                item = item.copy(rootHash = hash, size = actualSize)
+                queueDao.upsert(item)
             }
 
             // Create or resume the transfer.
@@ -74,9 +102,13 @@ class UploadPipeline @Inject constructor(
                 val created = hub.createTransfer(
                     name = item.name, size = item.size, mime = item.mime, kind = item.kind,
                     clientItemId = item.clientItemId, rootHash = item.rootHash!!,
-                    takenAt = null,
+                    takenAt = item.takenAt, backupSourceId = item.backupSourceId,
                 )
                 if (created.optBoolean("already_exists")) {
+                    val fileId = created.getString("existing_file_id")
+                    val stored = hub.get("/v1/files/$fileId")
+                    require(stored.getString("hash") == item.rootHash && stored.getLong("size") == item.size)
+                    queueDao.setResult(item.id, fileId)
                     set(QueueItem.DONE)
                     return
                 }
@@ -84,25 +116,39 @@ class UploadPipeline @Inject constructor(
                 set(QueueItem.UPLOADING, transferId = transferId)
             }
 
-            val status = runCatching { hub.transferStatus(transferId) }.getOrNull()
-                ?: run {
-                    set(QueueItem.CONNECTING, transferId = null)
-                    return processItem(queueDao.get(item.id)!!)
+            val status = try { hub.transferStatus(transferId) }
+            catch (e: HubClient.ApiException) {
+                if (e.code == 404 || e.code == 410) {
+                    set(QueueItem.QUEUED, transferId = null)
+                    return
                 }
+                throw e
+            }
             val have = parseRanges(status.getJSONObject("have"))
             val chunkCount = status.getLong("chunk_count")
 
             set(QueueItem.UPLOADING)
-            uploadChunks(Uri.parse(item.sourceUri), transferId, have, chunkCount)
+            uploadChunks(item, transferId, have, chunkCount, onProgress)
 
             set(QueueItem.VERIFYING)
-            hub.complete(transferId, item.rootHash!!)
+            val current = SourceReader.hash(context, uri)
+            if (current.first != item.rootHash || current.second != item.size)
+                throw PermException("This file changed while sending. Send its new copy again.")
+            val completed = hub.complete(transferId, item.rootHash!!)
+            require(completed.optBoolean("verified") && completed.getString("hash") == item.rootHash
+                && completed.getLong("size") == item.size) { "Home has not verified this copy" }
+            queueDao.setResult(item.id, completed.getString("file_id"))
             set(QueueItem.DONE)
+        } catch (e: CancellationException) {
+            set(QueueItem.QUEUED)
+            throw e
+        } catch (e: java.io.FileNotFoundException) {
+            set(QueueItem.FAILED_PERM, error = "This file is no longer available")
+        } catch (e: SecurityException) {
+            set(QueueItem.FAILED_PERM, error = "Access to this file was removed")
         } catch (e: PermException) {
-            android.util.Log.e("UploadPipeline", "Permanent failure for ${item.name}: ${e.message}", e)
             set(QueueItem.FAILED_PERM, error = e.message)
         } catch (e: Exception) {
-            android.util.Log.e("UploadPipeline", "Retryable error for ${item.name}: ${e.message}", e)
             val attempts = item.attempts + 1
             if (attempts >= MAX_ATTEMPTS) {
                 set(QueueItem.FAILED_PERM, attempts = attempts, error = "gave up: ${e.message}")
@@ -114,45 +160,36 @@ class UploadPipeline @Inject constructor(
         }
     }
 
-    private fun hashWholeFile(uri: Uri): String {
-        val h = Blake3.Hasher()
-        context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "cannot open $uri" }
-            val buf = ByteArray(256 * 1024)
-            while (true) {
-                val n = input.read(buf)
-                if (n <= 0) break
-                h.update(buf, 0, n)
-            }
-        }
-        return h.digestHex()
-    }
-
-    private suspend fun uploadChunks(uri: Uri, transferId: String, have: List<LongRange>, chunkCount: Long) {
-        context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "cannot open $uri" }
-            val buf = ByteArray(CHUNK)
-            var idx = 0L
-            while (idx < chunkCount) {
+    private suspend fun uploadChunks(item: QueueItem, transferId: String, have: List<LongRange>, chunkCount: Long,
+        onProgress: suspend (QueueItem) -> Unit) {
+        require(chunkCount == (item.size + CHUNK - 1) / CHUNK) { "Unexpected transfer size" }
+        context.contentResolver.openInputStream(Uri.parse(item.sourceUri)).use { input ->
+            requireNotNull(input) { "This file is no longer available" }
+            val buffer = ByteArray(CHUNK)
+            for (idx in 0 until chunkCount) {
+                currentCoroutineContext().ensureActive()
+                if (queueDao.get(item.id) == null) throw CancellationException("Transfer removed")
+                if (item.kind == "backup" && !BackupRules.allowed(context)) throw java.io.IOException("Waiting for your backup rules")
+                val expected = min(CHUNK.toLong(), item.size - idx * CHUNK).toInt()
                 var filled = 0
-                while (filled < buf.size) {
-                    val n = input.read(buf, filled, buf.size - filled)
-                    if (n <= 0) break
+                while (filled < expected) {
+                    val n = input.read(buffer, filled, expected - filled)
+                    if (n < 0) throw PermException("This file changed while sending")
                     filled += n
                 }
-                if (filled == 0 && idx < chunkCount) throw PermException("source shrank during upload")
                 if (!isCovered(idx, have)) {
-                    val chunk = if (filled == buf.size) buf else buf.copyOf(filled)
-                    val code = hub.putChunk(transferId, idx, chunk, Blake3.hashHex(chunk))
-                    when (code) {
+                    val chunk = buffer.copyOf(expected)
+                    when (val code = hub.putChunk(transferId, idx, chunk, Blake3.hashHex(chunk))) {
                         200, 201, 204 -> Unit
-                        401, 403 -> throw PermException("device not authorized ($code)")
-                        404 -> throw PermException("transfer gone ($code)")
-                        else -> error("chunk $idx -> $code")
+                        401, 403 -> throw PermException("This device is no longer allowed to send")
+                        else -> throw HubClient.ApiException(code)
                     }
                 }
-                idx++
+                val bytes = min(item.size, (idx + 1) * CHUNK)
+                queueDao.setBytes(item.id, bytes, System.currentTimeMillis())
+                onProgress(item.copy(bytesSent = bytes, state = QueueItem.UPLOADING))
             }
+            if (input.read() != -1) throw PermException("This file changed while sending")
         }
     }
 

@@ -84,17 +84,6 @@ impl HwService {
     }
 }
 
-/// Best-effort internet reachability probe (W2.9): a LAN without internet is
-/// a fully usable Home Hub, so UI must distinguish "no internet" from "no
-/// LAN". Blocking connect to a public resolver, 2 s timeout.
-pub fn probe_internet() -> Option<bool> {
-    use std::net::{TcpStream, ToSocketAddrs};
-    use std::time::Duration;
-    let addrs = "1.1.1.1:443".to_socket_addrs().ok()?.collect::<Vec<_>>();
-    for a in addrs {
-        if TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok() {
-            return Some(true);
-        }
-    }
-    Some(false)
-}
+/// Core status never probes public networks. Browser/update connectivity is
+/// handled explicitly by those internet-enabled applications.
+pub fn probe_internet() -> Option<bool> { None }

@@ -50,6 +50,9 @@ dependencies {
     ksp("androidx.hilt:hilt-compiler:1.2.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Maintainer source: https://github.com/GetStream/webrtc-android
+    // Native org.webrtc only: no Stream account, transport service or telemetry.
+    implementation("io.getstream:stream-webrtc-android:1.3.9")
 
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")

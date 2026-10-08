@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "shell-commands"
+description = "Narrow native commands for the bundled trusted shell only"
+commands.allow = ["hub_request", "local_list", "local_save", "local_trash", "local_restore", "local_export", "local_import", "browser_open", "browser_action", "browser_list", "browser_permissions", "browser_clear", "open_external", "save_download", "save_hub_file"]

@@ -165,6 +165,10 @@ impl HubIdentity {
                 .map_err(|_| Error::Crypto("invalid SAN".into()))?,
         )];
         params.is_ca = IsCa::ExplicitNoCa;
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
         let (not_before, not_after) = validity_window(DEVICE_CERT_DAYS);
         params.not_before = not_before;
         params.not_after = not_after;
@@ -223,7 +227,7 @@ fn random_serial() -> Vec<u8> {
     use rand::RngCore;
     let mut bytes = [0u8; 20];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    bytes[0] &= 0x7f; // keep positive
+    bytes[0] = (bytes[0] & 0x7f) | 1; // positive with no leading zero
     bytes.to_vec()
 }
 

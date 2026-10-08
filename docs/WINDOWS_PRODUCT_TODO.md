@@ -15,6 +15,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - [x] Preserve source, executable, APK and online SQLite backup
 - [x] Trace runtime to snapshot and record provenance
 - [x] Establish implementation branch and excludes
+- [x] Push implementation checkpoint `add54d1` to the dedicated branch
 - [~] Repair syntax/dependencies/config/contract defects
 - [ ] Completed phase commit and push recorded
 
@@ -23,6 +24,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - [~] Pinned pairing, atomic consent/token limits, renewal and revocation
 - [~] Durable chunk/finalization recovery and source identity
 - [~] Authorization, streaming Range downloads and pause-sharing
+- [x] Reconcile the existing transfer-owner middleware with a single 410 denial path and add a path-level regression test
 - [ ] Completed phase commit and push recorded
 
 ### Phase 2 — Windows interface
@@ -98,9 +100,25 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 ## Delivery records
 
 - Baseline source commit: `78610dd`. Runtime snapshot: sibling `home-hub-baseline-20261008`, kept outside version control.
+- Implementation checkpoint `add54d1` was pushed to `origin/implementation/windows-home-hub` on 2026-10-09. It is not a completed-phase or release claim.
 - Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.
+
+## Detailed remaining gates from the approved plan
+
+- [ ] Phase 0: reproduce a final Windows build from this branch and confirm the running baseline's source relationship on the user's Windows laptop.
+- [~] Phase 1: finish rogue-hub, token replay/concurrency, renewal/revocation, transfer crash/disk-full/source-change, ownership, Range and pause-sharing cases.
+- [~] Phase 2: finish guided setup, all launcher routes, persisted preferences, device security administration, notifications, accessibility and English/Hindi review.
+- [~] Phase 3: finish Keep/Import/Later, pagination and actions, trash/purge recovery, duplicate suggestions, library-move crash recovery and accurate reclaimable-space calculations.
+- [~] Phase 4: finish Android incremental backup, 1,000-item run, viewer/EXIF/unsupported-original behavior and cleanup-race verification.
+- [~] Phase 5: finish physical disk health, missing-drive/reconnect, scrub failure recovery, per-file second-copy coverage, hardware/network capability and wake checks.
+- [~] Phase 6: finish Windows helper/capture/encoder, Android/macOS rendering and cast, consent and reliable session teardown on real hardware.
+- [~] Phase 7: finish Android recovery journeys and reproducible macOS/iOS builds, pairing, queues, browsing, relay, share extension and iOS backup limits.
+- [~] Phase 8: finish browser/YouTube isolation and permissions, Music/Notes private persistence/import/export and calculator accessibility checks on Windows.
+- [~] Phase 9: execute Inno installer, service/login/firewall/ACL upgrade/rollback/uninstall, signed update and diagnostics flows on Windows; prepare signatures when credentials exist.
+- [ ] Final testing: execute the complete matrix in `TEST_PLAN.md`, fix failures, rerun final regression, and record unavailable hardware honestly.
+- [ ] Release gate: signed artifacts where possible, physical Windows/Android validation, 72-hour soak, 100 resumes, 200 disposable-data crash runs, and the four-week 20-household pilot.
 
 ## Checkpoint 2026-10-08
 

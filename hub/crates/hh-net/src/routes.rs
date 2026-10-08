@@ -56,6 +56,21 @@ pub(crate) fn require_scope(id: &hh_net_tls::PeerIdentity, scope: &str) -> ApiRe
     }
 }
 
+fn require_transfer_owner(db: &hh_db::Db, transfer_id: &str, peer: &hh_net_tls::PeerIdentity) -> ApiResult<()> {
+    let transfer = db.get_transfer(transfer_id)?.ok_or(Error::TransferGone)?;
+    if transfer.device_id != peer.device_id {
+        return Err(Error::TransferGone.into());
+    }
+    Ok(())
+}
+
+fn authorize_transfer_path(db: &hh_db::Db, path: &str, peer: &hh_net_tls::PeerIdentity) -> ApiResult<()> {
+    if let Some(rest) = path.strip_prefix("/v1/transfers/") {
+        require_transfer_owner(db, rest.split('/').next().unwrap_or(""), peer)?;
+    }
+    Ok(())
+}
+
 use crate::tls::{self as hh_net_tls, PeerIdentity};
 
 #[derive(Clone)]
@@ -141,11 +156,7 @@ async fn authorize(State(s): State<AppState>, mut req: axum::extract::Request, n
     let path = req.uri().path();
     if !path.contains("/chunks/") && !s.rate_limiter.check(&identity.device_id) { return Err(Error::RateLimited.into()); }
     let fresh = PeerIdentity { scopes: device.scopes, ..identity };
-    if let Some(rest) = path.strip_prefix("/v1/transfers/") {
-        let tid = rest.split('/').next().unwrap_or("");
-        let transfer = s.db.get_transfer(tid)?.ok_or(Error::TransferGone)?;
-        if transfer.device_id != fresh.device_id { return Err(Error::ForbiddenScope("transfer owner".into()).into()); }
-    }
+    authorize_transfer_path(&s.db, path, &fresh)?;
     if let Some(rest) = path.strip_prefix("/v1/backup/sources/").or_else(||path.strip_prefix("/v1/backup/items/")) {
         let sid = rest.split('/').next().unwrap_or("");
         if s.photos.get_source(sid)?.device_id != fresh.device_id { return Err(Error::ForbiddenScope("backup owner".into()).into()); }
@@ -1240,4 +1251,39 @@ async fn network_info(
 ) -> ApiResult<Json<hh_hw::network::NetworkInfo>> {
     let _ = ident(ext)?;
     Ok(Json(s.hw.network_info()?))
+}
+
+#[cfg(test)]
+mod transfer_authorization_tests {
+    use super::*;
+    use hh_db::DeviceRow;
+
+    #[test]
+    fn another_device_cannot_address_a_transfer() {
+        let db = hh_db::Db::open_memory().unwrap();
+        for device_id in ["owner", "other"] {
+            db.insert_device(&DeviceRow {
+                id: device_id.into(), name: device_id.into(), platform: "android".into(),
+                model: None, app_version: None, cert_serial: device_id.into(),
+                cert_expires_at: 0, scopes: vec!["transfer".into()], paired_at: 0,
+                last_seen_at: None, status: "active".into(),
+            }, "PEM", "PUB").unwrap();
+        }
+        db.insert_transfer("transfer-1", "owner", "send", "photo.jpg", 1,
+            None, None, 1, 1, None, None, "unused.part", i64::MAX).unwrap();
+        let identity = |device_id: &str| PeerIdentity {
+            device_id: device_id.into(), cert_serial: device_id.into(),
+            scopes: vec!["transfer".into()],
+        };
+        for path in ["/v1/transfers/transfer-1", "/v1/transfers/transfer-1/chunks/0",
+            "/v1/transfers/transfer-1/complete"] {
+            assert!(authorize_transfer_path(&db, path, &identity("owner")).is_ok());
+            let denial = authorize_transfer_path(&db, path, &identity("other")).unwrap_err();
+            assert_eq!(denial.0.http_status(), 410);
+            assert!(matches!(denial.0, Error::TransferGone));
+        }
+        assert!(matches!(authorize_transfer_path(&db, "/v1/transfers/missing", &identity("owner")),
+            Err(ApiErr(Error::TransferGone))));
+        assert!(authorize_transfer_path(&db, "/v1/transfers", &identity("other")).is_ok());
+    }
 }

@@ -146,6 +146,8 @@ Local owner routes under `http://127.0.0.1:47801/api` require the authorized Win
 | DELETE | `/transfers/{id}` | transfer | Abort |
 | GET | `/transfers` | transfer | List (filters: status, device, since) |
 
+For a transfer ID that is missing or belongs to another device, status, chunk, completion, and abort requests all return `410 TRANSFER_GONE`. The companion API never reveals another device's transfer state.
+
 ### `POST /transfers`
 ```json
 {

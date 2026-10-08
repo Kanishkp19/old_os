@@ -15,3 +15,7 @@ No Windows hardware, Apple signing, release signatures, soak, crash matrix or ho
 | ENV-003 | Apple native builds | Pending | Full Xcode is absent on this macOS host; `xcodebuild -version` selects Command Line Tools only | — | — |
 | ENV-004 | Rust lint and formatting | Pending | Installed Rust toolchain lacks `cargo-clippy` and `cargo-fmt`; availability must be resolved before release | — | — |
 | ENV-005 | Windows package and runtime | Pending | Mac host cannot execute Inno, PowerShell runtime, WebView2, Media Foundation or Windows service/login tests | — | — |
+| ENV-006 | GitHub Windows build dispatch | Pending | Source branch is pushed, but `gh auth status` reports no GitHub CLI login on this host; manual workflow not dispatched | — | — |
+| ENV-007 | Apple shared Swift typecheck | Blocked by local toolchain | Command Line Tools `swiftc` reports duplicate `SwiftBridging` module maps before source typechecking; full Xcode still required | — | — |
+| SEC-001 | Transfer path ownership on the companion API | Passed locally | `cargo test -p hh-net --locked --offline transfer_authorization_tests` passes for owner, another device and unknown transfer on status, chunk and completion paths; real mTLS request test pending | — | Passed locally |
+| BUILD-005 | Apple project-file syntax | Passed locally | `plutil -lint` passes both Xcode project files and three app/extension Info.plists; `python3 -m py_compile apple-shared/generate-projects.py` passes | — | — |

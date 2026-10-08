@@ -76,6 +76,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - [~] Isolated native browser tabs, downloads, permissions and bookmarks
 - [x] Remove all private browser-history rows, including trashed rows, when clearing website data
 - [x] Persist only tab addresses and the YouTube isolation flag in the private user database; offer explicit restoration without carrying forward website grants
+- [x] Resolve address-bar search terms to an isolated public search page while rejecting explicit unsafe/local URLs
 - [ ] Validate tab restoration, failed-restoration retry, and profile isolation with WebView2 on Windows
 - [ ] Verify closed-tab WebView2 profile cleanup and browsing-data clearing on Windows
 - [~] Isolated YouTube window and fallback
@@ -110,6 +111,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - Transfer authorization slice `286a5f2` was pushed on 2026-10-09; it also updated the task and validation ledgers.
 - Second-copy repair and coverage slice `7ba6648` was pushed on 2026-10-09.
 - Browser-history clearing slice `ec660bd` and private tab-session restoration slice `ce7cc9c` were pushed on 2026-10-09.
+- The approved-plan task inventory was expanded and pushed in `31d5fde` on 2026-10-09.
 - Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.

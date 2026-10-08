@@ -72,7 +72,7 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     state.exiting.store(true,std::sync::atomic::Ordering::Release);
     app.exit(0);Ok(())
 }
-#[tauri::command] async fn browser_open(window:WebviewWindow,app:tauri::AppHandle,url:String)->Result<String> {trusted(&window)?;browser::open(&app,&url,false,vec![],false).await}
+#[tauri::command] async fn browser_open(window:WebviewWindow,app:tauri::AppHandle,url:String)->Result<String> {trusted(&window)?;let resolved=browser::address_or_search(&url)?;browser::open(&app,resolved.as_str(),false,vec![],false).await}
 #[tauri::command] async fn youtube_open(window:WebviewWindow,app:tauri::AppHandle,url:String)->Result<String> {trusted(&window)?;let parsed=browser::public_url(&url)?;if !matches!(parsed.host_str(),Some("youtube.com"|"www.youtube.com"|"m.youtube.com")){return Err("Choose a YouTube address".into());}browser::open(&app,&url,true,vec![],false).await}
 #[tauri::command] fn browser_list(window:WebviewWindow,app:tauri::AppHandle)->Result<Vec<browser::Tab>> {trusted(&window)?;let state=app.state::<AppState>();let stale={let tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;tabs.keys().filter(|label|app.get_webview_window(label).is_none()).cloned().collect::<Vec<_>>()};for label in stale {browser::forget(&state,&label)?;}let result=state.browser.tabs.lock().map_err(|_|"Browser is busy")?.values().cloned().collect();Ok(result)}
 #[tauri::command] fn browser_previous(window:WebviewWindow,state:tauri::State<'_,AppState>)->Result<Vec<store::BrowserSessionTab>> {trusted(&window)?;state.store.browser_session()}
@@ -106,7 +106,7 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     if !label.starts_with("browser-") {return Err("Invalid browser tab".into());}
     let tab=app.get_webview_window(&label).ok_or("This browser tab has closed")?;
     match action.as_str() {
-        "navigate"=>tab.navigate(browser::public_url(url.as_deref().ok_or("Enter an address")?)?),
+        "navigate"=>tab.navigate(browser::address_or_search(url.as_deref().ok_or("Enter an address or search terms")?)?),
         "back"=>tab.eval("history.back()"),"forward"=>tab.eval("history.forward()"),"reload"=>tab.reload(),"focus"=>tab.set_focus(),
         "close"=>{tab.close().map_err(|_|"Could not close tab")?;let state=app.state::<AppState>();browser::forget(&state,&label)?;return Ok(());},
         _=>return Err("Unknown browser action".into())
@@ -134,7 +134,7 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     Ok(())
 }
 #[tauri::command] async fn open_external(window:WebviewWindow,url:String)->Result<()> {
-    trusted(&window)?;let url=browser::public_url(&url)?;
+    trusted(&window)?;let url=browser::address_or_search(&url)?;
     #[cfg(windows)] {std::process::Command::new(r"C:\Windows\System32\rundll32.exe").arg("url.dll,FileProtocolHandler").arg(url.as_str()).spawn().map_err(|_|"Could not open your default browser")?;Ok(())}
     #[cfg(not(windows))] {let _=url;Err("Default-browser fallback is available on Windows".into())}
 }

@@ -46,6 +46,19 @@ pub fn public_url(input:&str)->Result<url::Url> {
     } else if !host.contains('.') || [".localhost",".local",".lan",".internal",".home",".home.arpa",".test",".invalid"].iter().any(|s|host.ends_with(s)) {return Err("Local addresses are blocked in the internet browser".into());}
     Ok(url)
 }
+pub fn address_or_search(input:&str)->Result<url::Url> {
+    let input=input.trim();
+    if input.is_empty() {return Err("Enter an address or search terms".into());}
+    if input.len()>4096 {return Err("Address is too long".into());}
+    let prefix=input.split_once(':').map(|(prefix,_)|prefix.to_ascii_lowercase());
+    let explicit_scheme=input.contains("://") || prefix.as_deref().is_some_and(|p|["http","https","file","javascript","data","tauri","blob","about","ftp","ws","wss","mailto","ssh","chrome","edge","ms-appx","ms-appdata","view-source","devtools"].contains(&p));
+    let search_operator=prefix.as_deref().is_some_and(|p|["site","intitle","allintitle","inurl","allinurl","filetype","before","after"].contains(&p));
+    let host_like=!input.chars().any(char::is_whitespace) && (input.starts_with('[') || prefix.is_some()&&!search_operator || input.contains('.')&&prefix.as_deref().is_none_or(|p|p.contains('.')));
+    if explicit_scheme || host_like {return public_url(input);}
+    let mut url=url::Url::parse("https://duckduckgo.com/").map_err(|_|"Search is unavailable")?;
+    url.query_pairs_mut().append_pair("q",input);
+    Ok(url)
+}
 pub async fn open(app:&tauri::AppHandle,input:&str,isolated:bool,permissions:Vec<String>,downloads:bool)->Result<String> {
     let url=public_url(input)?;
     let state=app.state::<AppState>();
@@ -116,4 +129,13 @@ pub async fn open(app:&tauri::AppHandle,input:&str,isolated:bool,permissions:Vec
     let _=state.store.save(None,"browser".into(),tab.title,serde_json::json!({"url":tab.url}).to_string());
     Ok(label)
 }
-#[cfg(test)] mod tests {use super::*; #[test] fn internet_navigation_rejects_local_and_native_schemes(){for u in ["http://example.com","file:///C:/secret","javascript:alert(1)","https://127.0.0.1","https://[::1]","https://10.0.0.1","https://192.168.1.2","https://user:password@example.com","https://tauri.localhost","https://printer.local","https://example.com:47801"] {assert!(public_url(u).is_err(),"{u}");} assert!(public_url("https://www.youtube.com").is_ok());}}
+#[cfg(test)] mod tests {use super::*; #[test] fn internet_navigation_rejects_local_and_native_schemes(){for u in ["http://example.com","file:///C:/secret","javascript:alert(1)","https://127.0.0.1","https://[::1]","https://10.0.0.1","https://192.168.1.2","https://user:password@example.com","https://tauri.localhost","https://printer.local","https://example.com:47801"] {assert!(public_url(u).is_err(),"{u}");} assert!(public_url("https://www.youtube.com").is_ok());}
+    #[test] fn address_bar_searches_terms_but_rejects_explicit_unsafe_addresses(){
+        let search=address_or_search("family photos & music").unwrap();
+        assert_eq!(search.host_str(),Some("duckduckgo.com"));
+        assert_eq!(search.query_pairs().find(|(key,_)|key=="q").unwrap().1,"family photos & music");
+        assert_eq!(address_or_search("example.com").unwrap().host_str(),Some("example.com"));
+        for input in ["site:example.com cats","site:example.com","intitle:2024","rust: ownership"] {assert_eq!(address_or_search(input).unwrap().host_str(),Some("duckduckgo.com"),"{input}");}
+        for input in ["http://example.com","file:///C:/secret","javascript:alert(1)","https://127.0.0.1","https://printer.local","127.0.0.1:47801","localhost:3000","localhost:3000/admin","localhost:65536","printer:8080","printer:abc","[::1]"] {assert!(address_or_search(input).is_err(),"{input}");}
+    }
+}

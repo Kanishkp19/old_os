@@ -1,6 +1,8 @@
 export const routes = ['Home','Photos','Files','Transfers','Storage','Remote','Browser','YouTube','Music','Notes','Calculator','Devices','Hardware','Settings'];
 export const icons = ['⌂','▧','▤','⇄','◴','⌘','◎','▶','♫','✎','+','▣','⚙','☷'];
 const hi = {
+  'Address or search':'पता या खोज',
+  'Searches open DuckDuckGo in a separate website window.':'खोज DuckDuckGo की अलग वेबसाइट विंडो में खुलती है।',
   'Restore previous tabs':'पिछले टैब फिर खोलें',
   'Private apps ready':'निजी ऐप तैयार हैं',
   'Private app trash':'निजी ऐप का कूड़ेदान','note':'नोट','playlist':'प्लेलिस्ट','bookmark':'बुकमार्क',

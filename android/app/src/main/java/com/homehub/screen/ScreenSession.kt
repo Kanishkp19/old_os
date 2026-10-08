@@ -51,13 +51,12 @@ class ScreenSession @Inject constructor(@ApplicationContext private val context:
                 val configuration = PeerConnection.RTCConfiguration(emptyList()).apply {
                     sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
                     continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
-                    enableDtlsSrtp = true
                 }
                 val observer = object : PeerConnection.Observer {
                     override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
                     override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
-                        if (state == PeerConnection.IceConnectionState.FAILED) {
-                            error.value = "Unable to connect to your Home screen"; stop()
+                        if (state == PeerConnection.IceConnectionState.FAILED || state == PeerConnection.IceConnectionState.DISCONNECTED || state == PeerConnection.IceConnectionState.CLOSED) {
+                            error.value = context.getString(com.homehub.R.string.screen_failed); stop()
                         }
                     }
                     override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
@@ -95,15 +94,18 @@ class ScreenSession @Inject constructor(@ApplicationContext private val context:
                 val offer = withTimeout(20_000) { createOffer(pc) }
                 withTimeout(20_000) { setDescription(pc, offer, true); gathered.await() }
                 // Only LAN host ICE candidates are present (no ICE servers).
-                val fullOffer = requireNotNull(pc.localDescription).description
+                val fullOffer = LanSdp.hostOnly(requireNotNull(pc.localDescription).description)
                 val answer = hub.post("/v1/screen/$kind", JSONObject().put("offer_sdp", fullOffer).put("preset", "balanced"))
                 sessionId = answer.getString("session_id")
                 withTimeout(20_000) { setDescription(pc, SessionDescription(SessionDescription.Type.ANSWER,
-                    answer.getString("answer_sdp")), false) }
+                    LanSdp.hostOnly(answer.getString("answer_sdp"))), false) }
                 status.value = if (kind == "view") "viewing" else "casting"
-                awaitCancellation()
+                while (true) {
+                    delay(15_000)
+                    hub.patch("/v1/screen/${requireNotNull(sessionId)}", JSONObject())
+                }
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { error.value = e.message ?: "Screen sharing is unavailable" }
+            catch (e: Exception) { error.value = com.homehub.ui.UserErrors.message(context, e) }
             finally {
                 val id = sessionId; sessionId = null
                 remoteVideo.value = null

@@ -101,7 +101,7 @@ impl Config {
         let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
         use std::io::Write;
         file.write_all(&text)?;file.sync_all()?;drop(file);
-        std::fs::rename(temp,path)?;
+        atomic_replace(&temp,path)?;
         Ok(())
     }
 
@@ -114,6 +114,19 @@ impl Config {
     }
     pub fn load_or_default(path: &std::path::Path) -> Result<Self> { Self::load_or_create(path,Self::default()) }
 
+}
+
+pub fn atomic_replace(source:&std::path::Path,destination:&std::path::Path)->Result<()> {
+    #[cfg(not(windows))] {std::fs::rename(source,destination)?;}
+    #[cfg(windows)] {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name="kernel32")] extern "system" {fn MoveFileExW(from:*const u16,to:*const u16,flags:u32)->i32;}
+        let a:Vec<u16>=source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let b:Vec<u16>=destination.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe{MoveFileExW(a.as_ptr(),b.as_ptr(),1|8)}==0 {return Err(std::io::Error::last_os_error().into());}
+    }
+    if let Some(parent)=destination.parent(){if let Ok(dir)=std::fs::File::open(parent){let _=dir.sync_all();}}
+    Ok(())
 }
 
 #[cfg(windows)]

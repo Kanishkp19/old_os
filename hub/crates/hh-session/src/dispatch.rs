@@ -10,9 +10,11 @@ use crate::{err, ok_data};
 
 pub fn dispatch(req: &HelperRequest) -> HelperResponse {
     match req {
+        HelperRequest::ReleaseInput => wrap(platform::release_input()),
         HelperRequest::Ping => ok_data(serde_json::json!({
             "helper": env!("CARGO_PKG_VERSION"),
             "platform": std::env::consts::OS,
+            "screen": crate::screen::capabilities(),
         })),
         HelperRequest::MouseMove { dx, dy } => wrap(platform::mouse_move(*dx, *dy)),
         HelperRequest::Click { button, count } => wrap(platform::click(button, *count)),
@@ -35,29 +37,24 @@ pub fn dispatch(req: &HelperRequest) -> HelperResponse {
             Ok(v) => ok_data(v),
             Err(e) => err(e),
         },
-        #[cfg(feature = "screen")]
-        HelperRequest::ScreenOffer { sdp, preset, kind } => {
-            match crate::screen::handle_offer(sdp, preset, kind) {
+        HelperRequest::ScreenOffer { sdp, preset, kind, session_id } => {
+            match crate::screen::handle_offer(session_id, sdp, preset, kind) {
                 Ok(v) => ok_data(v),
                 Err(e) => err(e),
             }
         }
-        #[cfg(feature = "screen")]
-        HelperRequest::AddIce { candidate } => {
-            match crate::screen::add_ice(candidate) {
+        HelperRequest::AddIce { candidate, session_id } => {
+            match crate::screen::add_ice(session_id, candidate) {
                 Ok(()) => ok_data(serde_json::json!({})),
                 Err(e) => err(e),
             }
         }
-        #[cfg(feature = "screen")]
         HelperRequest::ScreenStop => match crate::screen::stop() {
             Ok(()) => ok_data(serde_json::json!({})),
             Err(e) => err(e),
         },
-        #[cfg(not(feature = "screen"))]
-        HelperRequest::ScreenOffer { .. }
-        | HelperRequest::AddIce { .. }
-        | HelperRequest::ScreenStop => err("screen host not compiled into this helper build"),
+        HelperRequest::ScreenStopSession { session_id } => wrap(crate::screen::stop_session(session_id)),
+        HelperRequest::ScreenCapabilities => ok_data(crate::screen::capabilities()),
     }
 }
 
@@ -74,6 +71,8 @@ pub mod platform {
     #[cfg(windows)]
     pub use crate::platform_win::*;
 
+    #[cfg(not(windows))]
+    pub fn release_input() -> Result<(), String> { Ok(()) }
     #[cfg(not(windows))]
     pub fn mouse_move(_dx: i32, _dy: i32) -> Result<(), String> {
         unsupported()

@@ -41,6 +41,8 @@ pub struct HubInfo {
     pub features: FeaturesWire,
     pub network: NetworkWire,
     pub time: i64,
+    #[serde(default)]
+    pub backup_interval_minutes: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

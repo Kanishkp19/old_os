@@ -15,7 +15,7 @@ import androidx.core.app.ServiceCompat
 /**
  * Foreground service for interactive photo-backup runs
  * (FR-2.1: bulk first backup can take hours; a WorkManager foreground alone
- * is capped, so long user-initiated backups pin a dataSync service).
+ * is capped; the persistent WorkManager queue resumes when Android permits).
  *
  * The actual upload work still runs in [UploadWorker]; this service only
  * keeps the process alive and shows progress.
@@ -37,6 +37,8 @@ class BackupForegroundService : Service() {
             context.startService(Intent(context, BackupForegroundService::class.java).setAction(ACTION_STOP))
     }
 
+    override fun onTimeout(startId: Int, fgsType: Int) { stopSelf() }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -53,12 +55,12 @@ class BackupForegroundService : Service() {
     private fun startForegroundWithNotification() {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         mgr.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Photo backup", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, getString(com.homehub.R.string.nav_backup), NotificationManager.IMPORTANCE_LOW)
         )
         val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("Home Hub")
-            .setContentText("Backing up your photos to Home…")
+            .setContentTitle(getString(com.homehub.R.string.app_name))
+            .setContentText(getString(com.homehub.R.string.home_sending))
             .setOngoing(true)
             .build()
         if (Build.VERSION.SDK_INT >= 29) {

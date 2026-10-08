@@ -1,5 +1,7 @@
 # Home Hub — UI/UX Design
 
+Windows product scope includes the Home Hub launcher plus Browser, YouTube, Music, Notes and Calculator. Settings exposes screen permission, backup and protection intervals, optional scheduled wake, and a signed update channel. The device must show the actual helper, disk and wake capabilities: unsupported hardware is labelled unavailable or unknown. Private app data stays in the Windows owner's profile; imported original files remain in place unless the owner explicitly selects a verified copy or Keep in place. Phone cleanup shows a fresh, pinned Hub copy for every eligible item before Android's system confirmation.
+
 **Surfaces:** Android app · macOS app · Windows tray + local dashboard · (iOS Phase 2) · (Home Hub OS shell Phase 4)
 **Mental model:** *"This is my Home Computer."* Never "server", "NAS", "SMB", "IP address".
 

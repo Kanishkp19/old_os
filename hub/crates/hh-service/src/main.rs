@@ -13,6 +13,8 @@
 //! - thumbnail pipeline, integrity scrub, SMART poll (6 h), transfer GC,
 //!   trash retention GC, free-space alerts.
 
+mod logging;
+mod local_security;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -29,6 +31,10 @@ struct Args {
     /// Run in the foreground as a console app (development mode).
     #[arg(long)]
     console: bool,
+    #[arg(long)]
+    backup_database:Option<std::path::PathBuf>,
+    #[arg(long)]
+    wake_only:bool,
     /// Override data dir (default %ProgramData%\HomeHub).
     #[arg(long)]
     data_dir: Option<String>,
@@ -43,8 +49,10 @@ fn main() -> Result<()> {
     // pinned explicitly before any TLS config is built.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args = Args::parse();
+    if args.wake_only{return Ok(());}
     let mut defaults = Config::default();
     if let Some(d)=&args.data_dir { defaults.data_dir=d.into();defaults.log_dir=defaults.data_dir.join("logs"); }
+    if let Some(destination)=&args.backup_database {return Db::snapshot(&defaults.db_path(),destination);}
     let config_path=defaults.data_dir.join("config.json");
     let mut cfg=Config::load_or_create(&config_path,defaults)?;
     if let Some(d)=args.data_dir {cfg.data_dir=d.into();}
@@ -63,20 +71,17 @@ fn main() -> Result<()> {
 }
 
 fn init_logging(cfg: &Config) {
-    // Size-rotated logs (TRD §13: 10 × 5 MB approximated by daily rotation;
-    // tracing-appender rotation keeps volume bounded).
-    let file_appender = tracing_appender::rolling::daily(&cfg.log_dir, "hub.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let writer=logging::BoundedLog::new(&cfg.log_dir);
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,hh_=debug".into()),
         )
-        .with_writer(non_blocking)
+        .with_writer(move||writer.clone())
         .with_ansi(false)
         .init();
     // NOTE: never log tokens, keys, or file contents (AGENTS.md §2.7).
-    std::mem::forget(_guard); // keep appender alive for process lifetime
+
 }
 
 /// Console mode: Ctrl+C is the stop signal.
@@ -96,6 +101,8 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
     tracing::info!(version = hh_core::HUB_VERSION, "home hub starting");
 
     let db = Db::open(&cfg.db_path())?;
+    let cfg=hh_storage::StorageService::new(db.clone(),cfg).recover_library_moves()?;
+    cfg.ensure_dirs()?;
     let (hub_id, hub_name) = db.hub_identity()?;
     if hub_name == "Home Hub" {
         db.set_hub_name(&cfg.hub_name)?;
@@ -174,7 +181,7 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
         use std::io::Write;
         let mut options=std::fs::OpenOptions::new();options.write(true).create(true).truncate(true);
         #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
-        let mut file=options.open(&token_path)?;file.write_all(dash_token.as_bytes())?;file.sync_all()?;
+        let mut file=options.open(&token_path)?;local_security::protect_admin_token(&cfg.data_dir,&token_path)?;file.write_all(dash_token.as_bytes())?;file.sync_all()?;
         #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&token_path,std::fs::Permissions::from_mode(0o600))?;}
     }
     let dashboard = hh_net::serve::serve_dashboard(state.clone(), dash_token);
@@ -193,17 +200,22 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
 }
 
 fn spawn_workers(state: AppState) {
+    {let s=state.clone();tokio::spawn(async move {loop {tokio::time::sleep(std::time::Duration::from_secs(1)).await;let service=s.stream.clone();let db=s.db.clone();let expired=tokio::task::spawn_blocking(move||{
+        for session in service.active_sessions(){let allowed=db.device_by_id(&session.device_id).ok().flatten().is_some_and(|d|d.status=="active"&&d.has_scope("remote"))&&db.get_setting("sharing.paused").ok().flatten().as_deref()!=Some("true");if !allowed{let _=service.stop_session(&session.id);}}
+        let mut closed=service.reconcile_closed_sessions()?;closed.extend(service.expire_idle_sessions(45_000)?);Ok::<_,hh_core::Error>(closed)
+    }).await;if let Ok(Ok(ids))=expired {if let Ok(mut owners)=s.screen_owners.lock(){for id in ids {owners.remove(&id);}}}}});}
+
     {
         let s=state.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                let interval=s.db.get_setting("second_copy.interval_hours").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(24).clamp(1,720)*3600*1000;
+                let interval=s.db.get_setting("second_copy.interval_minutes").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(1440).clamp(1,43200)*60*1000;
                 let configured=s.db.get_setting("second_copy.root").ok().flatten().is_some_and(|v|!v.is_empty()) || s.cfg.second_copy_root.is_some();
                 let due=s.storage.last_second_copy_age_ms().ok().flatten().map(|age|age>=interval).unwrap_or(true);
                 if configured && due && s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false) {
                     let storage=s.storage.clone();
-                    match tokio::task::spawn_blocking(move||storage.run_second_copy()).await {
+                    match tokio::task::spawn_blocking(move||storage.start_maintenance("second_copy")).await {
                         Ok(Ok(_))=>{},Ok(Err(error))=>tracing::warn!(%error,"scheduled second copy failed"),Err(error)=>tracing::warn!(%error,"second copy worker failed"),
                     }
                 }
@@ -227,9 +239,12 @@ fn spawn_workers(state: AppState) {
         let s = state.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                let storage = s.storage.clone();
-                let _ = tokio::task::spawn_blocking(move || storage.scrub_once(50)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                let hours=s.db.get_setting("scrub.interval_hours").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(24).clamp(1,720);
+                let now=hh_core::time::now_ms();let last=s.db.get_setting("scrub.last_scheduled").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(0);
+                if now-last>=hours*3600*1000&&s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false){
+                    let storage=s.storage.clone();if matches!(tokio::task::spawn_blocking(move||storage.start_maintenance("scrub")).await,Ok(Ok(_))){let _=s.db.set_setting("scrub.last_scheduled",&now.to_string());}
+                }
             }
         });
     }

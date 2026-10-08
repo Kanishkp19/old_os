@@ -3,6 +3,8 @@
 **Engine:** SQLite 3.40+ (WAL mode) · **Location:** `%ProgramData%\HomeHub\hub.db`
 **Conventions:** IDs are ULID (TEXT, sortable). Timestamps are UTC unix epoch milliseconds (INTEGER). Hashes are lowercase BLAKE3 hex. Booleans are INTEGER 0/1. All FKs enforced (`PRAGMA foreign_keys=ON`).
 
+Windows product additions use forward-only migrations `0007`–`0011`: transfer finalization journals and backup-source links; durable cleanup leases, jobs and per-file second-copy records; staged relay deliveries and library-move switching; retriable certificate renewal; and unique device/source cleanup review IDs. `cleanup_leases.client_review_id` is nullable for older clients. Private Notes, browser data and playlists live in the signed-in Windows user's separate application database, never in this Hub database. Before migrating an existing database, the service makes a consistent SQLite `VACUUM INTO` snapshot and retains three recent migration backups.
+
 ```sql
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;          -- data integrity over speed

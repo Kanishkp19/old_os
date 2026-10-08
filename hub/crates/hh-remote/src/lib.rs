@@ -85,6 +85,7 @@ impl RemoteService {
     pub fn handle_input(&self, device_id: &str, raw: &str) -> Result<()> {
         self.check_enabled()?;
         self.rate_check()?;
+        if raw.len() > 8192 { return Err(Error::TooLarge("remote input message".into())); }
         let msg: InputMsg = serde_json::from_str(raw)
             .map_err(|e| Error::BadRequest(format!("bad input message: {e}")))?;
         match msg {
@@ -99,7 +100,7 @@ impl RemoteService {
                 self.input.click(btn, n.unwrap_or(1).min(2))?;
             }
             InputMsg::Scroll { dy } => self.input.scroll(dy.clamp(-40, 40))?,
-            InputMsg::Key { k, down } => self.input.key(&k, down)?,
+            InputMsg::Key { k, down } => { if k.len() > 32 { return Err(Error::BadRequest("invalid key".into())); } self.input.key(&k, down)?; }
             InputMsg::Text { s } => {
                 if s.chars().count() > 1000 {
                     return Err(Error::TooLarge("text input too long".into()));
@@ -189,6 +190,8 @@ pub mod helper_protocol {
         Media { key: String },
         #[serde(rename = "power")]
         Power { action: String },
+        #[serde(rename = "release_input")]
+        ReleaseInput,
         #[serde(rename = "ping")]
         Ping,
         /// Deep hardware facts only the user session can see (WMI):
@@ -205,11 +208,15 @@ pub mod helper_protocol {
         /// host; the answer + gathered host candidates come back in `data`.
         /// `kind` is "view" (laptop→phone send) or "cast" (phone→laptop recv).
         #[serde(rename = "screen_offer")]
-        ScreenOffer { sdp: String, preset: String, kind: String },
+        ScreenOffer { sdp: String, preset: String, kind: String, #[serde(default)] session_id: String },
         #[serde(rename = "add_ice")]
-        AddIce { candidate: String },
+        AddIce { candidate: String, #[serde(default)] session_id: String },
         #[serde(rename = "screen_stop")]
         ScreenStop,
+        #[serde(rename = "screen_stop_session")]
+        ScreenStopSession { session_id: String },
+        #[serde(rename = "screen_capabilities")]
+        ScreenCapabilities,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,3 +229,6 @@ pub mod helper_protocol {
         pub data: Option<serde_json::Value>,
     }
 }
+
+#[cfg(windows)]
+pub mod windows_security;

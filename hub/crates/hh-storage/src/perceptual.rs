@@ -43,10 +43,11 @@ impl StorageService {
                      WHERE m.phash IS NOT NULL AND f.deleted_at IS NULL",
                 )
                 .map_err(db_e)?;
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .map_err(db_e)?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(db_e)?
+                .map_err(db_e)?;
+            rows
         };
 
         // Bucket by top 16 bits; compare pairs within each bucket only.

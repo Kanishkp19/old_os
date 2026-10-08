@@ -42,12 +42,16 @@ pub fn verify_manifest(raw: &str, pubkey_hex: &str) -> Result<(String, String, S
     let sha256 = v["sha256"].as_str().ok_or_else(|| Error::BadRequest("manifest: no sha256".into()))?;
     let sig_hex = v["sig"].as_str().ok_or_else(|| Error::BadRequest("manifest: no sig".into()))?;
 
+    validate_https(url)?;
+    if sha256.len()!=64||!sha256.bytes().all(|b|b.is_ascii_hexdigit()){return Err(Error::BadRequest("invalid installer SHA256".into()));}
+    if version.is_empty()||version.len()>64||!version.bytes().all(|b|b.is_ascii_digit()||b==b'.'){return Err(Error::BadRequest("invalid release version".into()));}
     let key_hex = pubkey_hex.trim();
     if key_hex.len() != 64 {
         return Err(Error::BadRequest("update pubkey must be 32 bytes hex".into()));
     }
     let key_bytes = hex_decode(key_hex).ok_or_else(|| Error::BadRequest("update pubkey not hex".into()))?;
-    let vk = VerifyingKey::from_bytes(&key_bytes)
+    let key_array:[u8;32]=key_bytes.try_into().map_err(|_|Error::BadRequest("update pubkey length".into()))?;
+    let vk = VerifyingKey::from_bytes(&key_array)
         .map_err(|e| Error::BadRequest(format!("update pubkey invalid: {e}")))?;
     let sig_bytes = hex_decode(sig_hex).ok_or_else(|| Error::BadRequest("manifest sig not hex".into()))?;
     let sig_arr: [u8; 64] = sig_bytes
@@ -71,14 +75,12 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 /// Fetch + verify the manifest from the configured URL. Blocking network IO —
 /// call from a spawn_blocking context.
 pub fn fetch_and_verify(manifest_url: &str, pubkey_hex: &str) -> Result<(String, String, String)> {
-    let resp = ureq::get(manifest_url)
-        .timeout(std::time::Duration::from_secs(10))
-        .call()
-        .map_err(|e| Error::Internal(format!("manifest fetch: {e}")))?;
-    let mut resp = resp;
-    let body = resp
-        .into_string()
-        .map_err(|e| Error::Internal(format!("manifest read: {e}")))?;
+    use std::io::Read;
+    validate_https(manifest_url)?;
+    let agent=ureq::AgentBuilder::new().redirects(0).timeout(std::time::Duration::from_secs(10)).build();
+    let resp=agent.get(manifest_url).call().map_err(|e|Error::Internal(format!("manifest fetch: {e}")))?;
+    let mut body=String::new();resp.into_reader().take(65537).read_to_string(&mut body)?;
+    if body.len()>65536{return Err(Error::TooLarge("update manifest".into()));}
     verify_manifest(&body, pubkey_hex)
 }
 
@@ -111,6 +113,7 @@ pub fn check_from_settings(db: &Db, current_version: &str) -> UpdateCheck {
         sha256: None,
         reason: None,
     };
+    if db.get_setting("update.enabled").ok().flatten().as_deref()!=Some("true"){return UpdateCheck{reason:Some("updates_disabled".into()),..base};}
     let url = match db.get_setting("update.manifest_url") {
         Ok(Some(u)) if !u.is_empty() => u,
         _ => return UpdateCheck { reason: Some("channel_not_configured".into()), ..base },
@@ -152,7 +155,7 @@ mod tests {
         use ed25519_dalek::{Signer, SigningKey};
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pk = hex_encode(&sk.verifying_key().to_bytes());
-        let (version, url, sha) = ("0.2.0", "https://example.com/a.exe", "deadbeef");
+        let (version, url, sha) = ("0.2.0", "https://example.com/a.exe", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let sig = hex_encode(&sk.sign(&signing_message(version, url, sha)).to_bytes());
         let manifest = serde_json::json!({ "version": version, "url": url, "sha256": sha, "sig": sig });
         let out = verify_manifest(&manifest.to_string(), &pk).expect("verify");
@@ -166,4 +169,36 @@ mod tests {
     fn hex_encode(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
+}
+
+/// No redirects or local endpoints in the optional release channel.
+pub fn validate_https(raw:&str)->Result<()> {
+    let u=url::Url::parse(raw).map_err(|_|Error::BadRequest("invalid update URL".into()))?;
+    if u.scheme()!="https"||!u.username().is_empty()||u.password().is_some()||u.fragment().is_some(){return Err(Error::BadRequest("update URL requires HTTPS without credentials".into()));}
+    let host=u.host_str().ok_or_else(||Error::BadRequest("update URL requires host".into()))?;
+    if host=="localhost"||host.ends_with(".localhost")||host.ends_with(".local"){return Err(Error::BadRequest("update URL requires public host".into()));}
+    if let Ok(ip)=host.trim_matches(['[',']']).parse::<std::net::IpAddr>() {if !public_ip(ip){return Err(Error::BadRequest("update URL requires public address".into()));}}
+    Ok(())
+}
+fn public_ip(ip:std::net::IpAddr)->bool {match ip{std::net::IpAddr::V4(v)=>!v.is_private()&&!v.is_loopback()&&!v.is_link_local()&&!v.is_unspecified()&&!v.is_multicast()&&v.octets()[0]!=0&&v.octets()[0]<224,std::net::IpAddr::V6(v)=>!v.is_loopback()&&!v.is_unspecified()&&!v.is_multicast()&&(v.segments()[0]&0xfe00)!=0xfc00&&(v.segments()[0]&0xffc0)!=0xfe80&&v.to_ipv4_mapped().map(|v|public_ip(v.into())).unwrap_or(true)}}
+#[derive(Serialize)]pub struct StagedUpdate{pub path:String,pub version:String,pub sha256:String}
+/// Download a freshly signed, newer installer to the protected service folder.
+pub fn stage(db:&Db,current:&str,data:&std::path::Path)->Result<StagedUpdate>{
+    use std::io::{Read,Write};use sha2::{Digest,Sha256};
+    if db.get_setting("update.enabled")?.as_deref()!=Some("true"){return Err(Error::BadRequest("updates are disabled".into()));}
+    let url=db.get_setting("update.manifest_url")?.ok_or_else(||Error::BadRequest("update channel missing".into()))?;
+    let key=db.get_setting("update.pubkey_hex")?.ok_or_else(||Error::BadRequest("update key missing".into()))?;
+    let(version,url,hash)=fetch_and_verify(&url,&key)?;
+    if !is_newer(&version,current){return Err(Error::Conflict("no newer release".into()));}
+    let folder=data.join("updates");std::fs::create_dir_all(&folder)?;
+    let path=folder.join(format!("HomeHubSetup-{}.exe",ulid::Ulid::new()));
+    let result=(||->Result<()>{
+        let mut file=std::fs::OpenOptions::new().create_new(true).write(true).open(&path)?;
+        let agent=ureq::AgentBuilder::new().redirects(0).timeout(std::time::Duration::from_secs(30)).build();
+        let response=agent.get(&url).call().map_err(|e|Error::Internal(format!("installer fetch: {e}")))?;
+        let mut reader=response.into_reader();let mut buf=[0u8;65536];let mut total=0u64;let mut sha=Sha256::new();
+        loop {let n=reader.read(&mut buf)?;if n==0{break;}total+=n as u64;if total>1024*1024*1024{return Err(Error::TooLarge("installer maximum 1 GiB".into()));}file.write_all(&buf[..n])?;sha.update(&buf[..n]);}
+        let actual=sha.finalize().iter().map(|b|format!("{b:02x}")).collect::<String>();if !actual.eq_ignore_ascii_case(&hash){return Err(Error::RootHashMismatch);}file.sync_all()?;Ok(())
+    })();if let Err(e)=result{let _=std::fs::remove_file(&path);return Err(e);}
+    db.audit(None,"update_staged",Some(&version),None)?;Ok(StagedUpdate{path:path.to_string_lossy().into_owned(),version,sha256:hash})
 }

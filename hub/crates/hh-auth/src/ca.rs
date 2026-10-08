@@ -144,6 +144,8 @@ impl HubIdentity {
         Ok(hub_fingerprint(&self.ca_cert_der))
     }
 
+    pub fn full_fingerprint(&self)->String {Sha256::digest(&self.ca_cert_der).iter().map(|b|format!("{b:02x}")).collect()}
+
     pub fn server_key_pem(&self) -> &str {
         &self.server_key_pem
     }

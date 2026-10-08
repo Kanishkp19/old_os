@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 hh-core = { path = "../hh-core" }
 hh-hw = { path = "../hh-hw" }
+hh-net = { path = "../hh-net" }
 clap.workspace = true
 blake3.workspace = true
 reqwest.workspace = true

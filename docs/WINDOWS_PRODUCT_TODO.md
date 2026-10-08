@@ -6,7 +6,7 @@ Scope: Windows product first. No Linux images, bootloaders, partitioning, OS ins
 
 Branch: `implementation/windows-home-hub`. Remote: `Kanishkp19/old_os`.
 
-Sequence: implement all phases → comprehensive tests → fixes → final regression → physical validation → household pilot. Tests/builds are deferred until Phase 9; baseline inventory and source inspection are not acceptance tests.
+Sequence: implement all phases → comprehensive tests → fixes → final regression → physical validation → household pilot. Local build and unit checks have begun after the implementation pass; they do not replace the acceptance matrix.
 
 ## Implementation
 
@@ -48,23 +48,23 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 
 ### Phase 5 — Protection and hardware
 
-- [ ] Verified per-file second copies and reconnection
-- [ ] Scrub atomic repairs, low-space/health warnings
-- [ ] Hardware/network/wake capability reporting
+- [~] Verified per-file second copies and reconnection
+- [~] Scrub atomic repairs, low-space/health warnings
+- [~] Hardware/network/wake capability reporting
 - [ ] Completed phase commit and push recorded
 
 ### Phase 6 — Remote and screens
 
-- [ ] Permission-scoped remote input and authenticated bounded helper IPC
-- [ ] Real Windows capture/rendering and explicit video-only direction
-- [ ] Reliable session stop/revoke/disconnect and quality control
+- [~] Permission-scoped remote input and authenticated bounded helper IPC
+- [~] Real Windows capture/rendering and explicit video-only direction
+- [~] Reliable session stop/revoke/disconnect and quality control
 - [ ] Completed phase commit and push recorded
 
 ### Phase 7 — Companions
 
-- [ ] Android workflows and recovery states
-- [ ] Reproducible Apple projects with secure identities and persistent queues
-- [ ] macOS browsing/relay/viewer and iOS share/photo backup
+- [~] Android workflows and recovery states
+- [~] Reproducible Apple projects with secure identities and persistent queues
+- [~] macOS browsing/relay/viewer and iOS share/photo backup
 - [ ] Completed phase commit and push recorded
 
 ### Phase 8 — Everyday apps
@@ -76,16 +76,16 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 
 ### Phase 9 — Installation and operations
 
-- [ ] Canonical Inno installer and all runtime components
-- [ ] Service/login/firewall/ACL/data-preserving upgrade and uninstall
-- [ ] Opt-in signed updates, recovery, bounded logs and scrubbed diagnostics
+- [~] Canonical Inno installer and all runtime components
+- [~] Service/login/firewall/ACL/data-preserving upgrade and uninstall
+- [~] Opt-in signed updates, recovery, bounded logs and scrubbed diagnostics
 - [ ] Completed phase commit and push recorded
 
-## Validation — all pending
+## Validation — local checks passed; acceptance pending
 
 | Group | Status | Evidence required |
 |---|---|---|
-| Build/contracts | Pending | Rust/frontend/Android/Apple builds, migrations, dependency audit, Windows packaging |
+| Build/contracts | Partial | Rust workspace unit/doc tests, macOS Rust/Tauri checks, frontend and Android unit tests pass. Windows build, Apple build, migrations on upgrade, audits and packaging pending. |
 | Transfers | Pending | Empty through 20 GB, concurrency, crash/disk-full/lost responses, source changes, relay |
 | Backup/deletion | Pending | 1,000 mixed items, permissions/background limits, cancellation/hash changes/cleanup races |
 | Storage | Pending | Import preserves originals, trash, repair failures, missing drives and interrupted move |
@@ -98,10 +98,10 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 ## Delivery records
 
 - Baseline source commit: `78610dd`. Runtime snapshot: sibling `home-hub-baseline-20261008`, kept outside version control.
-- Source edits are not yet built or deployed. Original demonstrated application remains running.
+- Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.
 
 ## Checkpoint 2026-10-08
 
-Three implementation workers were interrupted by the account usage limit. Their edits are preserved as an explicitly untested checkpoint, not completed phases. No acceptance row is passed. Frontend App.svelte, native screen/helper integration, Apple companions, installer/operations, remaining localization and full testing remain incomplete. Resume from `IMPLEMENTATION_STATE.md`.
+The implementation pass now contains the Svelte desktop app, Android and Apple companion source, Windows helper/capture work, storage and transfer contracts, and an Inno packaging path. Local Rust, frontend, Tauri and Android checks pass as recorded in `WINDOWS_VALIDATION.md`. None of the phase acceptance criteria or release gates are complete: Windows installation and screen hardware, full Xcode builds, exhaustive fault tests, signing, soak, and the household pilot remain outstanding. The original working service and data were not modified.

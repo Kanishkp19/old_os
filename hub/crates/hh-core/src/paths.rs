@@ -189,9 +189,11 @@ mod tests {
 
     #[test]
     fn jail_blocks_escape() {
-        let root = Path::new("/lib");
-        assert!(jail_join(root, "Photos/2026/10/x.jpg").is_ok());
-        assert!(jail_join(root, "/etc/passwd").is_err());
+        let root = std::env::temp_dir().join(format!("hh-jail-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(jail_join(&root, "Photos/2026/10/x.jpg").is_ok());
+        assert!(jail_join(&root, "/etc/passwd").is_err());
+        std::fs::remove_dir(&root).unwrap();
     }
 
     #[test]

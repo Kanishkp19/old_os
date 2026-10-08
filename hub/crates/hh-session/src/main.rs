@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! hh-session: Home Hub per-user session helper (TRD §9).
 //!
 //! Windows services run in Session 0 and cannot inject input, capture the
@@ -11,9 +12,8 @@
 //! - `hh-session` on unix — builds for protocol tests; pipe mode needs
 //!   Windows, use a unix build only via the test helpers.
 //!
-//! Verification status: protocol, dispatch and framing are tested
-//! cross-platform (`cargo test -p hh-session`); SendInput/power/WMI/hotspot
-//! paths compile on Windows CI and need a real Windows session to exercise.
+//! Windows paths require physical Windows validation; test sources are
+//! authored separately from validation evidence.
 
 use hh_remote::helper_protocol::{HelperRequest, HelperResponse};
 
@@ -24,18 +24,26 @@ pub mod server;
 #[cfg(windows)]
 pub mod platform_win;
 
-#[cfg(feature = "screen")]
+#[cfg(all(windows, feature = "screen"))]
+mod capture;
+#[cfg(all(windows, feature = "screen"))]
+mod mf_encoder;
+pub mod h264;
+
+#[cfg(all(feature = "screen", windows))]
 pub mod screen;
-#[cfg(not(feature = "screen"))]
+#[cfg(not(all(feature = "screen", windows)))]
 pub mod screen {
     //! Not compiled with the `screen` feature: same protocol surface, calls
     //! fail honestly instead of silently doing nothing.
-    pub fn handle_offer(_sdp: &str, _preset: &str, _kind: &str) -> Result<serde_json::Value, String> {
+    pub fn handle_offer(_id: &str, _sdp: &str, _preset: &str, _kind: &str) -> Result<serde_json::Value, String> {
         Err("screen host not compiled into this helper build".into())
     }
-    pub fn add_ice(_candidate: &str) -> Result<(), String> {
+    pub fn add_ice(_id: &str, _candidate: &str) -> Result<(), String> {
         Err("screen host not compiled into this helper build".into())
     }
+    pub fn capabilities() -> serde_json::Value { serde_json::json!({"available":false,"encoders":[],"hw_encode":false,"audio":false}) }
+    pub fn stop_session(_id: &str) -> Result<(), String> { Ok(()) }
     pub fn stop() -> Result<(), String> {
         Ok(())
     }
@@ -138,10 +146,8 @@ mod tests {
             sdp: "v=0".into(),
             preset: "balanced".into(),
             kind: "view".into(),
+            session_id: "test".into(),
         });
-        #[cfg(feature = "screen")]
-        assert!(r.ok, "screen feature build must accept offers");
-        #[cfg(not(feature = "screen"))]
-        assert!(!r.ok);
+        assert!(!r.ok, "invalid SDP must never start a screen session");
     }
 }

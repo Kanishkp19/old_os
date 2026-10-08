@@ -1,10 +1,17 @@
 //! Windows platform implementations for the session helper (TRD §9).
 //!
 //! Everything here is exercised only on a real Windows user session; it is
-//! compile-checked on Windows CI. API notes are kept next to each call so a
+//! pending Windows validation. API notes are kept next to each call so a
 //! version bump of the `windows` crate is a mechanical fix.
 
 // ---- input injection (FR-7.1/7.2) ----
+static HELD_KEYS: once_cell::sync::Lazy<std::sync::Mutex<std::collections::BTreeSet<u16>>> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
+pub fn release_input() -> Result<(), String> {
+    let mut keys = HELD_KEYS.lock().map_err(|_| "input state unavailable")?;
+    let mut failed = false;
+    for key in std::mem::take(&mut *keys) { if send_key(key, false).is_err() { keys.insert(key); failed = true; } }
+    if failed { Err("could not release remote keys".into()) } else { Ok(()) }
+}
 
 pub fn mouse_move(dx: i32, dy: i32) -> Result<(), String> {
     send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0)
@@ -26,7 +33,7 @@ pub fn click(button: &str, count: u8) -> Result<(), String> {
 
 pub fn scroll(dy: i32) -> Result<(), String> {
     // Positive wheel delta scrolls up on Windows; clients send positive dy up.
-    send_mouse(MOUSEEVENTF_WHEEL, 0, 0, (dy * 120) as u32)
+    send_mouse(MOUSEEVENTF_WHEEL, 0, 0, (dy.clamp(-40, 40) * 120) as u32)
 }
 
 fn send_mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: u32) -> Result<(), String> {
@@ -79,7 +86,7 @@ fn vk_for_key(key: &str) -> Option<u16> {
 fn char_key(k: &str) -> Option<u16> {
     let mut chars = k.chars();
     let (c, rest) = (chars.next()?, chars.next().is_none());
-    if !rest {
+    if rest {
         let u = c.to_ascii_uppercase();
         if u.is_ascii_alphabetic() {
             return Some(u as u16);
@@ -100,7 +107,10 @@ fn char_key(k: &str) -> Option<u16> {
 
 pub fn key(key: &str, down: bool) -> Result<(), String> {
     let vk = vk_for_key(key).ok_or_else(|| format!("unsupported key {key:?}"))?;
-    send_key(vk, down)
+    let mut held = HELD_KEYS.lock().map_err(|_| "input state unavailable")?;
+    send_key(vk, down)?;
+    if down { held.insert(vk); } else { held.remove(&vk); }
+    Ok(())
 }
 
 fn send_key(vk: u16, down: bool) -> Result<(), String> {
@@ -122,9 +132,8 @@ fn send_key(vk: u16, down: bool) -> Result<(), String> {
 }
 
 pub fn text(s: &str) -> Result<(), String> {
-    for c in s.chars() {
-        let code = u32::from(c);
-        let scan = u16::try_from(code).map_err(|_| "char outside BMP".to_string())?;
+    if s.chars().count() > 1000 { return Err("text input too long".into()); }
+    for scan in s.encode_utf16() {
         for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
             let mut inp = INPUT::default();
             inp.r#type = INPUT_KEYBOARD;
@@ -164,9 +173,10 @@ pub fn media_key(key: &str) -> Result<(), String> {
 pub fn power(action: &str) -> Result<(), String> {
     match action {
         "sleep" => {
+            ensure_shutdown_privilege()?;
             // SAFETY: documented Win32 power call.
-            let ok = unsafe { SetSuspendState(false, false, false) };
-            ok.map_err(|e| format!("SetSuspendState: {e}"))
+            let ok = unsafe { SetSuspendState(BOOLEAN(0), BOOLEAN(0), BOOLEAN(0)) };
+            if ok.0 != 0 { Ok(()) } else { Err("sleep request failed".into()) }
         }
         "restart" | "shutdown" => {
             ensure_shutdown_privilege()?;
@@ -191,7 +201,7 @@ fn ensure_shutdown_privilege() -> Result<(), String> {
             .map_err(|e| format!("OpenProcessToken: {e}"))?;
         let mut luid = LUID::default();
         let name = windows::core::w!("SeShutdownPrivilege");
-        LookupPrivilegeValueW(None, name, &mut luid).map_err(|e| format!("LookupPrivilegeValueW: {e}"))?;
+        if let Err(e) = LookupPrivilegeValueW(None, name, &mut luid) { let _ = CloseHandle(token); return Err(format!("LookupPrivilegeValueW: {e}")); }
         let mut tp = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
             Privileges: [LUID_AND_ATTRIBUTES {
@@ -200,7 +210,9 @@ fn ensure_shutdown_privilege() -> Result<(), String> {
             }],
         };
         let res = AdjustTokenPrivileges(token, false, Some(&mut tp), 0, None, None);
+        let not_assigned = GetLastError() == ERROR_NOT_ALL_ASSIGNED;
         let _ = CloseHandle(token);
+        if not_assigned { return Err("shutdown privilege unavailable".into()); }
         // ERROR_NOT_ALL_ASSIGNED means the privilege was missing — usually
         // because the helper was not started by the installer's user.
         match res {
@@ -282,17 +294,25 @@ fn netsh_wifi_standard() -> Option<String> {
 // ---- hotspot (M3, FR-8.3) — WinRT tethering ----
 
 pub fn hotspot(enable: bool, ssid: Option<&str>, passphrase: Option<&str>) -> Result<serde_json::Value, String> {
-    use windows::Networking::Connectivity::NetworkOperatorTetheringManager;
+    use windows::Networking::{Connectivity::NetworkInformation, NetworkOperators::{NetworkOperatorTetheringManager, TetheringOperationStatus}};
+    use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+    unsafe { RoInitialize(RO_INIT_MULTITHREADED).map_err(|e| format!("WinRT initialization: {e}"))?; }
+    struct Apartment;
+    impl Drop for Apartment { fn drop(&mut self) { unsafe { RoUninitialize(); } } }
+    let _apartment = Apartment;
 
     // WinRT async ops are driven to completion synchronously here; the helper
     // call is already off the service's async runtime. Typical latency < 2 s.
-    let mgr = NetworkOperatorTetheringManager::GetForCurrentProfile()
+    let profile = NetworkInformation::GetInternetConnectionProfile().map_err(|e| format!("network profile unavailable: {e}"))?;
+    let mgr = NetworkOperatorTetheringManager::CreateFromConnectionProfile(&profile)
         .map_err(|e| format!("tethering unavailable: {e}"))?;
 
     if let (Some(s), Some(p)) = (ssid, passphrase) {
-        if let Ok(cfg) = mgr.GetCurrentAccessPointConfiguration() {
-            let _ = cfg.SetSsid(&windows::core::HSTRING::from(s));
-            let _ = cfg.SetPassphrase(&windows::core::HSTRING::from(p));
+        if s.is_empty() || s.len() > 32 || !(8..=63).contains(&p.len()) { return Err("invalid hotspot name/password".into()); }
+        {
+            let cfg = mgr.GetCurrentAccessPointConfiguration().map_err(|e| e.to_string())?;
+            cfg.SetSsid(&windows::core::HSTRING::from(s)).map_err(|e| e.to_string())?;
+            cfg.SetPassphrase(&windows::core::HSTRING::from(p)).map_err(|e| e.to_string())?;
             mgr.ConfigureAccessPointAsync(&cfg)
                 .and_then(|op| op.get())
                 .map_err(|e| format!("ConfigureAccessPoint: {e}"))?;
@@ -304,7 +324,8 @@ pub fn hotspot(enable: bool, ssid: Option<&str>, passphrase: Option<&str>) -> Re
     } else {
         mgr.StopTetheringAsync().map_err(|e| format!("StopTethering: {e}"))?
     };
-    op.get().map_err(|e| format!("tethering op: {e}"))?;
+    let result = op.get().map_err(|e| format!("tethering op: {e}"))?;
+    if result.Status().map_err(|e| e.to_string())? != TetheringOperationStatus::Success { return Err("Windows rejected hotspot change".into()); }
 
     let state = mgr
         .TetheringOperationalState()
@@ -337,9 +358,9 @@ pub fn bitlocker_status() -> Result<serde_json::Value, String> {
     }))
 }
 
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{BOOLEAN, CloseHandle, GetLastError, HANDLE, LUID, ERROR_NOT_ALL_ASSIGNED};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, CloseHandle, LookupPrivilegeValueW, LUID, LUID_AND_ATTRIBUTES,
+    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
     SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::System::Power::SetSuspendState;

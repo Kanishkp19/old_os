@@ -34,6 +34,7 @@ pub fn router() -> Router<DashboardState> {
         .route("/api/photos/timeline",get(timeline))
         .route("/api/photos/years",get(years))
         .route("/api/duplicates",get(duplicates))
+        .route("/api/duplicates/scan",post(duplicate_scan))
         .route("/api/duplicates/{id}/resolve",post(duplicate_resolve))
         .route("/api/import/scan",post(import_scan))
         .route("/api/import",post(import_start))
@@ -44,6 +45,16 @@ pub fn router() -> Router<DashboardState> {
         .route("/api/storage/scrub",post(scrub))
         .route("/api/alerts/{id}/ack",post(alert_ack))
         .route("/api/network",get(network))
+        .route("/api/remote/status",get(remote_status))
+        .route("/api/screen/sessions",get(screen_sessions))
+        .route("/api/screen/sessions/{id}",delete(screen_stop))
+        .route("/api/update/stage",post(update_stage))
+}
+
+async fn update_stage(State(st):State<DashboardState>)->AdminResult<Json<Value>> {
+    let db=st.app.db.clone();let data=st.app.cfg.data_dir.clone();
+    let staged=tokio::task::spawn_blocking(move||crate::update::stage(&db,hh_core::HUB_VERSION,&data)).await.map_err(|e|Error::Internal(e.to_string()))??;
+    Ok(Json(json!(staged)))
 }
 
 async fn session(State(st): State<DashboardState>, headers: HeaderMap) -> AdminResult<Response> {
@@ -54,7 +65,7 @@ async fn session(State(st): State<DashboardState>, headers: HeaderMap) -> AdminR
 async fn settings(State(st): State<DashboardState>) -> AdminResult<Json<Value>> {
     let db = &st.app.db;
     let (_,name) = db.hub_identity()?;
-    Ok(Json(json!({"hub_name":name,"library_root":st.app.cfg.library_root,"second_copy_root":db.get_setting("second_copy.root")?.or_else(||st.app.cfg.second_copy_root.as_ref().map(|p|p.to_string_lossy().into_owned())),"pause_sharing":db.get_setting("sharing.paused")?.as_deref()==Some("true"),"remote_enabled":db.get_setting("remote.enabled")?.map(|v|v=="true").unwrap_or(st.app.cfg.features.remote),"setup_complete":db.get_setting("setup.complete")?.as_deref()==Some("true"),"telemetry_opt_in":false})))
+    Ok(Json(json!({"hub_name":name,"library_root":st.app.cfg.library_root,"second_copy_root":db.get_setting("second_copy.root")?.or_else(||st.app.cfg.second_copy_root.as_ref().map(|p|p.to_string_lossy().into_owned())),"pause_sharing":db.get_setting("sharing.paused")?.as_deref()==Some("true"),"remote_enabled":db.get_setting("remote.enabled")?.map(|v|v=="true").unwrap_or(st.app.cfg.features.remote),"setup_complete":db.get_setting("setup.complete")?.as_deref()==Some("true"),"screen_enabled":db.get_setting("screen.enabled")?.map(|v|v=="true").unwrap_or(st.app.cfg.features.screen),"update_enabled":db.get_setting("update.enabled")?.as_deref()==Some("true"),"update_manifest_url":db.get_setting("update.manifest_url")?,"update_pubkey_hex":db.get_setting("update.pubkey_hex")?,"backup_interval_minutes":setting_number(db,"backup.interval_minutes",60),"scrub_interval_hours":setting_number(db,"scrub.interval_hours",24),"second_copy_interval_minutes":setting_number(db,"second_copy.interval_minutes",1440),"wake_enabled":db.get_setting("wake.enabled")?.as_deref()==Some("true"),"wake_time":db.get_setting("wake.time")?.unwrap_or_else(||"03:00".into()),"telemetry_opt_in":false})))
 }
 #[derive(Deserialize)]
 struct SettingsPatch {
@@ -63,8 +74,16 @@ struct SettingsPatch {
     pause_sharing: Option<bool>,
     remote_enabled: Option<bool>,
     setup_complete: Option<bool>,
+    screen_enabled:Option<bool>,update_enabled:Option<bool>,
+    update_manifest_url:Option<String>,update_pubkey_hex:Option<String>,
+    backup_interval_minutes:Option<u64>,scrub_interval_hours:Option<u64>,second_copy_interval_minutes:Option<u64>,
+    wake_enabled:Option<bool>,wake_time:Option<String>,
 }
 async fn save_settings(State(st): State<DashboardState>, Json(req): Json<SettingsPatch>) -> AdminResult<Json<Value>> {
+    for (name,value,max) in [("backup interval",req.backup_interval_minutes,10080),("scrub interval",req.scrub_interval_hours,720),("second-copy interval",req.second_copy_interval_minutes,43200)] {if value.is_some_and(|v|v==0||v>max){return Err(Error::BadRequest(format!("invalid {name}")).into());}}
+    if let Some(url)=&req.update_manifest_url {if !url.is_empty(){crate::update::validate_https(url)?;}}
+    if req.update_pubkey_hex.as_ref().is_some_and(|k|!k.is_empty()&&(k.len()!=64||!k.bytes().all(|v|v.is_ascii_hexdigit()))) {return Err(Error::BadRequest("invalid update public key".into()).into());}
+    if let Some(time)=&req.wake_time {hh_hw::wake::validate_time(time)?;}
     if let Some(name) = req.hub_name { st.app.db.set_hub_name(&hh_core::paths::sanitize_component(&name)?)?; }
     if let Some(path) = req.second_copy_root {
         if !path.is_empty() {
@@ -80,15 +99,21 @@ async fn save_settings(State(st): State<DashboardState>, Json(req): Json<Setting
     if let Some(value) = req.pause_sharing { set_pause(&st,value)?; }
     if let Some(value) = req.remote_enabled { st.app.db.set_setting("remote.enabled",if value {"true"} else {"false"})?; }
     if let Some(value) = req.setup_complete { st.app.db.set_setting("setup.complete",if value {"true"} else {"false"})?; }
+    for (key,value) in [("screen.enabled",req.screen_enabled),("update.enabled",req.update_enabled)] {if let Some(v)=value{st.app.db.set_setting(key,if v{"true"}else{"false"})?;}}
+    for (key,value) in [("backup.interval_minutes",req.backup_interval_minutes),("scrub.interval_hours",req.scrub_interval_hours),("second_copy.interval_minutes",req.second_copy_interval_minutes)] {if let Some(v)=value{st.app.db.set_setting(key,&v.to_string())?;}}
+    if let Some(v)=req.update_manifest_url {st.app.db.set_setting("update.manifest_url",&v)?;}
+    if let Some(v)=req.update_pubkey_hex {st.app.db.set_setting("update.pubkey_hex",&v)?;}
+    if req.wake_enabled.is_some()||req.wake_time.is_some(){let enabled=req.wake_enabled.unwrap_or(st.app.db.get_setting("wake.enabled")?.as_deref()==Some("true"));let time=req.wake_time.unwrap_or(st.app.db.get_setting("wake.time")?.unwrap_or_else(||"03:00".into()));let saved_time=time.clone();let executable=std::env::current_exe().map_err(Error::from)?;tokio::task::spawn_blocking(move||hh_hw::wake::configure(enabled,&time,&executable)).await.map_err(|e|Error::Internal(e.to_string()))??;st.app.db.set_setting("wake.enabled",if enabled{"true"}else{"false"})?;st.app.db.set_setting("wake.time",&saved_time)?;}
     st.app.db.audit(None,"settings_updated",None,None)?;
     settings(State(st)).await
 }
 fn set_pause(st:&DashboardState,value:bool)->Result<()> {
+    if !value {let c=st.app.db.lock()?;let changing:i64=c.query_row("SELECT COUNT(*) FROM jobs WHERE kind='library_move' AND status IN ('queued','running')",[],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))?;let path:Option<String>=c.query_row("SELECT path FROM storage_roots WHERE kind='library' AND is_active=1 LIMIT 1",[],|r|r.get(0)).ok();if changing>0||path.is_some_and(|p|std::path::PathBuf::from(p)!=st.app.cfg.library_dir()){return Err(Error::Conflict("restart Home Hub after finishing the library move".into()));}}
     st.app.db.set_setting("sharing.paused",if value {"true"} else {"false"})?;
     if value {
         st.app.pairing.close_window();
         for session in st.app.stream.active_sessions() { st.app.stream.stop_session(&session.id)?; }
-        if let Some(helper) = &st.app.helper { let _ = helper.screen_stop(); }
+        if let Some(helper) = &st.app.helper { let _ = helper.screen_stop();let _=helper.release_input(); }
         st.app.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.clear();
     }
     st.app.events.emit("sharing.changed",json!({"paused":value}));
@@ -116,7 +141,7 @@ async fn device_revoke(State(st):State<DashboardState>,Path(id):Path<String>)->A
     for sid in sessions {let _=st.app.stream.stop_session(&sid);if let Some(h)=&st.app.helper{let _=h.screen_stop();}st.app.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.remove(&sid);}
     st.app.events.emit("device.revoked",json!({"device_id":id}));st.app.db.audit(None,"revoke",Some(&id),None)?;Ok(StatusCode::NO_CONTENT)
 }
-async fn capabilities(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!({"photos":st.app.cfg.features.photos,"remote":st.app.cfg.features.remote && st.app.helper.is_some(),"screen":st.app.cfg.features.screen && st.app.helper.is_some(),"hotspot":st.app.cfg.features.hotspot && st.app.helper.is_some(),"wol":st.app.cfg.features.wol,"helper_available":st.app.helper.is_some(),"hardware":st.app.hw.latest_audit()?})))}
+async fn capabilities(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let helper=st.app.helper.clone();let ping=tokio::task::spawn_blocking(move||helper.and_then(|h|h.ping().ok())).await.map_err(|e|Error::Internal(e.to_string()))?;Ok(Json(json!({"photos":st.app.cfg.features.photos,"remote":st.app.db.get_setting("remote.enabled")?.as_deref()==Some("true")&&ping.is_some(),"screen":ping.as_ref().is_some_and(|v|v["screen"]["available"]==true),"hotspot":ping.as_ref().is_some_and(|v|v["hotspot"]==true),"wol":st.app.cfg.features.wol,"helper_available":ping.is_some(),"hardware":st.app.hw.latest_audit()?})))}
 async fn hardware(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(st.app.hw.latest_audit()?.unwrap_or(Value::Null)))}
 async fn hardware_run(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let svc=st.app.hw.clone();let result=tokio::task::spawn_blocking(move||svc.run_audit()).await.map_err(|e|Error::Internal(e.to_string()))??;Ok(Json(json!(result)))}
 async fn transfer_abort(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{let svc=st.app.transfers.clone();tokio::task::spawn_blocking(move||svc.abort(&id)).await.map_err(|e|Error::Internal(e.to_string()))??;Ok(StatusCode::NO_CONTENT)}
@@ -148,7 +173,18 @@ async fn library_move(State(st):State<DashboardState>,Json(req):Json<PathReq>)->
     if !st.app.db.list_transfers(None,Some("open"))?.is_empty()||!st.app.db.list_transfers(None,Some("verifying"))?.is_empty(){return Err(Error::Conflict("finish or cancel transfers before moving library".into()).into());}
     Ok(Json(st.app.storage.start_library_move(&req.path)?))
 }
-async fn second_copy(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let svc=st.app.storage.clone();let (copied,failed,run_id)=tokio::task::spawn_blocking(move||svc.run_second_copy()).await.map_err(|e|Error::Internal(e.to_string()))??;Ok(Json(json!({"copied":copied,"failed":failed,"run_id":run_id})))}
-async fn scrub(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let svc=st.app.storage.clone();let (checked,failed)=tokio::task::spawn_blocking(move||svc.scrub_once(500)).await.map_err(|e|Error::Internal(e.to_string()))??;Ok(Json(json!({"checked":checked,"failed":failed})))}
+async fn second_copy(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(st.app.storage.start_maintenance("second_copy")?))}
+async fn scrub(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(st.app.storage.start_maintenance("scrub")?))}
+async fn duplicate_scan(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(st.app.storage.start_maintenance("duplicates")?))}
 async fn alert_ack(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{let c=st.app.db.lock()?;if c.execute("UPDATE alerts SET acknowledged_at=?2 WHERE id=?1",rusqlite::params![id,hh_core::time::now_ms()]).map_err(|e|Error::Db(e.to_string()))?==0{return Err(Error::NotFound("alert".into()).into());}Ok(StatusCode::NO_CONTENT)}
 async fn network(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.hw.network_info()?)))}
+
+async fn remote_status(State(st):State<DashboardState>)->AdminResult<Json<Value>> {
+    let helper=st.app.helper.clone();
+    let result=tokio::task::spawn_blocking(move||helper.and_then(|h|h.ping().ok())).await.map_err(|e|Error::Internal(e.to_string()))?;
+    Ok(Json(json!({"helper_available":result.is_some(),"helper":result,"enabled":st.app.db.get_setting("remote.enabled")?.as_deref()==Some("true")})))
+}
+async fn screen_sessions(State(st):State<DashboardState>)->AdminResult<Json<Value>> {Ok(Json(json!({"items":st.app.stream.active_sessions().iter().map(|s|json!({"id":s.id,"device_id":s.device_id,"direction":s.kind,"state":s.state})).collect::<Vec<_>>()})))}
+async fn screen_stop(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode> {let svc=st.app.stream.clone();let sid=id.clone();tokio::task::spawn_blocking(move||svc.stop_session(&sid)).await.map_err(|e|Error::Internal(e.to_string()))??;st.app.screen_owners.lock().map_err(|_|Error::Internal("screen mutex".into()))?.remove(&id);Ok(StatusCode::NO_CONTENT)}
+
+fn setting_number(db:&hh_db::Db,key:&str,default:u64)->u64 {db.get_setting(key).ok().flatten().and_then(|v|v.parse().ok()).unwrap_or(default)}

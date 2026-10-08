@@ -27,7 +27,8 @@ object BackupRules {
     fun prefs(context: Context) = context.getSharedPreferences("homehub_backup", Context.MODE_PRIVATE)
     fun allowed(context: Context): Boolean {
         val prefs = prefs(context)
-        if (!prefs.getBoolean("enabled", false)) return false
+        if (!prefs.getBoolean("enabled", false) || prefs.getString("source_hub_id", null) !=
+            context.getSharedPreferences("homehub_auth", Context.MODE_PRIVATE).getString("hub_id", null)) return false
         if (prefs.getBoolean("wifi_only", true)) {
             val manager = context.getSystemService(ConnectivityManager::class.java)
             val caps = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
@@ -39,7 +40,20 @@ object BackupRules {
 }
 data class BackupSettings(val approved: Boolean = false, val enabled: Boolean = false,
     val wifiOnly: Boolean = true, val chargingOnly: Boolean = false, val intervalHours: Long = 6,
-    val lastRun: Long = 0, val pendingCleanup: Boolean = false)
+    val lastRun: Long = 0, val pendingCleanup: Boolean = false, val effectiveMinutes: Long = 360)
+object MediaAccess {
+    fun permissions(): Array<String> = if (Build.VERSION.SDK_INT >= 34) arrayOf(
+        android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO,
+        android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+        else if (Build.VERSION.SDK_INT >= 33) arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
+        else arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+    fun granted(context: Context): Boolean = permissions().any {
+        androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+    fun partial(context: Context) = Build.VERSION.SDK_INT >= 34 &&
+        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
+        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_MEDIA_IMAGES) != android.content.pm.PackageManager.PERMISSION_GRANTED
+}
 data class LocalMedia(val uri: Uri, val clientId: String, val size: Long, val takenAt: Long?, val hash: String)
 
 @Singleton
@@ -47,28 +61,41 @@ class BackupRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val hub: HubClient,
     private val queue: QueueRepository,
+    private val trust: com.homehub.queue.HubTrustStore,
 ) {
     private val prefs = BackupRules.prefs(context)
     val settings = MutableStateFlow(readSettings())
     val status = MutableStateFlow<String?>(null)
-    private fun readSettings() = BackupSettings(prefs.contains("source_id"), prefs.getBoolean("enabled", false),
+    val remoteReviews = MutableStateFlow<List<JSONObject>>(emptyList())
+    private fun ownSource() = prefs.contains("source_id") && prefs.getString("source_hub_id", null) ==
+        context.getSharedPreferences("homehub_auth", Context.MODE_PRIVATE).getString("hub_id", null)
+    private fun readSettings() = BackupSettings(ownSource(), ownSource() && prefs.getBoolean("enabled", false),
         prefs.getBoolean("wifi_only", true), prefs.getBoolean("charging_only", false), prefs.getLong("interval_hours", 6),
-        prefs.getLong("last_run", 0), prefs.contains("cleanup"))
-    private fun refresh() { settings.value = readSettings() }
+        prefs.getLong("last_run", 0), prefs.contains("cleanup") || prefs.contains("cleanup_review_id"), effectiveMinutes())
+    fun refresh() { settings.value = readSettings() }
 
     /** Called only after explicit approval and media permission. */
     suspend fun approve() = withContext(Dispatchers.IO) {
+        require(MediaAccess.granted(context))
+        val hubId = requireNotNull(trust.load()).hubId
         val source = hub.post("/v1/backup/sources", JSONObject().put("kind", "camera_roll").put("label", android.os.Build.MODEL))
-        require(prefs.edit().putString("source_id", source.getString("id")).putBoolean("enabled", true).commit())
+        require(prefs.edit().putString("source_id", source.getString("id")).putString("source_hub_id", hubId).putBoolean("enabled", true).commit())
         updateRules(true, settings.value.wifiOnly, settings.value.chargingOnly, settings.value.intervalHours)
     }
     suspend fun updateRules(enabled: Boolean, wifiOnly: Boolean, chargingOnly: Boolean, intervalHours: Long) = withContext(Dispatchers.IO) {
         require(intervalHours in listOf(1L, 6L, 12L, 24L))
-        val sourceId = prefs.getString("source_id", null)
+        val sourceId = if (ownSource()) prefs.getString("source_id", null) else null
         if (sourceId != null) hub.patch("/v1/backup/sources/$sourceId", JSONObject().put("enabled", enabled)
             .put("wifi_only", wifiOnly).put("charging_only", chargingOnly))
         require(prefs.edit().putBoolean("enabled", enabled && sourceId != null).putBoolean("wifi_only", wifiOnly)
             .putBoolean("charging_only", chargingOnly).putLong("interval_hours", intervalHours).commit())
+        schedule(); refresh()
+    }
+    private fun effectiveMinutes() = maxOf(prefs.getLong("interval_hours", 6) * 60,
+        prefs.getLong("home_interval_minutes", 15)).coerceAtLeast(15)
+    suspend fun applyGlobalSchedule(minutes: Long) = withContext(Dispatchers.IO) {
+        if (minutes !in 15..10080 || prefs.getLong("home_interval_minutes", 15) == minutes) return@withContext
+        require(prefs.edit().putLong("home_interval_minutes", minutes).commit())
         schedule(); refresh()
     }
     fun schedule() {
@@ -77,13 +104,14 @@ class BackupRepository @Inject constructor(
         val constraints = Constraints.Builder().setRequiredNetworkType(
             if (prefs.getBoolean("wifi_only", true)) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .setRequiresCharging(prefs.getBoolean("charging_only", false)).build()
-        val request = PeriodicWorkRequestBuilder<BackupWorker>(prefs.getLong("interval_hours", 6), TimeUnit.HOURS)
+        val request = PeriodicWorkRequestBuilder<BackupWorker>(effectiveMinutes(), TimeUnit.MINUTES)
             .setConstraints(constraints).build()
         manager.enqueueUniquePeriodicWork("homehub-photo-backup", ExistingPeriodicWorkPolicy.UPDATE, request)
     }
     fun runNow() {
         val request = OneTimeWorkRequestBuilder<BackupWorker>().setConstraints(Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+            .setRequiredNetworkType(if (prefs.getBoolean("wifi_only", true)) NetworkType.UNMETERED else NetworkType.CONNECTED)
+            .setRequiresCharging(prefs.getBoolean("charging_only", false)).build()).build()
         WorkManager.getInstance(context).enqueueUniqueWork("homehub-photo-backup-now", ExistingWorkPolicy.KEEP, request)
     }
     private suspend fun media(): List<LocalMedia> {
@@ -108,6 +136,8 @@ class BackupRepository @Inject constructor(
         return items
     }
     suspend fun scanAndQueue() = withContext(Dispatchers.IO) {
+        if (!ownSource()) return@withContext
+        require(MediaAccess.granted(context))
         val source = prefs.getString("source_id", null) ?: return@withContext
         if (!BackupRules.allowed(context)) return@withContext
         for (batch in media().chunked(100)) {
@@ -125,10 +155,22 @@ class BackupRepository @Inject constructor(
     suspend fun prepareCleanup(): List<Uri> = withContext(Dispatchers.IO) {
         require(Build.VERSION.SDK_INT >= 30) { "Remove verified photos through your system gallery on this Android version" }
         require(!prefs.contains("cleanup")) { "Finish or release the previous storage review first" }
+        require(ownSource())
         val source = prefs.getString("source_id", null) ?: error("Approve photo backup first")
-        val local = media().take(500)
+        val savedRequest = prefs.getString("cleanup_request", null)
+        val local = if (savedRequest != null) JSONArray(savedRequest).let { items ->
+            (0 until items.length()).map { items.getJSONObject(it) }.map {
+                LocalMedia(Uri.parse(it.getString("uri")), it.getString("client_id"), it.getLong("size"), null, it.getString("hash"))
+            }
+        } else media().take(500)
+        if (local.isEmpty()) return@withContext emptyList<Uri>()
+        val review = prefs.getString("cleanup_review_id", null) ?: java.util.UUID.randomUUID().toString()
+        val snapshot = JSONArray(local.map { JSONObject().put("uri", it.uri.toString()).put("client_id", it.clientId)
+            .put("size", it.size).put("hash", it.hash) })
+        require(prefs.edit().putString("cleanup_review_id", review).putString("cleanup_request", snapshot.toString()).commit())
+        refresh()
         val lease = hub.post("/v1/backup/sources/$source/cleanup-lease", JSONObject()
-            .put("client_item_ids", JSONArray(local.map { it.clientId })))
+            .put("client_item_ids", JSONArray(local.map { it.clientId })).put("client_review_id", review))
         val rows = lease.getJSONArray("items")
         val mappings = JSONArray()
         for (i in 0 until rows.length()) {
@@ -137,32 +179,65 @@ class BackupRepository @Inject constructor(
             if (item.hash != row.getString("hash") || item.size != row.getLong("size")) continue
             mappings.put(JSONObject(row.toString()).put("uri", item.uri.toString()))
         }
-        val persisted = JSONObject().put("lease_id", lease.getString("lease_id")).put("items", mappings)
-        require(prefs.edit().putString("cleanup", persisted.toString()).commit())
+        val persisted = JSONObject().put("lease_id", lease.getString("lease_id")).put("hub_id", requireNotNull(trust.load()).hubId).put("items", mappings)
+        require(prefs.edit().putString("cleanup", persisted.toString()).remove("cleanup_review_id").remove("cleanup_request").commit())
         refresh()
         try {
             // Recheck immediately before showing the system dialog. No provider
             // mutation, no direct delete(), and no deletion on worker completion.
-            for (i in 0 until mappings.length()) {
-                val row = mappings.getJSONObject(i)
-                val pair = SourceReader.hash(context, Uri.parse(row.getString("uri")))
-                require(pair.first == row.getString("hash") && pair.second == row.getLong("size")) { "A photo changed; review again" }
-            }
-            (0 until mappings.length()).map { Uri.parse(mappings.getJSONObject(it).getString("uri")) }
+            validateCleanup()
         } catch (e: Exception) { finishCleanup(false); throw e }
+    }
+    /** Re-hash after the user review, immediately before launching Android consent. */
+    suspend fun validateCleanup(): List<Uri> = withContext(Dispatchers.IO) {
+        val cleanup = JSONObject(requireNotNull(prefs.getString("cleanup", null)))
+        require(cleanup.getString("hub_id") == requireNotNull(trust.load()).hubId)
+        val mappings = cleanup.getJSONArray("items")
+        for (i in 0 until mappings.length()) {
+            val row = mappings.getJSONObject(i)
+            val pair = SourceReader.hash(context, Uri.parse(row.getString("uri")))
+            require(pair.first == row.getString("hash") && pair.second == row.getLong("size"))
+        }
+        (0 until mappings.length()).map { Uri.parse(mappings.getJSONObject(it).getString("uri")) }
+    }
+    suspend fun recoverReview() {
+        if (!prefs.contains("cleanup") && prefs.contains("cleanup_review_id")) {
+            try { prepareCleanup() }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (!prefs.contains("cleanup")) throw e }
+        }
+        finishCleanup(true)
+    }
+    suspend fun refreshRemoteReviews() {
+        if (!ownSource()) return
+        val source = requireNotNull(prefs.getString("source_id", null))
+        val items = hub.get("/v1/backup/sources/$source/cleanup").getJSONArray("items")
+        remoteReviews.value = (0 until items.length()).map(items::getJSONObject)
+    }
+    /** Only an explicit recovery action releases server reviews without a local dialog receipt. */
+    suspend fun releaseOrphanReviews() {
+        refreshRemoteReviews()
+        val local = prefs.getString("cleanup", null)?.let { JSONObject(it).getString("lease_id") }
+        for (review in remoteReviews.value) {
+            if (review.getString("lease_id") == local) continue
+            hub.post("/v1/backup/cleanup-leases/${review.getString("lease_id")}/complete", JSONObject().put("freed_client_item_ids", JSONArray()))
+        }
+        refreshRemoteReviews()
     }
     /** On restart retain every pin until user explicitly resolves the old review. */
     suspend fun finishCleanup(confirmed: Boolean) = withContext(Dispatchers.IO) {
         val raw = prefs.getString("cleanup", null) ?: return@withContext
-        val cleanup = JSONObject(raw); val mappings = cleanup.getJSONArray("items")
+        val cleanup = JSONObject(raw)
+        require(cleanup.getString("hub_id") == requireNotNull(trust.load()).hubId)
+        val mappings = cleanup.getJSONArray("items")
         val freed = JSONArray()
-        if (confirmed) for (i in 0 until mappings.length()) {
+        if (confirmed && !MediaAccess.partial(context) && MediaAccess.granted(context)) for (i in 0 until mappings.length()) {
             val row = mappings.getJSONObject(i)
             val missing = runCatching { context.contentResolver.query(Uri.parse(row.getString("uri")),
                 arrayOf(MediaStore.MediaColumns._ID), null, null, null)?.use { !it.moveToFirst() } == true }.getOrDefault(false)
             if (missing) freed.put(row.getString("client_item_id"))
         }
         hub.post("/v1/backup/cleanup-leases/${cleanup.getString("lease_id")}/complete", JSONObject().put("freed_client_item_ids", freed))
-        require(prefs.edit().remove("cleanup").commit()); refresh()
+        require(prefs.edit().remove("cleanup").remove("cleanup_review_id").remove("cleanup_request").commit()); refresh()
     }
 }

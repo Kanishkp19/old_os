@@ -8,9 +8,13 @@ import javax.inject.Inject
 
 @HiltAndroidApp
 class HomeHubApp : Application(), Configuration.Provider {
+    override fun attachBaseContext(base: android.content.Context) { super.attachBaseContext(com.homehub.ui.LanguagePreference.wrap(base)) }
+
     @Inject lateinit var backup: com.homehub.backup.BackupRepository
 
-    override fun onCreate() { super.onCreate(); backup.schedule() }
+    @Inject lateinit var connectivity: com.homehub.net.HubConnectivity
+
+    override fun onCreate() { super.onCreate(); backup.schedule(); connectivity.start() }
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
 

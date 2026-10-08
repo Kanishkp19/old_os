@@ -22,7 +22,7 @@ import javax.inject.Inject
 
 data class DeviceRow(
     val id: String, val name: String, val platform: String,
-    val status: String, val isSelf: Boolean,
+    val status: String, val isSelf: Boolean, val scopes: List<String> = emptyList(),
 )
 
 /**
@@ -42,31 +42,35 @@ class DevicesViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    val scopes get() = hub.scopes
+    val admin get() = hub.hasScope("admin")
     fun refresh() = viewModelScope.launch {
         try {
-            val arr = hub.devices()
+            val arr = if (admin) hub.devices() else hub.get("/v1/relay/devices").getJSONArray("items")
             _devices.value = (0 until arr.length()).map { arr.getJSONObject(it) }.map { d: JSONObject ->
                 DeviceRow(
                     id = d.getString("id"),
                     name = d.getString("name"),
                     platform = d.optString("platform", "?"),
-                    status = d.getString("status"),
+                    status = d.optString("status", "active"),
+                    scopes = d.optJSONArray("scopes")?.let { values -> (0 until values.length()).map(values::getString) } ?: emptyList(),
                     isSelf = d.optBoolean("is_self", false) || d.getString("id") == context.getSharedPreferences("homehub_auth", android.content.Context.MODE_PRIVATE).getString("device_id", null),
                 )
             }
             _error.value = null
         } catch (e: Exception) {
-            _error.value = e.message
+            _error.value = com.homehub.ui.UserErrors.message(context, e)
         }
     }
 
     fun revoke(id: String) = viewModelScope.launch {
-        try { hub.revokeDevice(id); refresh() } catch (e: Exception) { _error.value = e.message }
+        try { hub.revokeDevice(id); refresh() } catch (e: Exception) { _error.value = com.homehub.ui.UserErrors.message(context, e) }
     }
 }
 
 @Composable
 fun DevicesScreen(vm: DevicesViewModel = hiltViewModel()) {
+    val grantedScopes = vm.scopes.collectAsState().value
     val devices by vm.devices.collectAsState()
     val error by vm.error.collectAsState()
     var confirmRevoke by remember { mutableStateOf<DeviceRow?>(null) }
@@ -76,6 +80,8 @@ fun DevicesScreen(vm: DevicesViewModel = hiltViewModel()) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text(stringResource(R.string.devices_title), style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
+        if (!vm.admin) Text(stringResource(R.string.devices_admin_hint))
+        TextButton(onClick = { vm.refresh() }) { Text(stringResource(R.string.action_refresh)) }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(devices, key = { it.id }) { d ->
@@ -83,13 +89,15 @@ fun DevicesScreen(vm: DevicesViewModel = hiltViewModel()) {
                     Row(Modifier.padding(12.dp).fillMaxWidth()) {
                         Column(Modifier.weight(1f)) {
                             Text(d.name, style = MaterialTheme.typography.bodyLarge)
+                            if (d.scopes.isNotEmpty()) Text(stringResource(R.string.devices_access,
+                                d.scopes.map { scope -> contextLabel(scope) }.joinToString()))
                             Text(
-                                "${d.platform} · ${d.status}" + if (d.isSelf) " · ${stringResource(R.string.devices_this_one)}" else "",
+                                "${d.platform} · ${stringResource(if (d.status == "active") R.string.device_active else R.string.device_revoked)}" + if (d.isSelf) " · ${stringResource(R.string.devices_this_one)}" else "",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        if (!d.isSelf && d.status == "active") {
+                        if (vm.admin && !d.isSelf && d.status == "active") {
                             TextButton(onClick = { confirmRevoke = d }) {
                                 Text(stringResource(R.string.action_revoke), color = MaterialTheme.colorScheme.error)
                             }
@@ -116,3 +124,12 @@ fun DevicesScreen(vm: DevicesViewModel = hiltViewModel()) {
         )
     }
 }
+
+@Composable
+private fun contextLabel(scope: String): String = stringResource(when (scope) {
+    "files" -> R.string.nav_files
+    "photos" -> R.string.nav_photos
+    "transfer" -> R.string.nav_transfers
+    "remote" -> R.string.nav_remote
+    else -> R.string.permission_admin
+})

@@ -5,7 +5,8 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, Sse};
-use axum::response::{Response, IntoResponse};
+use axum::response::Response;
+use futures::SinkExt;
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
 use hh_core::error::Error;
@@ -43,11 +44,11 @@ impl axum::response::IntoResponse for ApiErr {
     }
 }
 
-fn ident(ext: Option<Extension<PeerIdentityExt>>) -> ApiResult<hh_net_tls::PeerIdentity> {
+pub(crate) fn ident(ext: Option<Extension<PeerIdentityExt>>) -> ApiResult<hh_net_tls::PeerIdentity> {
     ext.map(|Extension(p)| p.0).ok_or(Error::Unauthenticated.into())
 }
 
-fn require_scope(id: &hh_net_tls::PeerIdentity, scope: &str) -> ApiResult<()> {
+pub(crate) fn require_scope(id: &hh_net_tls::PeerIdentity, scope: &str) -> ApiResult<()> {
     if id.has_scope(scope) {
         Ok(())
     } else {
@@ -68,7 +69,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/events", get(events))
         .route("/v1/devices", get(list_devices))
         .route("/v1/devices/{id}", delete(revoke_device))
-        .route("/v1/devices/me", patch(update_me))
+        .route("/v1/devices/me", get(get_me).patch(update_me))
         .route("/v1/certs/renew", post(renew_cert))
         .route("/v1/transfers", post(create_transfer).get(list_transfers))
         .route("/v1/transfers/{id}", get(transfer_status).delete(abort_transfer))
@@ -96,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/backup/sources/{id}/summary", get(backup_summary))
         .route("/v1/backup/sources/{id}/verified-items", get(backup_verified_items))
         .route("/v1/backup/sources/{id}/cleanup-lease", post(cleanup_lease))
+        .route("/v1/backup/sources/{id}/cleanup", get(cleanup_reviews))
         .route("/v1/backup/cleanup-leases/{id}/complete", post(cleanup_finish))
         .route("/v1/backup/items/{id}/confirm-local-freed", post(confirm_local_freed))
         .route("/v1/duplicates", get(list_duplicates))
@@ -117,11 +119,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/update/check", get(update_check))
         .route("/v1/screen/view", post(screen_start))
         .route("/v1/screen/cast", post(screen_start))
-        .route("/v1/screen/{id}", delete(screen_stop))
+        .route("/v1/screen/{id}", delete(screen_stop).patch(screen_touch))
         .route("/v1/screen/capabilities", get(screen_capabilities))
         .route("/v1/hardware/audit", get(hardware_audit))
         .route("/v1/hardware/audit/run", post(hardware_audit_run))
         .route("/v1/network", get(network_info))
+        .merge(crate::relay::router())
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(state.clone(), authorize))
         .with_state(state)
@@ -132,7 +135,8 @@ async fn authorize(State(s): State<AppState>, mut req: axum::extract::Request, n
     let identity = req.extensions().get::<PeerIdentityExt>().map(|p|p.0.clone()).ok_or(Error::Unauthenticated)?;
     let device = s.db.device_by_id(&identity.device_id)?.ok_or(Error::Unauthenticated)?;
     if device.status != "active" || s.db.is_serial_revoked(&identity.cert_serial)? { return Err(Error::DeviceRevoked.into()); }
-    if device.cert_serial != identity.cert_serial || device.cert_expires_at <= hh_core::time::now_ms() { return Err(Error::Unauthenticated.into()); }
+    if !s.db.device_accepts_serial(&identity.device_id,&identity.cert_serial)? { return Err(Error::Unauthenticated.into()); }
+    if let Some(old)=s.db.activate_renewal(&identity.device_id,&identity.cert_serial)?{s.revocation.revoke(&old);}
     if s.db.get_setting("sharing.paused")?.as_deref() == Some("true") { return Err(Error::StorageUnavailable("sharing paused".into()).into()); }
     let path = req.uri().path();
     if !path.contains("/chunks/") && !s.rate_limiter.check(&identity.device_id) { return Err(Error::RateLimited.into()); }
@@ -151,11 +155,12 @@ async fn authorize(State(s): State<AppState>, mut req: axum::extract::Request, n
 }
 
 #[derive(Deserialize)]
-struct LeaseReq { client_item_ids: Vec<String> }
+struct LeaseReq { client_item_ids: Vec<String>,client_review_id:Option<String> }
 async fn cleanup_lease(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>, Path(id): Path<String>, Json(req): Json<LeaseReq>) -> ApiResult<Json<serde_json::Value>> {
     let peer = ident(ext)?; require_scope(&peer,"photos")?;
-    Ok(Json(serde_json::json!(s.photos.create_cleanup_lease(&id,&peer.device_id,&req.client_item_ids)?)))
+    Ok(Json(serde_json::json!(s.photos.create_cleanup_review(&id,&peer.device_id,&req.client_item_ids,req.client_review_id.as_deref())?)))
 }
+async fn cleanup_reviews(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>,Path(id):Path<String>)->ApiResult<Json<serde_json::Value>> {let peer=ident(ext)?;require_scope(&peer,"photos")?;Ok(Json(serde_json::json!({"items":s.photos.active_cleanup_reviews(&id,&peer.device_id)?})))}
 #[derive(Deserialize)]
 struct LeaseFinishReq { freed_client_item_ids: Vec<String> }
 async fn cleanup_finish(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>, Path(id): Path<String>, Json(req): Json<LeaseFinishReq>) -> ApiResult<Json<serde_json::Value>> {
@@ -180,8 +185,8 @@ async fn get_info(State(s): State<AppState>) -> ApiResult<Json<HubInfo>> {
         api_max: API_VERSION,
         features: FeaturesWire {
             photos: s.cfg.features.photos,
-            remote: s.cfg.features.remote,
-            screen: s.cfg.features.screen,
+            remote: s.db.get_setting("remote.enabled")?.map(|v|v=="true").unwrap_or(s.cfg.features.remote) && s.helper.is_some(),
+            screen: s.db.get_setting("screen.enabled")?.map(|v|v=="true").unwrap_or(s.cfg.features.screen) && s.helper.is_some(),
             hotspot: s.cfg.features.hotspot,
             wol: s.cfg.features.wol,
         },
@@ -194,6 +199,7 @@ async fn get_info(State(s): State<AppState>) -> ApiResult<Json<HubInfo>> {
             internet: cached_internet_probe(),
         },
         time: hh_core::time::now_ms(),
+        backup_interval_minutes: s.db.get_setting("backup.interval_minutes")?.and_then(|v|v.parse::<u64>().ok()).unwrap_or(60).clamp(1,10080),
     }))
 }
 
@@ -279,6 +285,11 @@ async fn list_devices(
     Ok(Json(s.db.list_devices()?.iter().map(|d| d.to_api()).collect()))
 }
 
+async fn get_me(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>)->ApiResult<Json<serde_json::Value>> {
+    let peer=ident(ext)?;let d=s.db.device_by_id(&peer.device_id)?.ok_or(Error::Unauthenticated)?;
+    Ok(Json(serde_json::json!({"id":d.id,"name":d.name,"scopes":d.scopes})))
+}
+
 async fn revoke_device(
     State(s): State<AppState>,
     ext: Option<Extension<PeerIdentityExt>>,
@@ -346,9 +357,9 @@ async fn renew_cert(
         serde_json::from_str::<serde_json::Value>(&body).map_err(|_|Error::BadRequest("invalid renewal request".into()))?
             .get("csr_pem").and_then(|v|v.as_str()).ok_or_else(||Error::BadRequest("csr_pem required".into()))?.to_owned()
     } else { body };
+    if let Some((cert_pem,expires))=s.db.pending_renewal(&id.device_id,&id.cert_serial,&csr)? {return Ok(Json(serde_json::json!({"cert_pem":cert_pem,"cert_expires_at":expires})));}
     let (cert_pem, serial, expires) = s.ca.renew_device_cert(&csr, &id.device_id)?;
-    s.db.renew_device(&id.device_id,&id.cert_serial,&cert_pem,&serial,expires)?;
-    s.revocation.revoke(&id.cert_serial);
+    s.db.stage_renewal(&id.device_id,&id.cert_serial,&csr,&cert_pem,&serial,expires)?;
     Ok(Json(serde_json::json!({"cert_pem": cert_pem, "cert_expires_at": expires})))
 }
 
@@ -365,6 +376,10 @@ async fn create_transfer(
         return Err(Error::TooLarge("max file size 1 TiB".into()).into());
     }
     if req.backup_source_id.is_some() { require_scope(&id,"photos")?; }
+    if let Some(target)=&req.target_device_id {
+        let d=s.db.device_by_id(target)?.ok_or_else(||Error::NotFound("recipient".into()))?;
+        if d.status!="active" || !d.has_scope("files") {return Err(Error::ForbiddenScope("recipient files".into()).into());}
+    }
     let engine = s.transfers.clone();
     let device_id = id.device_id.clone();
     let input = req.clone();
@@ -372,6 +387,7 @@ async fn create_transfer(
     if let (Some(source),Some(item),Some(file_id),Some(hash)) = (&req.backup_source_id,&req.client_item_id,&resp.existing_file_id,&req.root_hash) {
         resp.backup_item_id = Some(s.photos.mark_transfer_verified(source,&id.device_id,item,file_id,hash)?);
     }
+    if let (Some(target),Some(file))=(&req.target_device_id,&resp.existing_file_id) {crate::relay::stage_file(&s,file,&id.device_id,target,None)?;}
     let code = if resp.have.count() > 0 { StatusCode::OK } else { StatusCode::CREATED };
     Ok((code, Json(resp)))
 }
@@ -450,6 +466,8 @@ async fn complete_transfer(
     if let (Some(source),Some(item)) = backup {
         resp.backup_item_id = Some(s.photos.mark_transfer_verified(&source,&peer.device_id,&item,&resp.file_id,&resp.hash)?);
     }
+    let target:Option<String>={let c=s.db.lock()?;c.query_row("SELECT target_device_id FROM transfers WHERE id=?1",[&id],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))?};
+    if let Some(target)=target {crate::relay::stage_file(&s,&resp.file_id,&peer.device_id,&target,Some(&id))?;}
     // Media hook: register metadata + enqueue thumbnails (TRD §8).
     if resp.rel_path.starts_with("Photos/") || resp.rel_path.starts_with("Videos/") {
         let path = s.storage.file_disk_path(&resp.file_id)?;
@@ -937,13 +955,22 @@ async fn remote_input_ws(
     let peer = ident(ext)?;
     require_scope(&peer, "remote")?;
     let session_id = s.remote.record_session(&peer.device_id, "input")?;
-    Ok(ws.on_upgrade(move |mut socket| async move {
+    Ok(ws.max_message_size(8192).max_frame_size(8192).on_upgrade(move |mut socket| async move {
         let remote = s.remote.clone();
         let device = peer.device_id.clone();
         let idle = std::time::Duration::from_millis(hh_remote::IDLE_TIMEOUT_MS as u64);
+        let mut deadline=tokio::time::Instant::now()+idle;
         loop {
-            match tokio::time::timeout(idle, socket.recv()).await {
+            let message=tokio::select! {
+                message=tokio::time::timeout_at(deadline,socket.recv())=>message,
+                _=tokio::time::sleep(std::time::Duration::from_secs(1))=>{
+                    let allowed=s.db.device_by_id(&device).ok().flatten().is_some_and(|d|d.status=="active"&&d.cert_serial==peer.cert_serial&&d.has_scope("remote"))&&s.db.get_setting("sharing.paused").ok().flatten().as_deref()!=Some("true");
+                    if !allowed{let _=socket.close().await;break;}continue;
+                }
+            };
+            match message {
                 Ok(Some(Ok(axum::extract::ws::Message::Text(text)))) => {
+                    deadline=tokio::time::Instant::now()+idle;
                     let allowed = s.db.device_by_id(&device).ok().flatten().map(|d|d.status == "active" && d.cert_serial == peer.cert_serial && d.has_scope("remote")).unwrap_or(false)
                         && s.db.get_setting("sharing.paused").ok().flatten().as_deref() != Some("true");
                     if !allowed { let _ = socket.close().await; break; }
@@ -961,6 +988,7 @@ async fn remote_input_ws(
                 Err(_) => break, // idle 60 s → auto-end (API_SPEC §8)
             }
         }
+        if let Some(h)=s.helper.clone(){let _=tokio::task::spawn_blocking(move||h.release_input()).await;}
         let _ = remote.end_session(&session_id);
     }))
 }
@@ -1148,88 +1176,34 @@ async fn screen_start(
 ) -> ApiResult<Json<serde_json::Value>> {
     let peer = ident(ext)?;
     require_scope(&peer, "remote")?;
-    let rating = s
-        .hw
-        .latest_audit()?
-        .and_then(|v| v.get("rating_streaming").and_then(|r| r.as_str().map(String::from)))
-        .unwrap_or_else(|| "limited".into());
-    let kind = req.direction.as_deref().unwrap_or("view");
-    if !["view","cast"].contains(&kind) { return Err(Error::BadRequest("direction must be view or cast".into()).into()); }
-    let kind: &'static str = if kind == "cast" {"cast"} else {"view"};
-    if !s.cfg.features.screen { return Err(Error::StorageUnavailable("screen sharing disabled".into()).into()); }
-    // Preferred path (M4): the helper's real media host captures the screen
-    // and answers the offer itself. When no helper is running, or the helper
-    // was built without the `screen` feature, fall back to the in-hub
-    // loopback peer (dev/test transport, honestly labeled).
-    if let Some(helper) = &s.helper {
-        let preset_str = req.preset.map(|p| format!("{p:?}")).unwrap_or_default();
-        let offer = req.offer_sdp.clone();
-        let h = helper.clone();
-        let forwarded = tokio::task::spawn_blocking(move || h.screen_offer(&offer, &preset_str, kind))
-            .await
-            .map_err(|e| Error::Internal(e.to_string()))?;
-        match forwarded {
-            Ok(v) => {
-                let session_id = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("helper").to_string();
-                let answer = v.get("answer_sdp").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-                s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.insert(session_id.clone(),peer.device_id.clone());
-                return Ok(Json(serde_json::json!({
-                    "session_id": session_id,
-                    "preset": req.preset,
-                    "answer_sdp": answer,
-                    "transport": "helper",
-                })));
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "helper screen host unavailable; using loopback peer");
-            }
-        }
-    }
-    let (session_id, preset, answer) =
-        s.stream.start_session(&peer.device_id, kind, req.preset, &rating, &req.offer_sdp)?;
-    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.insert(session_id.clone(),peer.device_id.clone());
-    Ok(Json(serde_json::json!({
-        "session_id": session_id,
-        "preset": preset,
-        "answer_sdp": answer,
-        "transport": "loopback",
-    })))
+    let rating=s.hw.latest_audit()?.and_then(|v|v.get("rating_streaming").and_then(|r|r.as_str().map(String::from))).unwrap_or_else(||"limited".into());
+    let kind=req.direction.as_deref().unwrap_or("view");
+    if !["view","cast"].contains(&kind){return Err(Error::BadRequest("direction must be view or cast".into()).into());}
+    if !s.db.get_setting("screen.enabled")?.map(|v|v=="true").unwrap_or(s.cfg.features.screen) {return Err(Error::ForbiddenScope("screen disabled".into()).into());}
+    let svc=s.stream.clone();let device=peer.device_id.clone();let kind=kind.to_string();let preset=req.preset;
+    let (id,preset,answer)=tokio::task::spawn_blocking(move||svc.start_session(&device,&kind,preset,&rating,&req.offer_sdp)).await.map_err(|e|Error::Internal(e.to_string()))??;
+    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex".into()))?.insert(id.clone(),peer.device_id);
+    Ok(Json(serde_json::json!({"session_id":id,"preset":preset,"answer_sdp":answer,"transport":"helper"})))
 }
-
-async fn screen_stop(
-    State(s): State<AppState>,
-    ext: Option<Extension<PeerIdentityExt>>,
-    Path(id): Path<String>,
-) -> ApiResult<StatusCode> {
-    let peer = ident(ext)?; require_scope(&peer,"remote")?;
-    let owner = s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.get(&id).cloned().ok_or_else(||Error::NotFound("screen session".into()))?;
-    if owner != peer.device_id { return Err(Error::ForbiddenScope("screen owner".into()).into()); }
-    if s.stream.active_sessions().iter().any(|session|session.id == id) { s.stream.stop_session(&id)?; }
-    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.remove(&id);
-    // Also stop any helper-hosted media session (no-op when none active).
-    if let Some(h) = &s.helper {
-        let h = h.clone();
-        let _ = tokio::task::spawn_blocking(move || h.screen_stop()).await;
-    }
-    Ok(StatusCode::NO_CONTENT)
+async fn screen_touch(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>,Path(id):Path<String>)->ApiResult<StatusCode>{let peer=ident(ext)?;require_scope(&peer,"remote")?;s.stream.touch_session(&id,&peer.device_id)?;Ok(StatusCode::NO_CONTENT)}
+async fn screen_stop(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>,Path(id):Path<String>)->ApiResult<StatusCode>{
+    let peer=ident(ext)?;require_scope(&peer,"remote")?;
+    let owner=s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex".into()))?.get(&id).cloned();
+    if owner.as_deref()!=Some(&peer.device_id){return Err(Error::ForbiddenScope("screen owner".into()).into());}
+    let stream=s.stream.clone();let sid=id.clone();tokio::task::spawn_blocking(move||stream.stop_session(&sid)).await.map_err(|e|Error::Internal(e.to_string()))??;
+    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex".into()))?.remove(&id);Ok(StatusCode::NO_CONTENT)
 }
 
 async fn screen_capabilities(
     State(s): State<AppState>,
     ext: Option<Extension<PeerIdentityExt>>,
 ) -> ApiResult<Json<hh_stream::ScreenCapabilities>> {
-    let _ = ident(ext)?;
-    let rating = s
-        .hw
-        .latest_audit()?
-        .and_then(|v| v.get("rating_streaming").and_then(|r| r.as_str().map(String::from)))
-        .unwrap_or_else(|| "limited".into());
-    let max = hh_stream::max_preset_for_rating(&rating).unwrap_or(hh_stream::Preset::Low);
-    Ok(Json(hh_stream::ScreenCapabilities {
-        encoders: vec![],
-        max_preset: max,
-        hw_encode: false,
-    }))
+    let peer=ident(ext)?;require_scope(&peer,"remote")?;
+    let helper=s.helper.clone();
+    let caps=tokio::task::spawn_blocking(move||helper.ok_or_else(||Error::BadRequest("screen helper unavailable".into()))?.screen_capabilities()).await.map_err(|e|Error::Internal(e.to_string()))??;
+    let encoders=caps["encoders"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    let max_preset=serde_json::from_value(caps["max_preset"].clone()).unwrap_or(hh_stream::Preset::Low);
+    Ok(Json(hh_stream::ScreenCapabilities{encoders,max_preset,hw_encode:caps["hw_encode"].as_bool().unwrap_or(false)}))
 }
 
 // ---- hardware & network ----

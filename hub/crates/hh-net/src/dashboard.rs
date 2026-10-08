@@ -174,6 +174,7 @@ async fn pair_qr(State(st): State<DashboardState>, headers: HeaderMap, Query(_q)
         .map(|a| a.clone())
         .unwrap_or_default();
     let payload = hh_auth::pairing::build_qr_payload(&hub_id, &window.token, &fp, &addrs, &name);
+    let payload=format!("{payload}&fp_sha256={}",st.app.ca.full_fingerprint());
     let svg = hh_auth::pairing::qr_svg(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let secs = st.app.pairing.seconds_remaining();
     let code = window.manual_code.clone();
@@ -206,7 +207,7 @@ async fn alerts(State(st): State<DashboardState>, headers: HeaderMap) -> Result<
     check_token(&st, &headers)?;
     let c = st.app.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut stmt = c
-        .prepare("SELECT id, severity, code, message, created_at FROM alerts WHERE resolved_at IS NULL ORDER BY created_at DESC")
+        .prepare("SELECT id, severity, code, message, created_at FROM alerts WHERE resolved_at IS NULL AND acknowledged_at IS NULL ORDER BY created_at DESC")
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let items: Vec<serde_json::Value> = stmt
         .query_map([], |r| {
@@ -381,21 +382,9 @@ fn hh_service_diagnostics(app: &AppState) -> serde_json::Value {
         .flatten()
         .and_then(|v| v.get("ratings").cloned())
         .unwrap_or(serde_json::Value::Null);
-    let scrub_root = app.cfg.library_root.to_string_lossy().to_string();
-    let data_root = app.cfg.data_dir.to_string_lossy().to_string();
-    let log_path = app.cfg.log_dir.join("hub.log");
-    let log_tail: Vec<String> = std::fs::read_to_string(&log_path)
-        .map(|full| {
-            full.lines()
-                .rev()
-                .take(100)
-                .map(|l| l.replace(&scrub_root, "<library>").replace(&data_root, "<data>"))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect()
-        })
-        .unwrap_or_default();
+    // Export bounded counters and action names only. Raw log details may
+    // contain filenames or peer-provided metadata and are never exported.
+    let log_tail:Vec<String>=Vec::new();
     serde_json::json!({
         "generated_at": hh_core::time::now_ms(),
         "privacy_note": "Contains no file names or file contents; library and data paths are scrubbed from logs.",
@@ -454,22 +443,24 @@ async fn second_copy_get(State(st): State<DashboardState>, headers: HeaderMap) -
     let interval: u32 = st
         .app
         .db
-        .get_setting("second_copy.interval_hours")
+        .get_setting("second_copy.interval_minutes")
         .ok()
         .flatten()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(24);
+        .unwrap_or(1440);
     Ok(Json(serde_json::json!({
-        "interval_hours": interval,
+        "interval_hours": interval / 60,
+        "interval_minutes": interval,
         "last_run_age_ms": st.app.storage.last_second_copy_age_ms().ok().flatten(),
     })))
 }
 
 async fn second_copy_set(State(st): State<DashboardState>, headers: HeaderMap, Json(req): Json<SecondCopySet>) -> Result<StatusCode, StatusCode> {
     check_token(&st, &headers)?;
+    if !(1..=720).contains(&req.interval_hours) { return Err(StatusCode::BAD_REQUEST); }
     st.app
         .db
-        .set_setting("second_copy.interval_hours", &req.interval_hours.to_string())
+        .set_setting("second_copy.interval_minutes", &(req.interval_hours * 60).to_string())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = st.app.db.audit(None, "second_copy_schedule", Some(&req.interval_hours.to_string()), None);
     Ok(StatusCode::NO_CONTENT)

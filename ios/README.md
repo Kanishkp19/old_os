@@ -1,25 +1,14 @@
-# Home Hub iOS (M3 MVP skeleton)
+# Home Hub iOS companion
 
-Scope for Phase 2: QR pairing, share-extension queue, background photo backup.
-Gallery and remote control are intentionally out of scope for the MVP.
+Open `HomeHub.xcodeproj` in Xcode 16+, deployment target iOS 17+. It includes native app, embedded share extension, XCTest and shared scheme. Project generation is reproducible using `python3 apple-shared/generate-projects.py`; generated files are checked in. No external packages are installed.
 
-## Building
+In Xcode select an Apple development team for both app and extension and provision **App Groups** with `group.com.homehub`. If your account needs a different unique group identifier, replace it consistently in both entitlements, `apple-shared/QueueStore.swift`, `HomeHubApp.swift` and the share extension before signing. Bundle identifiers are `com.homehub.ios` and `com.homehub.ios.share`; adapt them to your team if necessary. No signing keys or provisioning profiles are supplied. Camera, Photos and local-network usage explanations are in Info.plist; background identifier `com.homehub.backup` is registered at application launch.
 
-Open this folder in Xcode 16+ and create two targets:
+Implemented workflows:
+- Camera QR scan or pasted payload, pinned CA bootstrap before token, permanent device-only Keychain key/CSR, mTLS identity, renewal and verified Bonjour rediscovery.
+- Share extension copies providers' temporary files inside their load callbacks into durable App Group storage before dismissing. The app's non-secret paired hub ID is shared; the extension does not access Keychain credentials. Failed staging keeps already queued work and shows an error. Open the app to send waiting files.
+- Foreground sends use the resumable 4 MiB BLAKE3 transfer protocol, persisted retry backoff and completion hash/size verification. Queued private copies are removed only after a verified Hub receipt; originals in source apps remain untouched.
+- **Back up Photos now** explicitly requests Photos access, registers the camera-roll source, exports each original resource including Live Photo video/sidecars, discovers server differences and persists source-linked backup transfers. Small batches are sent while scanning to limit temporary duplication. Limited Photos authorization covers only the selected assets. iCloud-only resources are skipped without downloading over the internet, other local resources continue, and the app tells the user to download originals in Photos first.
+- Opt-in background backup uses `BGProcessingTask`, charging requirement (without an Internet-connectivity scheduling requirement) and cancellation on expiration. Queued sends also request opportunistic background processing. URLSession rejects cellular/expensive networking. iOS controls scheduling and may not launch the task after force-quit; keep the app open on home Wi-Fi for a complete backup. This is not a continuous background daemon or a guaranteed schedule. No photo/file deletion or free-phone-storage flow is present; all originals stay in Photos.
 
-1. **App target** `HomeHub` — add all files in `HomeHub/`.
-   Capabilities: App Groups (`group.com.homehub`), Background Modes
-   (fetch, processing), Keychain Sharing not required.
-2. **Share extension target** `HomeHubShare` — add `HomeHubShare/`,
-   share the App Group with the app target.
-
-The hub-side protocol is unchanged — iOS speaks the same API_SPEC v1 as
-Android and macOS. Pairing on iOS mirrors `android/.../PairingClient.kt`:
-generate a P-256 key in the Keychain, pin the CA fingerprint from the QR
-*before* sending the one-time token, POST the CSR to `https://<hub>:47802/pair`.
-
-## Status
-
-This is a bring-up skeleton for the M3 pilot: `PairingClient.pair` throws
-"not implemented" by design so the app cannot be mistaken for a shipping
-client. The Android and macOS clients are the reference implementations.
+Validation is deferred: no builds/tests/static checks/formatting were executed. The generated projects and XCTest sources need the later implementation-complete validation gate. Physical iPhone signing/provisioning, Keychain TLS client challenges, share-extension termination, limited Photos/Live Photo/iCloud-original export, restart/cancellation/BG expiration and home-Wi-Fi recovery remain unverified. See `../apple-shared/README.md` for the shared security contract and renewal recovery limitation.

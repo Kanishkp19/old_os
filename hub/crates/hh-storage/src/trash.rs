@@ -87,6 +87,8 @@ impl StorageService {
         tx.execute("UPDATE backup_items SET file_id=NULL,status='pending',verified_at=NULL WHERE file_id=?1",params![id]).map_err(db_e)?;
         tx.execute("UPDATE integrity_events SET file_id=NULL WHERE file_id=?1",params![id]).map_err(db_e)?;
         tx.execute("DELETE FROM cleanup_lease_items WHERE file_id=?1",params![id]).map_err(db_e)?;
+        tx.execute("UPDATE transfers SET result_file_id=NULL WHERE result_file_id=?1",params![id]).map_err(db_e)?;
+        tx.execute("DELETE FROM relay_delivery WHERE file_id=?1 AND status!='pending'",params![id]).map_err(db_e)?;
         tx.execute("DELETE FROM files WHERE id=?1",params![id]).map_err(db_e)?;
         tx.commit().map_err(db_e)?;
         Ok(())

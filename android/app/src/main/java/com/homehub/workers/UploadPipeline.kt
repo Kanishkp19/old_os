@@ -29,6 +29,7 @@ class UploadPipeline @Inject constructor(
     @ApplicationContext private val context: Context,
     private val queueDao: QueueDao,
     private val hub: HubClient,
+    private val trust: com.homehub.queue.HubTrustStore,
 ) {
     companion object {
         const val CHUNK = 4 * 1024 * 1024
@@ -42,18 +43,24 @@ class UploadPipeline @Inject constructor(
         try {
             queueDao.recoverInterrupted()
             val now = System.currentTimeMillis()
-            val due = queueDao.due(now)
+            val hubId = trust.load()?.hubId ?: return false
+            val due = queueDao.due(now).filter { it.hubId == hubId }
             if (due.isEmpty()) return false
 
             for (item in due) {
                 currentCoroutineContext().ensureActive()
-                if (item.kind != "backup" || BackupRules.allowed(context)) processItem(item, onProgress)
+                if (item.kind != "backup" || BackupRules.allowed(context)) {
+                    try { processItem(item, onProgress) }
+                    catch (e: CancellationException) { currentCoroutineContext().ensureActive() }
+                }
             }
-            return queueDao.due(Long.MAX_VALUE).isNotEmpty()
+            return queueDao.due(Long.MAX_VALUE).any { it.hubId == hubId && (it.kind != "backup" || BackupRules.allowed(context)) }
         } finally {
             mutex.unlock()
         }
     }
+
+    suspend fun hasOutstanding(): Boolean = trust.load()?.let { queueDao.outstandingCount(it.hubId) > 0 } ?: false
 
     private suspend fun processItem(item0: QueueItem, onProgress: suspend (QueueItem) -> Unit) {
         var item = item0
@@ -65,6 +72,7 @@ class UploadPipeline @Inject constructor(
         ) {
             queueDao.updateProgress(item.id, state, transferId, rootHash, attempts, nextAttemptAt, error, now())
             item = queueDao.get(item.id) ?: throw CancellationException("Transfer removed")
+            if (item.state == QueueItem.CANCELLED) throw CancellationException("Transfer cancelled")
             onProgress(item)
         }
 
@@ -84,7 +92,8 @@ class UploadPipeline @Inject constructor(
                 item = item.copy(size = actualSize, sourceMtime = meta.modified,
                     clientItemId = SourceReader.identity(uri, refreshed), rootHash = hash,
                     transferId = null, state = QueueItem.CONNECTING, bytesSent = 0)
-                queueDao.upsert(item)
+                queueDao.refreshSource(item.id, item.size, item.sourceMtime, item.clientItemId, item.rootHash, item.transferId, item.bytesSent)
+                item = queueDao.get(item.id)?.takeIf { it.state != QueueItem.CANCELLED } ?: throw CancellationException("Transfer cancelled")
                 if (item.kind == "backup") {
                     val source = requireNotNull(item.backupSourceId)
                     hub.post("/v1/backup/sources/$source/diff", org.json.JSONArray().put(JSONObject()
@@ -93,7 +102,8 @@ class UploadPipeline @Inject constructor(
                 }
             } else if (item.rootHash == null || item.size < 0) {
                 item = item.copy(rootHash = hash, size = actualSize)
-                queueDao.upsert(item)
+                queueDao.refreshSource(item.id, item.size, item.sourceMtime, item.clientItemId, item.rootHash, item.transferId, item.bytesSent)
+                item = queueDao.get(item.id)?.takeIf { it.state != QueueItem.CANCELLED } ?: throw CancellationException("Transfer cancelled")
             }
 
             // Create or resume the transfer.
@@ -133,29 +143,31 @@ class UploadPipeline @Inject constructor(
             set(QueueItem.VERIFYING)
             val current = SourceReader.hash(context, uri)
             if (current.first != item.rootHash || current.second != item.size)
-                throw PermException("This file changed while sending. Send its new copy again.")
+                throw PermException(context.getString(com.homehub.R.string.error_source_changed))
             val completed = hub.complete(transferId, item.rootHash!!)
             require(completed.optBoolean("verified") && completed.getString("hash") == item.rootHash
                 && completed.getLong("size") == item.size) { "Home has not verified this copy" }
             queueDao.setResult(item.id, completed.getString("file_id"))
             set(QueueItem.DONE)
         } catch (e: CancellationException) {
-            set(QueueItem.QUEUED)
+            if (queueDao.get(item.id)?.state != QueueItem.CANCELLED) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { set(QueueItem.QUEUED) }
+            }
             throw e
         } catch (e: java.io.FileNotFoundException) {
-            set(QueueItem.FAILED_PERM, error = "This file is no longer available")
+            set(QueueItem.FAILED_PERM, error = context.getString(com.homehub.R.string.error_missing))
         } catch (e: SecurityException) {
-            set(QueueItem.FAILED_PERM, error = "Access to this file was removed")
+            set(QueueItem.FAILED_PERM, error = context.getString(com.homehub.R.string.error_access))
         } catch (e: PermException) {
             set(QueueItem.FAILED_PERM, error = e.message)
         } catch (e: Exception) {
             val attempts = item.attempts + 1
             if (attempts >= MAX_ATTEMPTS) {
-                set(QueueItem.FAILED_PERM, attempts = attempts, error = "gave up: ${e.message}")
+                set(QueueItem.FAILED_PERM, attempts = attempts, error = com.homehub.ui.UserErrors.message(context, e))
             } else {
                 val backoffMs = min(2.0.pow(attempts).toLong() * 60_000L, 6L * 60 * 60_000L)
                 set(QueueItem.FAILED_RETRY, attempts = attempts,
-                    nextAttemptAt = now() + backoffMs, error = e.message)
+                    nextAttemptAt = now() + backoffMs, error = com.homehub.ui.UserErrors.message(context, e))
             }
         }
     }
@@ -168,20 +180,20 @@ class UploadPipeline @Inject constructor(
             val buffer = ByteArray(CHUNK)
             for (idx in 0 until chunkCount) {
                 currentCoroutineContext().ensureActive()
-                if (queueDao.get(item.id) == null) throw CancellationException("Transfer removed")
+                if (queueDao.get(item.id)?.state == QueueItem.CANCELLED || queueDao.get(item.id) == null) throw CancellationException("Transfer removed")
                 if (item.kind == "backup" && !BackupRules.allowed(context)) throw java.io.IOException("Waiting for your backup rules")
                 val expected = min(CHUNK.toLong(), item.size - idx * CHUNK).toInt()
                 var filled = 0
                 while (filled < expected) {
                     val n = input.read(buffer, filled, expected - filled)
-                    if (n < 0) throw PermException("This file changed while sending")
+                    if (n < 0) throw PermException(context.getString(com.homehub.R.string.error_source_changed))
                     filled += n
                 }
                 if (!isCovered(idx, have)) {
                     val chunk = buffer.copyOf(expected)
                     when (val code = hub.putChunk(transferId, idx, chunk, Blake3.hashHex(chunk))) {
                         200, 201, 204 -> Unit
-                        401, 403 -> throw PermException("This device is no longer allowed to send")
+                        401, 403 -> throw PermException(context.getString(com.homehub.R.string.error_permission))
                         else -> throw HubClient.ApiException(code)
                     }
                 }
@@ -189,7 +201,7 @@ class UploadPipeline @Inject constructor(
                 queueDao.setBytes(item.id, bytes, System.currentTimeMillis())
                 onProgress(item.copy(bytesSent = bytes, state = QueueItem.UPLOADING))
             }
-            if (input.read() != -1) throw PermException("This file changed while sending")
+            if (input.read() != -1) throw PermException(context.getString(com.homehub.R.string.error_source_changed))
         }
     }
 

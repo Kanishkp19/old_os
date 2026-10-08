@@ -115,6 +115,7 @@ impl DiskHealth for NativeDiskHealth {
         Ok(sysinfo::Disks::new_with_refreshed_list().iter().map(|d|hh_core::platform::DiskInfo{id:d.mount_point().to_string_lossy().to_string(),model:Some(d.name().to_string_lossy().to_string()),serial:None,media_type:"unknown".into(),size_bytes:d.total_space()}).collect())
     }
     fn smart(&self,id:&str)->Result<hh_core::platform::SmartReport> {
+        #[allow(unused_mut)]
         let mut report=hh_core::platform::SmartReport{health:"unknown".into(),predict_failure:None,temperature_c:None,power_on_hours:None,reallocated_sectors:None,pending_sectors:None,raw_json:None};
         #[cfg(not(windows))] let _=id;
         #[cfg(windows)] if let Ok(rows)=physical_disks(){if let Some(row)=rows.iter().find(|r|r["UniqueId"].as_str()==Some(id)) {

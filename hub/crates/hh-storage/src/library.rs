@@ -159,9 +159,13 @@ pub(crate) fn disk_path(c:&rusqlite::Connection,id:&str,include_trash:bool)->Res
 }
 
 pub(crate) fn assert_mutable(c:&rusqlite::Connection,id:&str)->Result<()> {
+    let moving:i64=c.query_row("SELECT COUNT(*) FROM jobs WHERE kind='library_move' AND status IN ('queued','running')",[],|r|r.get(0)).map_err(db_e)?;
+    if moving>0{return Err(Error::Conflict("library move is in progress".into()));}
     let mode:String=c.query_row("SELECT source_mode FROM files WHERE id=?1",params![id],|r|r.get(0)).map_err(db_e)?;
     if mode=="keep_in_place" {return Err(Error::Conflict("externally managed file: originals cannot be modified".into()));}
     let pinned:i64=c.query_row("SELECT COUNT(*) FROM cleanup_lease_items i JOIN cleanup_leases l ON l.id=i.lease_id WHERE i.file_id=?1 AND l.state='active'",params![id],|r|r.get(0)).map_err(db_e)?;
     if pinned>0 {return Err(Error::Conflict("file protected by pending phone cleanup".into()));}
+    let staged:i64=c.query_row("SELECT COUNT(*) FROM relay_delivery WHERE file_id=?1 AND status='pending'",params![id],|r|r.get(0)).map_err(db_e)?;
+    if staged>0 {return Err(Error::Conflict("file protected by pending delivery; cancel delivery first".into()));}
     Ok(())
 }

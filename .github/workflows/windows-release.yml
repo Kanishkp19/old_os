@@ -1,0 +1,35 @@
+name: Windows release preparation
+on:
+  workflow_dispatch:
+jobs:
+  windows-source-build:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build service and session components
+        working-directory: hub
+        run: cargo build --release -p hh-service -p hh-session -p hh-tray -p hh-tools
+      - name: Build desktop and shared dashboard
+        working-directory: desktop
+        run: |
+          npm install --no-audit --no-fund
+          npm run desktop:build
+      - name: Upload unsigned source-build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: home-hub-windows-unsigned
+          path: |
+            hub/target/release/hh-service.exe
+            hub/target/release/hh-session.exe
+            hub/target/release/hh-tray.exe
+            hub/target/release/hh-tools.exe
+            desktop/src-tauri/target/release/hh-desktop.exe
+            hub/dashboard/index.html
+            hub/dashboard/app.js
+            hub/dashboard/style.css

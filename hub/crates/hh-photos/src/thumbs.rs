@@ -140,8 +140,8 @@ pub fn dhash64(img: &image::DynamicImage) -> Option<u64> {
     let small = image::imageops::resize(&gray, 9, 8, image::imageops::FilterType::Triangle);
     let mut hash: u64 = 0;
     let mut bit = 0;
-    for y in 0..8usize {
-        for x in 0..8usize {
+    for y in 0..8u32 {
+        for x in 0..8u32 {
             let left = small.get_pixel(x, y).0[0] as i16;
             let right = small.get_pixel(x + 1, y).0[0] as i16;
             if left > right {

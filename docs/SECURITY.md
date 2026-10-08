@@ -55,7 +55,7 @@ Out of scope (v1): nation-state attackers, compromised Windows kernel, malicious
 | Device certs | 1-year validity, auto-renew at <30 days, CN=device_id, SAN URI `homehub:device:<id>` |
 | Integrity | BLAKE3 (chunk + tree root) |
 | Token hashing | SHA-256 of 128-bit random token at rest |
-| Update signing | Ed25519, public key pinned in binary |
+| Update signing | Ed25519, owner-configured public key stored in protected Hub settings; installer SHA-256 in the signed manifest |
 | Randomness | OS CSPRNG only |
 
 ### Key storage (Windows)
@@ -81,6 +81,8 @@ Out of scope (v1): nation-state attackers, compromised Windows kernel, malicious
 | `admin` | Device management, settings, second-copy (typically only the first/owner device) |
 
 Dashboard (loopback) uses Windows user session; it is the only way to grant `admin` to additional devices (or via first device owner confirm).
+
+The installer records the chosen owner account SID in `%ProgramData%\HomeHub\authorized-owner.sid` under SYSTEM/Administrators ACLs. The service gives only that SID read access to the local dashboard token. The Tauri trusted Home Hub view and external browser tabs use separate WebView2 profiles and capabilities. Website content cannot call privileged commands or receive the Hub token. A paired certificate is rechecked against device status, scopes and serial on requests and active connections. The session helper accepts only the installed service identity on a bounded local pipe; screen sessions have an exact owner and expire on disconnect or missed heartbeats.
 
 ## 7. Network hardening
 

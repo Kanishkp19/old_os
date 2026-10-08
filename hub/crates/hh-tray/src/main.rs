@@ -1,363 +1,127 @@
-//! hh-tray: per-user tray app (FR-1.3, M3).
-//!
-//! Shows hub status at a glance (online/offline, free GB, device and transfer
-//! counts), opens the local dashboard, opens a pairing window and surfaces
-//! the manual code, and shows an "Update available" entry when the hub
-//! reports one (W2.6 signed-manifest channel).
-//!
-//! All dashboard traffic is loopback-only and authenticated with the local
-//! token the hub persists to `<data_dir>/dashboard_token` (same-user read).
-//! The tray never talks to the LAN API and holds no secrets beyond that
-//! local token.
-
-use std::time::Duration;
-
+//! Single per-owner tray. Only fixed-loopback requests; no internet update polling.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use std::{fs::File, io::Read, path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use clap::Parser;
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
-use winit::application::ApplicationHandler;
-use winit::event_loop::{EventLoop, EventLoopProxy, EventLoopWindowTarget};
-use winit::window::Window;
+use fs2::FileExt;
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy}, window::WindowId};
 
+const BASE:&str="http://127.0.0.1:47801";
+const MAX_RESPONSE:u64=64*1024;
 #[derive(Parser)]
-#[command(name = "hh-tray", about = "Home Hub tray app")]
+#[command(name="hh-tray",about="Home Hub owner-session tray")]
 struct Args {
-    /// Dashboard base URL (default the hub's loopback listener).
-    #[arg(long, default_value = "http://127.0.0.1:47801")]
-    dashboard_url: String,
-    /// Explicit local token (default: read `<data_dir>/dashboard_token`).
-    #[arg(long)]
-    token: Option<String>,
-    /// Hub data dir holding `dashboard_token` (default: hh-core default).
-    #[arg(long)]
-    data_dir: Option<String>,
-    /// Status poll interval in seconds.
-    #[arg(long, default_value_t = 5)]
-    poll_secs: u64,
+    #[arg(long)] data_dir:Option<PathBuf>,
+    #[arg(long,default_value_t=5)] poll_secs:u64,
 }
-
-/// Snapshot pushed from the poll thread to the UI thread.
-#[derive(Clone, Default)]
-struct Status {
-    online: bool,
-    hub_name: String,
-    free_bytes: Option<u64>,
-    devices: u64,
-    transfers: u64,
-    version: String,
-    /// (version, url) when the hub reports an update (W2.6).
-    update: Option<(String, String)>,
-}
-
-enum UserEvent {
-    Status(Status),
-}
-
-struct Ids {
-    status: tray_icon::menu::MenuId,
-    pair: tray_icon::menu::MenuId,
-    open: tray_icon::menu::MenuId,
-    update: tray_icon::menu::MenuId,
-    quit: tray_icon::menu::MenuId,
-}
-
-impl Ids {
-    fn new() -> Self {
-        Self {
-            status: tray_icon::menu::MenuId::new("status"),
-            pair: tray_icon::menu::MenuId::new("pair"),
-            open: tray_icon::menu::MenuId::new("open"),
-            update: tray_icon::menu::MenuId::new("update"),
-            quit: tray_icon::menu::MenuId::new("quit"),
-        }
-    }
-}
-
-struct App {
-    ctx: Ctx,
-    proxy: EventLoopProxy<UserEvent>,
-    ids: Ids,
-    tray: Option<TrayIcon>,
-    status: Status,
-}
-
-struct Ctx {
-    base: String,
-    token: String,
-    agent: ureq::Agent,
-}
-
+#[derive(Clone,Default)]
+struct Status {online:bool,name:String,free:Option<u64>,devices:u64,transfers:u64,paused:Option<bool>,language:String}
+enum UserEvent {Status(Status),Menu(MenuId),Open,Message(String,String)}
+#[derive(Clone)]
+struct Ctx {data_dir:PathBuf,desktop:PathBuf,agent:ureq::Agent}
 impl Ctx {
-    fn fetch_status(&self) -> Status {
-        let mut s = Status { online: false, ..Default::default() };
-        let url = format!("{}/api/overview", self.base);
-        let resp = self.agent.get(&url).set("X-HH-Local", &self.token).call();
-        if let Ok(mut resp) = resp {
-            if let Ok(v) = resp.into_json::<serde_json::Value>() {
-                s.online = true;
-                s.hub_name = v["name"].as_str().unwrap_or("Home Hub").to_string();
-                s.free_bytes = v["free_bytes"].as_u64();
-                s.devices = v["devices"].as_u64().unwrap_or(0);
-                s.transfers = v["active_transfers"].as_u64().unwrap_or(0);
-                s.version = v["version"].as_str().unwrap_or("").to_string();
-            }
-        }
-        // Update channel (W2.6): optional endpoint; absence is not an error.
-        if s.online {
-            if let Ok(mut resp) = self
-                .agent
-                .get(&format!("{}/api/update", self.base))
-                .set("X-HH-Local", &self.token)
-                .call()
-            {
-                if let Ok(v) = resp.into_json::<serde_json::Value>() {
-                    if v["available"].as_bool().unwrap_or(false) {
-                        s.update = Some((
-                            v["latest_version"].as_str().unwrap_or("").to_string(),
-                            v["url"].as_str().unwrap_or("").to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-        s
+    fn token(&self)->Result<String,String> {
+        let path=self.data_dir.join("dashboard_token");
+        let meta=std::fs::symlink_metadata(&path).map_err(|_|"Home Hub service is unavailable or this Windows account is not the authorized owner.")?;
+        if !meta.is_file()||meta.file_type().is_symlink()||meta.len()>512 {return Err("Invalid local service credential".into());}
+        let value=std::fs::read_to_string(path).map_err(|_|"Open Home Hub as the authorized Windows owner")?;
+        let value=value.trim();if value.len()<16||value.len()>256||!value.bytes().all(|b|b.is_ascii_alphanumeric()||b"-_= ".contains(&b)&&b!=b' '){return Err("Invalid local service credential".into());}Ok(value.into())
     }
-
-    /// Open a pairing window and return the manual code for the dialog.
-    fn open_pairing(&self) -> Result<String, String> {
-        self.agent
-            .post(&format!("{}/api/pair/open", self.base))
-            .set("X-HH-Local", &self.token)
-            .call()
-            .map_err(|e| format!("hub unreachable ({e})"))?;
-        let mut resp = self
-            .agent
-            .get(&format!("{}/api/pair/qr", self.base))
-            .set("X-HH-Local", &self.token)
-            .call()
-            .map_err(|e| format!("pairing window failed ({e})"))?;
-        let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
-        let code = v["manual_code"].as_str().unwrap_or("").to_string();
-        let secs = v["expires_in"].as_i64().unwrap_or(0);
-        if code.is_empty() {
-            return Err("hub did not return a pairing code".into());
-        }
-        Ok(format!("Enter this code in the Home Hub mobile app:\n\n{code}\n\n(Valid for {secs} seconds)"))
+    fn request(&self,path:&str,body:Option<serde_json::Value>)->Result<serde_json::Value,String> {
+        if !matches!(path,"/api/overview"|"/api/settings"|"/api/pair/open"|"/api/pair/qr"|"/api/pause-sharing") {return Err("Unsupported tray action".into());}
+        // Read anew for every request; the service rotates this token on restart.
+        let token=self.token()?;let url=format!("{BASE}{path}");
+        let response=if let Some(body)=body {self.agent.post(&url).set("X-HH-Local",&token).send_json(body)} else {self.agent.get(&url).set("X-HH-Local",&token).call()}.map_err(|_|"Home Hub is not reachable. Start the service and try again.")?;
+        if response.status()==204{return Ok(serde_json::Value::Null);}
+        let mut bytes=Vec::new();response.into_reader().take(MAX_RESPONSE+1).read_to_end(&mut bytes).map_err(|_|"Local response was interrupted")?;
+        if bytes.len() as u64>MAX_RESPONSE{return Err("Local response exceeds tray limits".into());}
+        serde_json::from_slice(&bytes).map_err(|_|"Home Hub returned an invalid response".into())
+    }
+    fn status(&self)->Status {
+        let Ok(value)=self.request("/api/overview",None) else{return Status::default();};
+        let settings=self.request("/api/settings",None).unwrap_or(serde_json::Value::Null);
+        Status {online:true,name:value["name"].as_str().unwrap_or("Home Hub").chars().take(80).collect(),free:value["free_bytes"].as_u64(),devices:value["devices"].as_u64().unwrap_or(0),transfers:value["active_transfers"].as_u64().unwrap_or(0),paused:settings["pause_sharing"].as_bool(),language:settings["language"].as_str().unwrap_or("en").into()}
+    }
+    fn open(&self)->Result<(),String> {
+        if !self.desktop.is_file(){return Err("The native Home Hub app is missing. Repair the installation.".into());}
+        std::process::Command::new(&self.desktop).arg("--data-dir").arg(&self.data_dir).spawn().map_err(|_|"Could not open Home Hub")?;Ok(())
+    }
+    fn pair(&self)->Result<String,String> {
+        self.request("/api/pair/open",Some(serde_json::json!({})))?;
+        let value=self.request("/api/pair/qr",None)?;
+        let code=value["manual_code"].as_str().filter(|v|v.len()==6&&v.bytes().all(|b|b.is_ascii_digit())).ok_or("Home Hub did not return a valid pairing code")?;
+        let secs=value["expires_in"].as_u64().unwrap_or(0).min(300);
+        self.open()?;
+        Ok(format!("Scan the code in Home Hub, or enter {code} on your phone.\n\nExpires in {secs} seconds. Approve a manual pairing request in the Home Hub app."))
     }
 }
-
-fn fmt_gb(n: Option<u64>) -> String {
-    match n {
-        Some(b) => format!("{:.1} GB", b as f64 / 1_073_741_824.0),
-        None => "?".into(),
-    }
-}
-
+fn text(language:&str,en:&str,hi:&str)->String {if language=="hi"{hi.into()}else{en.into()}}
+fn gb(value:Option<u64>)->String {value.map(|n|format!("{:.1} GB",n as f64/1_073_741_824.0)).unwrap_or_else(||"—".into())}
+struct App {ctx:Ctx,proxy:EventLoopProxy<UserEvent>,tray:Option<TrayIcon>,status:Status,stop:Arc<AtomicBool>,action:bool}
 impl App {
-    fn tooltip(&self) -> String {
-        if self.status.online {
-            format!(
-                "Home Hub — online · {} free · {} device(s) · {} transfer(s)",
-                fmt_gb(self.status.free_bytes),
-                self.status.devices,
-                self.status.transfers
-            )
-        } else {
-            "Home Hub — offline".to_string()
-        }
+    fn menu(&mut self) {
+        let language=&self.status.language;
+        let status=if self.status.online {format!("{} · {} · {} / {}",self.status.name,gb(self.status.free),self.status.devices,self.status.transfers)}else{text(language,"Home Hub — service unavailable","Home Hub — सेवा उपलब्ध नहीं")};
+        let menu=Menu::new();
+        let _=menu.append(&MenuItem::with_id("status",&status,false,None));let _=menu.append(&PredefinedMenuItem::separator());
+        let _=menu.append(&MenuItem::with_id("open",text(language,"Open Home Hub","Home Hub खोलें"),true,None));
+        let _=menu.append(&MenuItem::with_id("pair",text(language,"Pair a device…","डिवाइस जोड़ें…"),self.status.online&&!self.action,None));
+        let pause=if self.status.paused==Some(true){text(language,"Resume sharing","साझा करना शुरू करें")}else{text(language,"Pause sharing","साझा करना रोकें")};
+        let _=menu.append(&MenuItem::with_id("pause",pause,self.status.online&&self.status.paused.is_some()&&!self.action,None));
+        let _=menu.append(&PredefinedMenuItem::separator());let _=menu.append(&MenuItem::with_id("quit",text(language,"Quit tray (Hub keeps running)","ट्रे बंद करें (हब चलता रहेगा)"),true,None));
+        if let Some(tray)=&self.tray {let _=tray.set_menu(Some(Box::new(menu)));let _=tray.set_tooltip(Some(status));}
     }
-
-    fn rebuild_menu(&mut self) {
-        let status_label = if self.status.online {
-            format!(
-                "{} · {} free · {} devices · {} transfers",
-                self.status.hub_name,
-                fmt_gb(self.status.free_bytes),
-                self.status.devices,
-                self.status.transfers
-            )
-        } else {
-            "Home Hub — offline".to_string()
-        };
-        let menu = Menu::new();
-        let _ = menu.append(&MenuItem::with_id(self.ids.status.clone(), status_label, false, None));
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        let _ = menu.append(&MenuItem::with_id(self.ids.pair.clone(), "Pair a device…", true, None));
-        let _ = menu.append(&MenuItem::with_id(self.ids.open.clone(), "Open dashboard", true, None));
-        if let Some((ver, _url)) = &self.status.update {
-            if !ver.is_empty() {
-                let _ = menu.append(&MenuItem::with_id(
-                    self.ids.update.clone(),
-                    format!("Update available — v{ver}"),
-                    true,
-                    None,
-                ));
-            }
-        }
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        let _ = menu.append(&MenuItem::with_id(self.ids.quit.clone(), "Quit Home Hub tray", true, None));
-        if let Some(tray) = &self.tray {
-            let _ = tray.set_menu(Some(Box::new(menu)));
-            let _ = tray.set_tooltip(Some(self.tooltip()));
-        }
-    }
-
-    fn handle_menu(&mut self, elwt: &EventLoopWindowTarget<UserEvent>, id: &tray_icon::menu::MenuId) {
-        if *id == self.ids.quit {
-            elwt.exit();
-        } else if *id == self.ids.open || *id == self.ids.status {
-            let _ = open::that(&self.ctx.base);
-        } else if *id == self.ids.update {
-            if let Some((_, url)) = self.status.update.clone() {
-                if !url.is_empty() {
-                    let _ = open::that(&url);
-                }
-            }
-        } else if *id == self.ids.pair {
-            match self.ctx.open_pairing() {
-                Ok(msg) => info_dialog("Pair a device", &msg),
-                Err(e) => info_dialog("Pair a device", &format!("Could not open a pairing window:\n{e}")),
-            }
+    fn action(&mut self,event_loop:&ActiveEventLoop,id:MenuId) {
+        if id==MenuId::new("quit") {self.stop.store(true,Ordering::Release);event_loop.exit();return;}
+        if id==MenuId::new("open") {if let Err(e)=self.ctx.open(){dialog("Home Hub",&e);}return;}
+        if self.action{return;}let ctx=self.ctx.clone();let proxy=self.proxy.clone();let paused=self.status.paused;
+        if id==MenuId::new("pair")||id==MenuId::new("pause") {
+            self.action=true;self.menu();
+            std::thread::spawn(move|| {
+                let result=if id==MenuId::new("pair"){ctx.pair()}else{ctx.request("/api/pause-sharing",Some(serde_json::json!({"paused":paused!=Some(true)}))).map(|_|String::new())};
+                let message=result.unwrap_or_else(|e|e);let _=proxy.send_event(UserEvent::Message("Home Hub".into(),message));let _=proxy.send_event(UserEvent::Status(ctx.status()));
+            });
         }
     }
 }
-
-fn info_dialog(title: &str, msg: &str) {
-    rfd::MessageDialog::new()
-        .set_title(title)
-        .set_description(msg)
-        .set_buttons(rfd::MessageButtons::Ok)
-        .set_level(rfd::MessageLevel::Info)
-        .show();
-}
-
+fn dialog(title:&str,value:&str) {rfd::MessageDialog::new().set_title(title).set_description(value).set_buttons(rfd::MessageButtons::Ok).show();}
 impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, _event_loop: &EventLoopWindowTarget<UserEvent>) {
-        let icon = app_icon();
-        match TrayIconBuilder::new()
-            .with_menu(Box::new(Menu::new()))
-            .with_tooltip("Home Hub — starting…")
-            .with_icon(icon)
-            .build()
-        {
-            Ok(tray) => self.tray = Some(tray),
-            Err(e) => {
-                eprintln!("hh-tray: failed to create tray icon: {e}");
-            }
-        }
-        self.rebuild_menu();
+    fn resumed(&mut self,event_loop:&ActiveEventLoop) {
+        if self.tray.is_some(){return;}
+        match app_icon().and_then(|icon|TrayIconBuilder::new().with_menu(Box::new(Menu::new())).with_tooltip("Home Hub").with_icon(icon).build().map_err(|_|"Could not create the Windows tray icon".into())) {Ok(tray)=>{self.tray=Some(tray);self.menu();},Err(e)=>{dialog("Home Hub",&e);event_loop.exit();}}
     }
-
-    fn user_event(&mut self, elwt: &EventLoopWindowTarget<UserEvent>, event: UserEvent) {
-        match event {
-            UserEvent::Status(s) => {
-                self.status = s;
-                self.rebuild_menu();
-            }
-        }
-        drain_menu_events(self, elwt);
+    fn window_event(&mut self,_:&ActiveEventLoop,_:WindowId,_:WindowEvent) {}
+    fn user_event(&mut self,event_loop:&ActiveEventLoop,event:UserEvent) {
+        match event {UserEvent::Status(status)=>{self.status=status;self.menu();},UserEvent::Menu(id)=>self.action(event_loop,id),UserEvent::Open=>{if let Err(e)=self.ctx.open(){dialog("Home Hub",&e);}},UserEvent::Message(title,value)=>{self.action=false;self.menu();if !value.is_empty(){dialog(&title,&value);}}}
     }
-
-    fn about_to_wait(&mut self, elwt: &EventLoopWindowTarget<UserEvent>) {
-        drain_menu_events(self, elwt);
-    }
+    fn exiting(&mut self,_:&ActiveEventLoop) {self.stop.store(true,Ordering::Release);self.tray=None;}
 }
-
-fn drain_menu_events(app: &mut App, elwt: &EventLoopWindowTarget<UserEvent>) {
-    let receiver = MenuEvent::receiver();
-    while let Ok(ev) = receiver.try_recv() {
-        app.handle_menu(elwt, &ev.id);
-    }
+fn app_icon()->Result<Icon,String> {
+    let mut rgba=vec![0u8;32*32*4];
+    let mut put=|x:usize,y:usize,c:[u8;3]|{let i=(y*32+x)*4;rgba[i..i+3].copy_from_slice(&c);rgba[i+3]=255;};
+    for y in 2..=14 {let half=(y-2)*14/12;for x in 15-half..=15+half{put(x,y,[42,108,76]);}}
+    for y in 15..30{for x in 6..26{put(x,y,if (13..=18).contains(&x)&&y>=21{[30,40,35]}else{[238,241,233]});}}
+    Icon::from_rgba(rgba,32,32).map_err(|_|"Could not create the Windows tray icon".into())
 }
-
-/// A 32×32 house glyph so the tray has a real icon without shipping assets.
-fn app_icon() -> Icon {
-    const W: usize = 32;
-    let mut rgba = vec![0u8; W * W * 4];
-    let put = |x: usize, y: usize, c: [u8; 3]| {
-        let i = (y * W + x) * 4;
-        rgba[i] = c[0];
-        rgba[i + 1] = c[1];
-        rgba[i + 2] = c[2];
-        rgba[i + 3] = 255;
-    };
-    let roof = [226u8, 98, 44]; // warm orange
-    let body = [238u8, 238, 238];
-    // Roof: filled triangle from (2,14) to (29,14) apex (15,2).
-    for y in 2..=14usize {
-        let half = ((y - 2) * 14 / 12).clamp(0, 14);
-        for x in (15 - half)..=(15 + half) {
-            if x < W {
-                put(x, y, roof);
-            }
-        }
-    }
-    // Body: rectangle (6,15)..(25,29) with a door notch.
-    for y in 15..30usize {
-        for x in 6..26usize {
-            let door = x >= 13 && x <= 18 && y >= 21;
-            if door {
-                put(x, y, [40, 44, 52]);
-            } else {
-                put(x, y, body);
-            }
-        }
-    }
-    Icon::from_rgba(rgba, W as u32, W as u32).expect("icon rgba size matches")
+fn instance()->Result<Option<File>,String> {
+    #[cfg(windows)] let root=std::env::var_os("LOCALAPPDATA").map(PathBuf::from).ok_or("Windows user profile is unavailable")?.join("HomeHub");
+    #[cfg(not(windows))] let root=std::env::var_os("HOME").map(PathBuf::from).ok_or("User profile unavailable")?.join(".homehub-tray");
+    std::fs::create_dir_all(&root).map_err(|_|"Cannot open tray state")?;
+    let path=root.join("tray.lock");if std::fs::symlink_metadata(&path).is_ok_and(|m|m.file_type().is_symlink()){return Err("Invalid tray lock".into());}
+    let file=std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(path).map_err(|_|"Cannot open tray state")?;
+    match file.try_lock_exclusive(){Ok(())=>Ok(Some(file)),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>Ok(None),Err(_)=>Err("Cannot lock tray state".into())}
 }
-
-fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_ansi(false)
-        .init();
-
-    let args = Args::parse();
-    let token = match args.token {
-        Some(t) => t,
-        None => {
-            let mut dir = match &args.data_dir {
-                Some(d) => std::path::PathBuf::from(d),
-                None => hh_core::Config::default().data_dir,
-            };
-            dir.push("dashboard_token");
-            std::fs::read_to_string(&dir)
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default()
-        }
-    };
-
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_millis(800))
-        .timeout(Duration::from_secs(4))
-        .build();
-    let ctx = Ctx { base: args.dashboard_url.trim_end_matches('/').to_string(), token, agent };
-
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
-    let proxy = event_loop.create_proxy();
-
-    // Status poll thread: pushes snapshots into the UI thread. Runs even when
-    // the hub is down so the tooltip flips to "offline".
-    {
-        let proxy = proxy.clone();
-        let ctx_poll = Ctx { base: ctx.base.clone(), token: ctx.token.clone(), agent: ctx.agent.clone() };
-        std::thread::spawn(move || {
-            loop {
-                let s = ctx_poll.fetch_status();
-                if proxy.send_event(UserEvent::Status(s)).is_err() {
-                    return; // UI gone
-                }
-                std::thread::sleep(Duration::from_secs(args.poll_secs.max(1)));
-            }
-        });
-    }
-
-    let mut app = App { ctx, proxy, ids: Ids::new(), tray: None, status: Status::default() };
-    let _: Option<Window> = None;
-    if let Err(e) = event_loop.run_app(&mut app) {
-        eprintln!("hh-tray: event loop error: {e}");
-        std::process::exit(1);
-    }
+fn run()->Result<(),String> {
+    let args=Args::parse();let Some(_instance)=instance()? else{return Ok(());};
+    let desktop=std::env::current_exe().map_err(|_|"Cannot locate installed Home Hub")?.parent().ok_or("Cannot locate installed Home Hub")?.join("hh-desktop.exe");
+    let agent=ureq::AgentBuilder::new().redirects(0).try_proxy_from_env(false).timeout_connect(Duration::from_millis(800)).timeout(Duration::from_secs(4)).build();
+    let ctx=Ctx{data_dir:args.data_dir.unwrap_or_else(||hh_core::Config::default().data_dir),desktop,agent};
+    let event_loop=EventLoop::<UserEvent>::with_user_event().build().map_err(|_|"Cannot start Windows tray")?;let proxy=event_loop.create_proxy();
+    {let proxy=proxy.clone();MenuEvent::set_event_handler(Some(move|event:MenuEvent|{let _=proxy.send_event(UserEvent::Menu(event.id));}));}
+    {let proxy=proxy.clone();TrayIconEvent::set_event_handler(Some(move|event:TrayIconEvent|{if matches!(event,TrayIconEvent::Click {button:tray_icon::MouseButton::Left,button_state:tray_icon::MouseButtonState::Up,..}){let _=proxy.send_event(UserEvent::Open);}}));}
+    let stop=Arc::new(AtomicBool::new(false));let stop_poll=stop.clone();let poll_ctx=ctx.clone();let poll_proxy=proxy.clone();let interval=args.poll_secs.clamp(5,60);
+    std::thread::spawn(move||{while !stop_poll.load(Ordering::Acquire){let _=poll_proxy.send_event(UserEvent::Status(poll_ctx.status()));for _ in 0..interval*4 {if stop_poll.load(Ordering::Acquire){return;}std::thread::sleep(Duration::from_millis(250));}}});
+    let mut app=App{ctx,proxy,tray:None,status:Status::default(),stop:stop.clone(),action:false};let result=event_loop.run_app(&mut app).map_err(|_|"Windows tray stopped unexpectedly".into());stop.store(true,Ordering::Release);result
 }
+fn main(){if let Err(e)=run(){dialog("Home Hub",&e);}}

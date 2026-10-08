@@ -15,6 +15,7 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -30,9 +31,14 @@ class QueueRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val db: QueueDb,
     private val trustStore: HubTrustStore,
+    private val hub: com.homehub.net.HubClient,
 ) {
-    fun observeQueue() = db.queueDao().observeAll()
-    fun observePendingCount() = db.queueDao().observePendingCount()
+    fun observeQueue() = kotlinx.coroutines.flow.combine(db.queueDao().observeAll(), trustStore.observe()) { items, trust ->
+        items.filter { it.hubId == trust?.hubId }
+    }
+    fun observePendingCount() = observeQueue().map { items ->
+        items.count { it.state !in listOf(QueueItem.DONE, QueueItem.FAILED_PERM, QueueItem.CANCELLED) }
+    }
 
     /** Entry point for the share sheet (ACTION_SEND / ACTION_SEND_MULTIPLE). */
     fun enqueueFromShare(intent: Intent) {
@@ -56,7 +62,7 @@ class QueueRepository @Inject constructor(
     fun enqueueUris(uris: List<Uri>, kind: String) {
         scope.launch {
             try { enqueuePersisted(uris, kind) }
-            catch (e: Exception) { enqueueError.value = "Unable to queue the selected file" }
+            catch (e: Exception) { enqueueError.value = context.getString(com.homehub.R.string.enqueue_failed) }
         }
     }
     suspend fun enqueuePersisted(uris: List<Uri>, kind: String, backupSourceId: String? = null) = withContext(Dispatchers.IO) {
@@ -98,6 +104,7 @@ class QueueRepository @Inject constructor(
         db.queueDao().upsert(QueueItem(newUlid(now), hubId, uri.toString(), clientId,
             meta.name, meta.size, meta.mime, kind, null, meta.modified, null,
             QueueItem.QUEUED, createdAt = now, updatedAt = now,
+            nextAttemptAt = null, lastError = null,
             backupSourceId = backupSourceId, takenAt = meta.takenAt))
     }
     /** One named append chain avoids cancelling an active upload. */
@@ -129,7 +136,22 @@ class QueueRepository @Inject constructor(
 
     }
 
-    suspend fun remove(itemId: String) = db.queueDao().delete(itemId)
+    suspend fun cancel(itemId: String) = withContext(Dispatchers.IO) {
+        val item = db.queueDao().get(itemId) ?: return@withContext
+        db.queueDao().cancel(itemId, System.currentTimeMillis())
+        item.transferId?.let { runCatching { hub.delete("/v1/transfers/$it") } }
+    }
+    suspend fun remove(itemId: String) = withContext(Dispatchers.IO) {
+        val item = db.queueDao().get(itemId) ?: return@withContext
+        if (item.state !in listOf(QueueItem.DONE, QueueItem.CANCELLED)) return@withContext
+        val source = Uri.parse(item.sourceUri)
+        if (source.scheme == "file") {
+            val file = java.io.File(requireNotNull(source.path)).canonicalFile
+            val root = java.io.File(context.filesDir, "queue-sources").canonicalFile
+            if (file.parentFile == root) file.delete()
+        }
+        db.queueDao().delete(itemId)
+    }
 
     private fun newUlid(now: Long): String {
         // Crockford-base32 ULID: 48-bit time + 80-bit random.

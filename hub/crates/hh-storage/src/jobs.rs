@@ -84,10 +84,25 @@ impl StorageService {
         let c=self.db.lock()?;let n=c.execute("UPDATE jobs SET cancel_requested=1,updated_at=?2 WHERE id=?1 AND status IN ('queued','running')",params![id,now_ms()]).map_err(db_e)?;
         if n==0{return Err(Error::Conflict("job cannot be cancelled".into()));}Ok(())
     }
-    fn cancelled(&self,id:&str)->Result<bool>{let c=self.db.lock()?;c.query_row("SELECT cancel_requested FROM jobs WHERE id=?1",params![id],|r|Ok(r.get::<_,i64>(0)?!=0)).map_err(db_e)}
-    fn create_job(&self,kind:&str,payload:Value)->Result<String>{let id=ulid::Ulid::new().to_string();let c=self.db.lock()?;c.execute("INSERT INTO jobs(id,kind,status,payload,created_at,updated_at) VALUES(?1,?2,'queued',?3,?4,?4)",params![id,kind,payload.to_string(),now_ms()]).map_err(db_e)?;Ok(id)}
-    fn job_progress(&self,id:&str,status:&str,total:usize,done:usize,error:Option<&str>)->Result<()> {let c=self.db.lock()?;c.execute("UPDATE jobs SET status=?2,total=?3,done=?4,error=?5,updated_at=?6 WHERE id=?1",params![id,status,total as i64,done as i64,error,now_ms()]).map_err(db_e)?;Ok(())}
+    pub(crate) fn cancelled(&self,id:&str)->Result<bool>{let c=self.db.lock()?;c.query_row("SELECT cancel_requested FROM jobs WHERE id=?1",params![id],|r|Ok(r.get::<_,i64>(0)?!=0)).map_err(db_e)}
+    fn create_job(&self,kind:&str,payload:Value)->Result<String>{let id=ulid::Ulid::new().to_string();let c=self.db.lock()?;
+        let busy:i64=c.query_row("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running') AND (kind='library_move' OR ?1='library_move' OR kind=?1)",params![kind],|r|r.get(0)).map_err(db_e)?;
+        if busy>0{return Err(Error::Conflict("another storage job must finish first".into()));}c.execute("INSERT INTO jobs(id,kind,status,payload,created_at,updated_at) VALUES(?1,?2,'queued',?3,?4,?4)",params![id,kind,payload.to_string(),now_ms()]).map_err(db_e)?;Ok(id)}
+    pub(crate) fn job_progress(&self,id:&str,status:&str,total:usize,done:usize,error:Option<&str>)->Result<()> {let c=self.db.lock()?;c.execute("UPDATE jobs SET status=?2,total=?3,done=?4,error=?5,updated_at=?6 WHERE id=?1",params![id,status,total as i64,done as i64,error,now_ms()]).map_err(db_e)?;Ok(())}
     fn finish_job(&self,id:&str,result:Result<Value>){let update=(||->Result<()>{let c=self.db.lock()?;let (status,value,error)=match result{Ok(v)=>("completed",Some(v.to_string()),None),Err(e)=>(if c.query_row("SELECT cancel_requested FROM jobs WHERE id=?1",params![id],|r|r.get::<_,i64>(0)).map_err(db_e)?!=0{"cancelled"}else{"failed"},None,Some(e.to_string()))};c.execute("UPDATE jobs SET status=?2,result=?3,error=?4,updated_at=?5 WHERE id=?1",params![id,status,value,error,now_ms()]).map_err(db_e)?;Ok(())})();if let Err(e)=update{tracing::error!(error=%e,"could not persist job outcome");}}
+
+    pub fn start_maintenance(&self,kind:&str)->Result<Value> {
+        if !["scrub","second_copy","duplicates"].contains(&kind){return Err(Error::BadRequest("maintenance kind".into()));}
+        let id=self.create_job(kind,json!({}))?;let service=self.clone();let job_id=id.clone();let kind=kind.to_string();
+        std::thread::spawn(move||{let result=(||->Result<Value>{
+            service.job_progress(&job_id,"running",0,0,None)?;
+            match kind.as_str(){
+                "scrub"=>{let(checked,failed)=service.scrub_with_job(1_000_000,Some(&job_id))?;Ok(json!({"checked":checked,"failed":failed}))},
+                "second_copy"=>{let(copied,failed,run_id)=service.second_copy_with_job(Some(&job_id))?;Ok(json!({"copied":copied,"failed":failed,"run_id":run_id}))},
+                _=>{if service.cancelled(&job_id)?{return Err(Error::Conflict("cancelled".into()));}let exact=service.scan_duplicates()?;let similar=service.scan_similar()?;Ok(json!({"exact_groups":exact,"similar_groups":similar,"automatic_deletion":false}))}
+            }
+        })();service.finish_job(&job_id,result);});self.job(&id)
+    }
 
     /// Copies the library, verifies every destination, then switches the root.
     /// Old data stays intact. Sharing stays paused until the service restarts
@@ -116,15 +131,30 @@ impl StorageService {
                     service.job_progress(&job_id,"running",files.len(),n+1,None)?;
                 }
                 let mut config=service.cfg.clone();config.library_root=new.clone();config.ensure_dirs()?;
-                let config_path=config.data_dir.join("config.json");let tmp=config.data_dir.join("config.move.tmp");
-                std::fs::write(&tmp,serde_json::to_vec_pretty(&config).map_err(|e|Error::Internal(e.to_string()))?)?;std::fs::File::open(&tmp)?.sync_all()?;
-                let mut c=service.db.lock()?;let tx=c.transaction().map_err(db_e)?;
-                tx.execute("UPDATE storage_roots SET path=?1 WHERE kind='library' AND is_active=1",params![dest.to_string_lossy()]).map_err(db_e)?;
-                if config_path.exists(){crate::atomic_replace(&tmp,&config_path)?;}else{crate::publish_file(&tmp,&config_path)?;}
-                tx.commit().map_err(db_e)?;
+                let encoded=serde_json::to_string(&config).map_err(|e|Error::Internal(e.to_string()))?;
+                {let c=service.db.lock()?;c.execute("INSERT INTO library_moves(job_id,old_root,new_root,config_json,state) VALUES(?1,?2,?3,?4,'switching')",params![job_id,service.cfg.library_root.to_string_lossy(),new.to_string_lossy(),encoded]).map_err(db_e)?;}
+                service.finish_library_switch(&job_id,&config)?;
                 Ok(json!({"restart_required":true,"originals_preserved":true,"path":new}))
             })();service.finish_job(&job_id,result);
         });self.job(&id)
+    }
+
+    fn finish_library_switch(&self,job_id:&str,config:&hh_core::Config)->Result<()> {
+        // Durable SQLite intent makes either cross-file commit order recoverable.
+        let path=config.data_dir.join("config.json");let temp=config.data_dir.join(format!("config-{}.tmp",ulid::Ulid::new()));
+        let mut out=std::fs::OpenOptions::new().create_new(true).write(true).open(&temp)?;use std::io::Write;
+        out.write_all(&serde_json::to_vec_pretty(config).map_err(|e|Error::Internal(e.to_string()))?)?;out.sync_all()?;drop(out);
+        if path.exists(){crate::atomic_replace(&temp,&path)?;}else{crate::publish_file(&temp,&path)?;}
+        let mut c=self.db.lock()?;let tx=c.transaction().map_err(db_e)?;
+        tx.execute("UPDATE storage_roots SET path=?1 WHERE kind='library' AND is_active=1",params![config.library_dir().to_string_lossy()]).map_err(db_e)?;
+        tx.execute("UPDATE library_moves SET state='completed' WHERE job_id=?1",params![job_id]).map_err(db_e)?;
+        tx.execute("UPDATE jobs SET status='completed',result=?2,updated_at=?3 WHERE id=?1",params![job_id,json!({"restart_required":true,"originals_preserved":true,"path":config.library_root}).to_string(),now_ms()]).map_err(db_e)?;tx.commit().map_err(db_e)?;Ok(())
+    }
+    pub fn recover_library_moves(&self)->Result<hh_core::Config> {
+        let moves:Vec<(String,String)>={let c=self.db.lock()?;let mut st=c.prepare("SELECT job_id,config_json FROM library_moves WHERE state='switching'").map_err(db_e)?;let rows=st.query_map([],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_e)?;rows.collect::<std::result::Result<_,_>>().map_err(db_e)?};
+        let mut config=self.cfg.clone();
+        for (id,encoded) in moves {config=serde_json::from_str(&encoded).map_err(|e|Error::Db(e.to_string()))?;self.finish_library_switch(&id,&config)?;}
+        Ok(config)
     }
 
     /// Startup recovery makes finished disk operations visible and marks

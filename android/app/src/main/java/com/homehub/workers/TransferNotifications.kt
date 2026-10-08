@@ -19,13 +19,17 @@ object TransferNotifications {
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_upload).setContentTitle(context.getString(R.string.app_name))
             .setContentText(text).setOngoing(true)
+            .setContentIntent(android.app.PendingIntent.getActivity(context, 42,
+                android.content.Intent(context, com.homehub.MainActivity::class.java).putExtra("route", "transfers"),
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT))
             .setProgress(100, item?.let { if (it.size > 0) (100 * it.bytesSent / it.size).toInt() else 0 } ?: 0, item == null)
             .build()
         return ForegroundInfo(42, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
-    fun completed(context: Context) {
+    fun completed(context: Context, hasFailures: Boolean = false) {
         runCatching { context.getSystemService(NotificationManager::class.java).notify(44,
             NotificationCompat.Builder(context, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_upload_done)
-                .setContentTitle(context.getString(R.string.app_name)).setContentText(context.getString(R.string.backup_completed)).build()) }
+                .setContentTitle(context.getString(R.string.app_name)).setContentText(context.getString(if (hasFailures) R.string.transfer_attention else R.string.backup_completed))
+                .setContentIntent(android.app.PendingIntent.getActivity(context, 44, android.content.Intent(context, com.homehub.MainActivity::class.java).putExtra("route", "transfers"), android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)).build()) }
     }
 }

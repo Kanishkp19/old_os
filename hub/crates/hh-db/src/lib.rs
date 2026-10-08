@@ -25,6 +25,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006_system.sql"),
     include_str!("../migrations/0007_reliability.sql"),
     include_str!("../migrations/0008_storage_safety.sql"),
+    include_str!("../migrations/0009_delivery.sql"),
+    include_str!("../migrations/0010_renewal.sql"),
+    include_str!("../migrations/0011_cleanup_recovery.sql"),
 ];
 
 #[derive(Clone)]
@@ -44,6 +47,15 @@ impl Db {
         db.configure()?;
         db.migrate()?;
         Ok(db)
+    }
+
+    /// Consistent online snapshot without running migrations on the source.
+    pub fn snapshot(source:&Path,destination:&Path)->Result<()> {
+        if destination.exists(){return Err(Error::Conflict("backup destination exists".into()));}
+        let c=Connection::open_with_flags(source,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(db_err)?;
+        c.busy_timeout(std::time::Duration::from_secs(30)).map_err(db_err)?;
+        c.execute("VACUUM INTO ?1",params![destination.to_string_lossy().as_ref()]).map_err(db_err)?;
+        std::fs::File::open(destination)?.sync_all()?;Ok(())
     }
 
     pub fn open_memory() -> Result<Self> {
@@ -136,17 +148,18 @@ impl Db {
         if self.path.as_os_str() == ":memory:" || from_version == 0 {
             return Ok(());
         }
-        let bak = self.path.with_extension(format!("db.bak-{from_version}"));
+        let bak = self.path.with_extension(format!("db.bak-{from_version}-{}",ulid::Ulid::new()));
         let c = self.lock()?;
-        c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(db_err)?;
-        std::fs::copy(&self.path, &bak)?;
+        // SQLite takes a consistent snapshot including committed WAL pages.
+        c.execute("VACUUM INTO ?1",params![bak.to_string_lossy().as_ref()]).map_err(db_err)?;
+        std::fs::File::open(&bak)?.sync_all()?;
         drop(c);
         // prune older backups, keep last 3
         let mut backups: Vec<PathBuf> = std::fs::read_dir(self.path.parent().unwrap_or(Path::new(".")))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.file_name().map(|n| n.to_string_lossy().contains(".bak-")).unwrap_or(false))
             .collect();
-        backups.sort();
+        backups.sort_by_key(|p|p.metadata().and_then(|m|m.modified()).ok());
         while backups.len() > 3 {
             let old = backups.remove(0);
             let _ = std::fs::remove_file(old);

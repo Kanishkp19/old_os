@@ -11,7 +11,8 @@ use crate::{db_e, StorageService};
 impl StorageService {
     /// Scrub up to `max_files` least-recently-verified files.
     /// Returns (checked, mismatched).
-    pub fn scrub_once(&self, max_files: u32) -> Result<(u32, u32)> {
+    pub fn scrub_once(&self,max_files:u32)->Result<(u32,u32)>{self.scrub_with_job(max_files,None)}
+    pub(crate) fn scrub_with_job(&self,max_files:u32,job_id:Option<&str>)->Result<(u32,u32)> {
         let candidates: Vec<(String, String, String)> = {
             let c = self.db.lock()?;
             let mut st = c
@@ -33,7 +34,9 @@ impl StorageService {
 
         let mut checked = 0;
         let mut mismatched = 0;
-        for (id, rel, expected) in candidates {
+        let total=candidates.len();
+        for (index,(id, rel, expected)) in candidates.into_iter().enumerate() {
+            if let Some(job)=job_id {if self.cancelled(job)?{return Err(hh_core::Error::Conflict("cancelled".into()));}self.job_progress(job,"running",total,index,None)?;}
             let c=self.db.lock()?;
             let path=crate::library::disk_path(&c,&id,false)?;
             drop(c);

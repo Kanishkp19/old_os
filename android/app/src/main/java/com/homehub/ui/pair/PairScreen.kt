@@ -47,6 +47,7 @@ class PairViewModel @Inject constructor(
     private val pairing: PairingClient,
     private val trustStore: HubTrustStore,
     private val hubClient: com.homehub.net.HubClient,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
 ) : ViewModel() {
 
     sealed class UiState {
@@ -61,9 +62,9 @@ class PairViewModel @Inject constructor(
 
     fun onQrScanned(raw: String) {
         if (_state.value != UiState.Scanning) return
-        val payload = QrPayload.parse(raw)
+        val payload = runCatching { QrPayload.parse(raw) }.getOrNull()
         if (payload == null) {
-            _state.value = UiState.Failed("Not a Home Hub code")
+            _state.value = UiState.Failed(context.getString(R.string.pair_invalid))
             return
         }
         _state.value = UiState.Working
@@ -74,7 +75,7 @@ class PairViewModel @Inject constructor(
                 hubClient.resetClient()
                 _state.value = UiState.Done(result.hubName)
             } catch (e: Exception) {
-                _state.value = UiState.Failed(e.message ?: "pairing failed")
+                _state.value = UiState.Failed(com.homehub.ui.UserErrors.message(context, e))
             }
         }
     }

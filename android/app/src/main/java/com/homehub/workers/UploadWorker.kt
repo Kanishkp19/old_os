@@ -25,19 +25,7 @@ class UploadWorker @AssistedInject constructor(
         private const val CHANNEL_ID = "homehub-transfers"
     }
 
-    override suspend fun getForegroundInfo(): ForegroundInfo {
-        val mgr = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        mgr.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Transfers", NotificationManager.IMPORTANCE_LOW)
-        )
-        val notif = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("Home Hub")
-            .setContentText("Preparing transfers…")
-            .setOngoing(true)
-            .build()
-        return ForegroundInfo(42, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-    }
+    override suspend fun getForegroundInfo() = TransferNotifications.foreground(applicationContext)
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         setForeground(getForegroundInfo())
@@ -45,7 +33,7 @@ class UploadWorker @AssistedInject constructor(
             setForeground(TransferNotifications.foreground(applicationContext, item))
         }
         if (pending) Result.retry() else {
-            TransferNotifications.completed(applicationContext)
+            TransferNotifications.completed(applicationContext, pipeline.hasOutstanding())
             Result.success()
         }
     }

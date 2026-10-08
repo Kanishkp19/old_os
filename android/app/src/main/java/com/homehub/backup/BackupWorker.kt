@@ -21,9 +21,9 @@ class BackupWorker @AssistedInject constructor(@Assisted context: Context, @Assi
         try {
             backup.scanAndQueue()
             val pending = pipeline.processDue { setForeground(TransferNotifications.foreground(applicationContext, it)) }
-            if (pending) Result.retry() else { TransferNotifications.completed(applicationContext); Result.success() }
+            if (pending) Result.retry() else { TransferNotifications.completed(applicationContext, pipeline.hasOutstanding()); Result.success() }
         } catch (e: CancellationException) { throw e }
-        catch (e: SecurityException) { backup.status.value = "Allow access to photos and videos in Settings"; Result.failure() }
-        catch (e: Exception) { backup.status.value = e.message; Result.retry() }
+        catch (e: SecurityException) { backup.status.value = applicationContext.getString(com.homehub.R.string.backup_permission_required); Result.failure() }
+        catch (e: Exception) { backup.status.value = com.homehub.ui.UserErrors.message(applicationContext, e); Result.retry() }
     }
 }

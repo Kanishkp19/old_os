@@ -12,6 +12,7 @@ pub mod admin;
 pub mod mdns;
 pub mod pair_server;
 pub mod ratelimit;
+pub mod relay;
 pub mod routes;
 pub mod sse;
 pub mod tls;
@@ -76,7 +77,7 @@ impl AppState {
             storage: StorageService::new(db.clone(), cfg.clone()),
             photos: PhotoService::new(db.clone(), cfg.clone()),
             hw: HwService::new(db.clone(), cfg.clone()),
-            stream: StreamService::new(),
+            stream: match &helper {Some(h)=>StreamService::with_db(db.clone()).with_helper((**h).clone()),None=>StreamService::with_db(db.clone())},
             events: EventBus::new(tx),
             rate_limiter: Arc::new(crate::ratelimit::RateLimiter::default()),
             screen_owners: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -171,13 +172,14 @@ pub mod serve {
                             .device_by_id(&device_id)
                             .ok()
                             .flatten()
-                            .filter(|d| d.status == "active" && d.cert_serial == serial)
+                            .filter(|d| d.status == "active" && state.db.device_accepts_serial(&device_id,&serial).unwrap_or(false))
                             .map(|d| crate::tls::PeerIdentity {
                                 device_id,
                                 cert_serial: serial,
                                 scopes: d.scopes,
                             })
                     });
+                let watch_identity=identity.clone();let watch_db=state.db.clone();
                 let router = crate::routes::router(state.clone());
                 let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
                     let identity = identity.clone();
@@ -191,9 +193,15 @@ pub mod serve {
                     }
                 });
                 let io = TokioIo::new(tls);
-                let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-                    .serve_connection_with_upgrades(io, svc)
-                    .await;
+                let builder=hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+                let connection=builder.serve_connection_with_upgrades(io,svc);
+                tokio::select! {
+                    _=connection=>{},
+                    _=async move {loop {tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        let Some(peer)=&watch_identity else {break;};
+                        if !watch_db.device_accepts_serial(&peer.device_id,&peer.cert_serial).unwrap_or(false) || watch_db.is_serial_revoked(&peer.cert_serial).unwrap_or(true) || watch_db.get_setting("sharing.paused").ok().flatten().as_deref()==Some("true"){break;}
+                    }}=>{}
+                }
             });
         }
     }

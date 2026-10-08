@@ -46,9 +46,11 @@ class HomeViewModel @Inject constructor(
     private val discovery: HubDiscovery,
     private val queue: QueueRepository,
     private val hub: HubClient,
+    private val connectivity: com.homehub.net.HubConnectivity,
 ) : ViewModel() {
 
-    private val reachable = MutableStateFlow(false)
+    private val reachable get() = connectivity.reachable
+    val enqueueError get() = queue.enqueueError
 
     val state: StateFlow<HomeUiState> = combine(
         trustStore.observe(),
@@ -71,7 +73,7 @@ class HomeViewModel @Inject constructor(
             false
         }
         val hasCert = hasCertPem && canSign
-        val pending = items.count { it.state != QueueItem.DONE && it.state != QueueItem.FAILED_PERM }
+        val pending = items.count { it.state != QueueItem.DONE && it.state != QueueItem.FAILED_PERM && it.state != QueueItem.CANCELLED }
         HomeUiState(
             paired = trust != null,
             hubName = trust?.name ?: "",
@@ -80,27 +82,9 @@ class HomeViewModel @Inject constructor(
             hasClientCert = hasCert,
             queueItems = items.take(10),
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
+    }.flowOn(Dispatchers.IO).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
-    init {
-        // Watch for the paired Hub on the LAN and refresh its last known address.
-        viewModelScope.launch {
-            discovery.browseHubs().collect { hubDiscovered: DiscoveredHub ->
-                val trust = trustStore.load() ?: return@collect
-                if (hubDiscovered.hubId == trust.hubId) {
-                    reachable.value = true
-                    trustStore.updateAddr(trust.hubId, "${hubDiscovered.host}:${hubDiscovered.port}")
-                }
-            }
-        }
-        // Direct reachability ping
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                hub.info()
-                reachable.value = true
-            } catch (_: Exception) {}
-        }
-    }
+    init { connectivity.refresh() }
 
     fun retryUploads() {
         viewModelScope.launch {
@@ -116,6 +100,7 @@ class HomeViewModel @Inject constructor(
 @Composable
 fun HomeScreen(onPair: () -> Unit, onBackup: () -> Unit = {}, vm: HomeViewModel = hiltViewModel()) {
     val s by vm.state.collectAsState()
+    val enqueueError by vm.enqueueError.collectAsState()
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -130,6 +115,7 @@ fun HomeScreen(onPair: () -> Unit, onBackup: () -> Unit = {}, vm: HomeViewModel 
             Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
         }
 
+        enqueueError?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
         if (!s.paired) {
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {

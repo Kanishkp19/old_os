@@ -72,18 +72,15 @@ async fn pair(qr: &str, name: &str, identity_path: &Path) -> Result<()> {
         .danger_accept_invalid_certs(true) // chain pinned manually below
         .danger_accept_invalid_hostnames(true)
         .build()?;
-    let ca_pem: String = client
-        .get(format!("https://{addr}/pair/status"))
-        .send()
-        .await?
-        .text()
-        .await
-        .unwrap_or_default();
-    let _ = ca_pem; // status probe only; fingerprint check below uses the TLS chain
+    let response=client.get(format!("https://{addr}/pair/ca")).send().await?.error_for_status()?;
+    if response.content_length().is_some_and(|n|n>65536){return Err(anyhow!("oversized CA response"));}
+    let ca_pem=response.json::<serde_json::Value>().await?["ca_cert_pem"].as_str().ok_or_else(||anyhow!("pairing CA missing"))?.to_owned();
+    let verifier=hh_net::tls::PinnedCaVerifier::new(&ca_pem)?;
+    if !verifier.fingerprint_matches(&fp){return Err(anyhow!("Hub does not match scanned QR"));}
+    let mut tls=rustls::ClientConfig::builder().with_root_certificates(rustls::RootCertStore::empty()).with_no_client_auth();
+    tls.dangerous().set_certificate_verifier(verifier);
+    let client=reqwest::Client::builder().use_preconfigured_tls(tls).timeout(std::time::Duration::from_secs(20)).build()?;
 
-    // NOTE(dev): production clients verify fp against the CA in the TLS
-    // chain (see hh-net::tls::PinnedCaVerifier). The fake client trusts the
-    // QR fp after the first contact — acceptable for a dev tool only.
     let resp = client
         .post(format!("https://{addr}/pair"))
         .json(&serde_json::json!({
@@ -105,7 +102,10 @@ async fn pair(qr: &str, name: &str, identity_path: &Path) -> Result<()> {
 
     // Identity bundle: device key + device cert + CA cert (client-side trust).
     let bundle = format!("{}{}\n{}", key.serialize_pem(), cert_pem, ca_cert_pem);
-    std::fs::write(identity_path, bundle)?;
+    use std::io::Write;
+    let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    let mut saved=options.open(identity_path)?;saved.write_all(bundle.as_bytes())?;saved.sync_all()?;
     println!("paired as {} (fp {}...) — identity saved to {}",
         body["device_id"].as_str().unwrap_or("?"), fp, identity_path.display());
     Ok(())
@@ -130,11 +130,20 @@ pub async fn upload_file(hub: &str, path: &Path) -> Result<()> {
 }
 
 async fn upload_with_identity(hub: &str, path: &Path, identity_path: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
     let bundle = std::fs::read_to_string(identity_path)
         .context("read identity (run fake-client pair first)")?;
     let (identity, ca) = split_identity_bundle(&bundle);
-    let data = std::fs::read(path)?;
-    let root_hash = blake3::hash(&data).to_hex().to_string();
+    let mut file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut hasher = blake3::Hasher::new();
+    let mut hash_buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut hash_buffer)?;
+        if read == 0 { break; }
+        hasher.update(&hash_buffer[..read]);
+    }
+    let root_hash = hasher.finalize().to_hex().to_string();
     let chunk_size = hh_core::DEFAULT_CHUNK_SIZE as usize;
     let name = path.file_name().unwrap().to_string_lossy().to_string();
 
@@ -153,7 +162,7 @@ async fn upload_with_identity(hub: &str, path: &Path, identity_path: &Path) -> R
         .post(format!("https://{hub}/v1/transfers"))
         .json(&serde_json::json!({
             "name": name,
-            "size": data.len(),
+            "size": size,
             "mime": "application/octet-stream",
             "kind": "send",
             "chunk_size": chunk_size,
@@ -170,14 +179,18 @@ async fn upload_with_identity(hub: &str, path: &Path, identity_path: &Path) -> R
     }
     let transfer_id = created["transfer_id"].as_str().ok_or_else(|| anyhow!("no transfer_id"))?;
     let chunk_count = created["chunk_count"].as_u64().unwrap_or(0) as usize;
+    let expected_chunks = size.div_ceil(chunk_size as u64).max(1) as usize;
+    if chunk_count != expected_chunks {
+        return Err(anyhow!("unexpected transfer chunk count"));
+    }
 
     // Resume: skip chunks the hub already verified.
     let mut have = vec![false; chunk_count];
     for range in created["have"]["ranges"].as_array().cloned().unwrap_or_default() {
         let a = range[0].as_u64().unwrap_or(0) as usize;
         let b = range[1].as_u64().unwrap_or(0) as usize;
-        for i in a..=b {
-            have[i] = true;
+        for i in a..=b.min(chunk_count.saturating_sub(1)) {
+            if let Some(present) = have.get_mut(i) { *present = true; }
         }
     }
 
@@ -185,25 +198,27 @@ async fn upload_with_identity(hub: &str, path: &Path, identity_path: &Path) -> R
         if have[idx] {
             continue;
         }
-        let start = idx * chunk_size;
-        let end = (start + chunk_size).min(data.len());
-        let chunk = &data[start..end];
-        let hash = blake3::hash(chunk).to_hex().to_string();
+        let start = idx as u64 * chunk_size as u64;
+        let len = (size - start).min(chunk_size as u64) as usize;
+        let mut chunk = vec![0u8; len];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut chunk).context("source changed during upload")?;
+        let hash = blake3::hash(&chunk).to_hex().to_string();
         let resp = client
             .put(format!("https://{hub}/v1/transfers/{transfer_id}/chunks/{idx}"))
             .header("content-type", "application/octet-stream")
             .header("x-chunk-hash", hash)
-            .body(chunk.to_vec())
+            .body(chunk.clone())
             .send()
             .await?;
         if resp.status().as_u16() == 409 {
             // Hash mismatch — retry the chunk (TR-06).
-            let hash = blake3::hash(chunk).to_hex().to_string();
+            let hash = blake3::hash(&chunk).to_hex().to_string();
             client
                 .put(format!("https://{hub}/v1/transfers/{transfer_id}/chunks/{idx}"))
                 .header("content-type", "application/octet-stream")
                 .header("x-chunk-hash", hash)
-                .body(chunk.to_vec())
+                .body(chunk)
                 .send()
                 .await?
                 .error_for_status()?;

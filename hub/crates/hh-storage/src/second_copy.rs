@@ -5,7 +5,8 @@ use rusqlite::params;
 use crate::{db_e,StorageService};
 
 impl StorageService {
-    pub fn run_second_copy(&self)->Result<(u64,u64,String)> {
+    pub fn run_second_copy(&self)->Result<(u64,u64,String)>{self.second_copy_with_job(None)}
+    pub(crate) fn second_copy_with_job(&self,job_id:Option<&str>)->Result<(u64,u64,String)> {
         let target=self.db.get_setting("second_copy.root")?.filter(|s|!s.is_empty()).map(std::path::PathBuf::from).or_else(||self.cfg.second_copy_root.clone()).ok_or_else(||Error::BadRequest("choose a second-copy drive".into()))?;
         // Never create an absent drive's mount point and pretend it is attached.
         if !target.is_dir(){return Err(Error::StorageUnavailable("second-copy drive is disconnected".into()));}
@@ -22,7 +23,9 @@ impl StorageService {
             c.execute("INSERT INTO second_copy_runs(id,target_root_id,started_at,status) VALUES(?1,?2,?3,'running')",params![run_id,target_id,now_ms()]).map_err(db_e)?;}
         let files:Vec<(String,String,i64)>={let c=self.db.lock()?;let mut st=c.prepare("SELECT id,hash,size FROM files WHERE deleted_at IS NULL").map_err(db_e)?;let rows=st.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_e)?;rows.collect::<std::result::Result<_,_>>().map_err(db_e)?};
         let(mut copied,mut failed,mut bytes)=(0u64,0u64,0u64);
-        for (id,hash,size) in files {
+        let total=files.len();
+        for (index,(id,hash,size)) in files.into_iter().enumerate() {
+            if let Some(job)=job_id {if self.cancelled(job)?{let c=self.db.lock()?;c.execute("UPDATE second_copy_runs SET status='cancelled',finished_at=?2,files_copied=?3,bytes_copied=?4,files_failed=?5 WHERE id=?1",params![run_id,now_ms(),copied as i64,bytes as i64,failed as i64]).map_err(db_e)?;return Err(Error::Conflict("cancelled".into()));}self.job_progress(job,"running",total,index,None)?;}
             let rel=format!("HomeHubCopies/{id}/{hash}");let dst=hh_core::paths::jail_join(&target,&rel)?;
             let result=(||->Result<bool>{
                 let c=self.db.lock()?;let src=crate::library::disk_path(&c,&id,false)?;
@@ -42,9 +45,12 @@ impl StorageService {
         let c=self.db.lock()?;let last:Option<i64>=c.query_row("SELECT MAX(finished_at) FROM second_copy_runs WHERE status='ok'",[],|r|r.get(0)).map_err(db_e)?;Ok(last.map(|t|now_ms()-t))
     }
     pub fn copy_coverage(&self)->Result<serde_json::Value>{
+        let configured=self.db.get_setting("second_copy.root")?.filter(|v|!v.is_empty()).map(std::path::PathBuf::from).or_else(||self.cfg.second_copy_root.clone());
+        let connected=configured.as_deref().filter(|path|path.is_dir()).and_then(|path|std::fs::read_to_string(path.join(".homehub-drive-id")).ok()).map(|id|id.trim().to_owned()).filter(|id|id.parse::<ulid::Ulid>().is_ok());
         let c=self.db.lock()?;
         let total:i64=c.query_row("SELECT COUNT(*) FROM files WHERE deleted_at IS NULL",[],|r|r.get(0)).map_err(db_e)?;
-        let covered:i64=c.query_row("SELECT COUNT(*) FROM files f WHERE f.deleted_at IS NULL AND EXISTS(SELECT 1 FROM second_copy_files s JOIN storage_roots r ON r.id=s.target_root_id WHERE s.file_id=f.id AND s.hash=f.hash AND s.size=f.size AND r.is_active=1)",[],|r|r.get(0)).map_err(db_e)?;
-        Ok(serde_json::json!({"total_files":total,"covered_files":covered,"all_protected":total>0&&total==covered,"freshly_verified":false}))
+        let covered:i64=if let Some(id)=&connected {c.query_row("SELECT COUNT(*) FROM files f WHERE f.deleted_at IS NULL AND EXISTS(SELECT 1 FROM second_copy_files s JOIN storage_roots r ON r.id=s.target_root_id WHERE s.file_id=f.id AND s.hash=f.hash AND s.size=f.size AND r.is_active=1 AND r.id=?1)",params![id],|r|r.get(0)).map_err(db_e)?}else{0};
+        let latest:Option<i64>=if let Some(id)=&connected {c.query_row("SELECT MAX(finished_at) FROM second_copy_runs WHERE target_root_id=?1 AND status='ok'",params![id],|r|r.get(0)).map_err(db_e)?}else{None};
+        Ok(serde_json::json!({"total_files":total,"covered_files":covered,"drive_connected":connected.is_some(),"all_protected":total>0&&total==covered,"freshly_verified":total>0&&total==covered&&latest.is_some_and(|time|now_ms()-time<24*60*60*1000)}))
     }
 }

@@ -35,6 +35,7 @@ data class QueueItem(
     @ColumnInfo(name = "bytes_sent", defaultValue = "0") val bytesSent: Long = 0,
 ) {
     companion object {
+        const val CANCELLED = "cancelled"
         const val QUEUED = "queued"
         const val CONNECTING = "connecting"
         const val UPLOADING = "uploading"
@@ -69,11 +70,14 @@ interface QueueDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: QueueItem)
 
-    @Query("UPDATE queue_items SET state = :state, transfer_id = :transferId, root_hash = :rootHash, attempts = :attempts, next_attempt_at = :nextAttemptAt, last_error = :lastError, updated_at = :now WHERE id = :id")
+    @Query("UPDATE queue_items SET state = :state, transfer_id = :transferId, root_hash = :rootHash, attempts = :attempts, next_attempt_at = :nextAttemptAt, last_error = :lastError, updated_at = :now WHERE id = :id AND state != 'cancelled'")
     suspend fun updateProgress(
         id: String, state: String, transferId: String?, rootHash: String?,
         attempts: Int, nextAttemptAt: Long?, lastError: String?, now: Long,
     )
+
+    @Query("UPDATE queue_items SET size=:size, source_mtime=:modified, client_item_id=:clientId, root_hash=:hash, transfer_id=:transferId, bytes_sent=:bytes WHERE id=:id AND state != 'cancelled'")
+    suspend fun refreshSource(id: String, size: Long, modified: Long?, clientId: String, hash: String?, transferId: String?, bytes: Long)
 
     @Query("SELECT * FROM queue_items WHERE hub_id = :hubId AND client_item_id = :clientItemId AND kind = :kind ORDER BY created_at DESC LIMIT 1")
     suspend fun findSource(hubId: String, clientItemId: String, kind: String): QueueItem?
@@ -87,11 +91,17 @@ interface QueueDao {
     @Query("UPDATE queue_items SET state='queued' WHERE state IN ('connecting','uploading','verifying')")
     suspend fun recoverInterrupted()
 
-    @Query("SELECT COUNT(*) FROM queue_items WHERE state != 'done' AND state != 'failed_perm'")
+    @Query("SELECT COUNT(*) FROM queue_items WHERE state NOT IN ('done','failed_perm','cancelled')")
     fun observePendingCount(): Flow<Int>
 
-    @Query("UPDATE queue_items SET state = 'queued', attempts = 0, next_attempt_at = null, last_error = null, updated_at = :now WHERE state != 'done'")
+    @Query("UPDATE queue_items SET state = 'queued', attempts = 0, next_attempt_at = null, last_error = null, updated_at = :now WHERE state NOT IN ('done','cancelled')")
     suspend fun resetAllPending(now: Long)
+
+    @Query("SELECT COUNT(*) FROM queue_items WHERE hub_id=:hubId AND state NOT IN ('done','cancelled')")
+    suspend fun outstandingCount(hubId: String): Int
+
+    @Query("UPDATE queue_items SET state='cancelled', updated_at=:now WHERE id=:id AND state != 'done'")
+    suspend fun cancel(id: String, now: Long)
 
     @Query("DELETE FROM queue_items WHERE id = :id")
     suspend fun delete(id: String)

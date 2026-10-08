@@ -2,7 +2,7 @@
 
 use hh_core::error::{Error, Result};
 use hh_core::time::now_ms;
-use rusqlite::params;
+use rusqlite::{params,OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::{db_e, PhotoService};
@@ -183,13 +183,22 @@ impl PhotoService {
     }
 
     pub fn create_cleanup_lease(&self,source_id:&str,device_id:&str,ids:&[String])->Result<CleanupLease> {
+        self.create_cleanup_review(source_id,device_id,ids,None)
+    }
+
+    pub fn create_cleanup_review(&self,source_id:&str,device_id:&str,ids:&[String],review:Option<&str>)->Result<CleanupLease> {
         if ids.is_empty() || ids.len()>500 { return Err(Error::BadRequest("select 1–500 cleanup items".into())); }
+        if review.is_some_and(|v|v.is_empty()||v.len()>128||!v.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')) {return Err(Error::BadRequest("invalid cleanup review ID".into()));}
         let source=self.get_source(source_id)?;
         if source.device_id!=device_id { return Err(Error::ForbiddenScope("backup source".into())); }
         let lease_id=ulid::Ulid::new().to_string();
         let mut c=self.db.lock()?;
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
-        tx.execute("INSERT INTO cleanup_leases(id,source_id,device_id,created_at) VALUES(?1,?2,?3,?4)",params![lease_id,source_id,device_id,now_ms()]).map_err(db_e)?;
+        if let Some(review)=review {
+            let existing:Option<(String,String)>=tx.query_row("SELECT id,state FROM cleanup_leases WHERE source_id=?1 AND device_id=?2 AND client_review_id=?3",params![source_id,device_id,review],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_e)?;
+            if let Some((id,state))=existing {if state!="active" {return Err(Error::Conflict("cleanup review completed".into()));}return read_cleanup_lease(&tx,&id);}
+        }
+        tx.execute("INSERT INTO cleanup_leases(id,source_id,device_id,created_at,client_review_id) VALUES(?1,?2,?3,?4,?5)",params![lease_id,source_id,device_id,now_ms(),review]).map_err(db_e)?;
         let mut items=Vec::new();
         for client_id in ids {
             let row: Option<(String,String)> = tx.query_row("SELECT file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified' AND local_freed_at IS NULL",
@@ -202,7 +211,15 @@ impl PhotoService {
             }
         }
         tx.commit().map_err(db_e)?;
-        Ok(CleanupLease{lease_id,items})
+        Ok(CleanupLease{lease_id,items,client_review_id:review.map(str::to_owned)})
+    }
+
+    pub fn active_cleanup_reviews(&self,source_id:&str,device_id:&str)->Result<Vec<CleanupLease>> {
+        if self.get_source(source_id)?.device_id!=device_id {return Err(Error::ForbiddenScope("backup source".into()));}
+        let c=self.db.lock()?;
+        let mut st=c.prepare("SELECT id FROM cleanup_leases WHERE source_id=?1 AND device_id=?2 AND state='active' ORDER BY created_at LIMIT 500").map_err(db_e)?;
+        let ids=st.query_map(params![source_id,device_id],|r|r.get::<_,String>(0)).map_err(db_e)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
+        ids.iter().map(|id|read_cleanup_lease(&c,id)).collect()
     }
 
     pub fn finish_cleanup_lease(&self,id:&str,device_id:&str,freed:&[String])->Result<()> {
@@ -255,7 +272,14 @@ impl PhotoService {
 #[derive(Debug,Clone,Serialize)]
 pub struct CleanupItem { pub client_item_id:String,pub file_id:String,pub hash:String,pub size:u64 }
 #[derive(Debug,Clone,Serialize)]
-pub struct CleanupLease { pub lease_id:String,pub items:Vec<CleanupItem> }
+pub struct CleanupLease { pub lease_id:String,pub items:Vec<CleanupItem>,pub client_review_id:Option<String> }
+
+fn read_cleanup_lease(c:&rusqlite::Connection,id:&str)->Result<CleanupLease> {
+    let mut st=c.prepare("SELECT client_item_id,file_id,hash,size FROM cleanup_lease_items WHERE lease_id=?1 ORDER BY client_item_id").map_err(db_e)?;
+    let items=st.query_map(params![id],|r|Ok(CleanupItem{client_item_id:r.get(0)?,file_id:r.get(1)?,hash:r.get(2)?,size:r.get::<_,i64>(3)? as u64})).map_err(db_e)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
+    let review=c.query_row("SELECT client_review_id FROM cleanup_leases WHERE id=?1",params![id],|r|r.get::<_,Option<String>>(0)).map_err(db_e)?;
+    Ok(CleanupLease{lease_id:id.to_owned(),items,client_review_id:review})
+}
 
 fn verify_file(c:&rusqlite::Connection,id:&str,hash:&str,size:Option<u64>)->Result<u64> {
     let (root,rel,stored_hash,stored_size):(String,String,String,i64)=c.query_row(

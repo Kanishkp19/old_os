@@ -10,10 +10,9 @@ name = "hh-session"
 path = "src/main.rs"
 
 [features]
-# Real WebRTC media host + cast window (openh264/minifb). Default off so the
-# core helper (input/power/system info) builds fast everywhere; CI enables it.
+# Windows media host ships by default; other platforms report unavailable.
 screen = ["dep:webrtc", "dep:minifb"]
-default = []
+default = ["screen"]
 
 [dependencies]
 hh-core = { path = "../hh-core" }
@@ -37,12 +36,15 @@ windows = { version = "0.58", features = [
     "Win32_System_Power",
     "Win32_System_Threading",
     "Win32_System_Com",
+    "Win32_System_WinRT",
     "Win32_Security",
     "Win32_Graphics_Gdi",
+    "Win32_Media_MediaFoundation",
     "Win32_System_Pipes",
     "Win32_System_Shutdown",
     "Foundation",
     "Networking_Connectivity",
+    "Networking_NetworkOperators",
 ] }
 wmi = "0.14"
 

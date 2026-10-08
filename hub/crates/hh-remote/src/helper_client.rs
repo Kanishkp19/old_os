@@ -16,7 +16,11 @@
 //!   (non-Windows without the dev socket); the hub then keeps its no-op
 //!   platform controls, which answer with honest "unsupported" errors.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::time::Duration;
+
+pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const IPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 use hh_core::error::{Error, Result};
 use hh_core::platform::{InputControl, MediaKey, MouseButton, PowerControl};
@@ -55,6 +59,9 @@ impl HelperClient {
         }
         #[cfg(not(windows))]
         {
+            // Development sockets require explicit opt-in; never advertise
+            // Unix fake input/screen support in a shipped service.
+            if std::env::var_os("HOMEHUB_DEV_HELPER").is_none() { return None; }
             let path = std::env::temp_dir().join(SOCKET_NAME);
             if path.exists() {
                 Some(Self { transport: Transport::UnixSocket(path.to_string_lossy().into_owned()) })
@@ -76,20 +83,48 @@ impl HelperClient {
     pub fn call(&self, req: &HelperRequest) -> Result<HelperResponse> {
         let mut line = serde_json::to_string(req).map_err(|e| Error::Internal(format!("helper encode: {e}")))?;
         line.push('\n');
+        if line.len() > MAX_FRAME_BYTES { return Err(Error::TooLarge("helper request".into())); }
+        let deadline = if matches!(req, HelperRequest::ScreenOffer { .. }) { Duration::from_secs(30) } else { IPC_TIMEOUT };
 
         match &self.transport {
             Transport::Pipe => {
                 #[cfg(windows)]
                 {
-                    let mut f = std::fs::OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .open(PIPE_NAME)
-                        .map_err(|_| helper_down())?;
-                    f.write_all(line.as_bytes()).map_err(|_| helper_down())?;
-                    f.flush().ok();
-                    let mut reader = BufReader::new(f);
-                    read_response(&mut reader)
+                    if line.len() > MAX_FRAME_BYTES { return Err(Error::BadRequest("helper request too large".into())); }
+                    // Own runtime on a short-lived thread: safe from callers
+                    // already inside Tokio, and all overlapped IO is timed.
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()
+                            .map_err(|_| helper_down())?;
+                        rt.block_on(async {
+                            tokio::time::timeout(deadline, async {
+                                use std::os::windows::io::AsRawHandle;
+                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                                let pipe_name = crate::windows_security::active_pipe_name().ok_or_else(helper_down)?;
+                                let pipe = loop {
+                                    match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+                                        Ok(pipe) => break pipe,
+                                        Err(e) if e.raw_os_error() == Some(231) => tokio::time::sleep(Duration::from_millis(25)).await,
+                                        Err(_) => return Err(helper_down()),
+                                    }
+                                };
+                                if !crate::windows_security::verify_session_server(pipe.as_raw_handle()) {
+                                    return Err(Error::Unauthenticated);
+                                }
+                                let mut pipe = pipe;
+                                pipe.write_all(line.as_bytes()).await.map_err(|_| helper_down())?;
+                                let mut reader = tokio::io::BufReader::new(pipe);
+                                let mut response = Vec::new();
+                                loop {
+                                    let byte = reader.read_u8().await.map_err(|_| helper_down())?;
+                                    if byte == b'\n' { break; }
+                                    if response.len() >= MAX_FRAME_BYTES { return Err(Error::Internal("helper response too large".into())); }
+                                    response.push(byte);
+                                }
+                                serde_json::from_slice(&response).map_err(|_| Error::Internal("invalid helper response".into()))
+                            }).await.map_err(|_| Error::Internal("session helper timed out".into()))?
+                        })
+                    }).join().map_err(|_| Error::Internal("helper IO worker failed".into()))?
                 }
                 #[cfg(not(windows))]
                 {
@@ -102,6 +137,8 @@ impl HelperClient {
                 {
                     use std::os::unix::net::UnixStream;
                     let f = UnixStream::connect(path).map_err(|_| helper_down())?;
+                    f.set_read_timeout(Some(deadline)).map_err(|_| helper_down())?;
+                    f.set_write_timeout(Some(deadline)).map_err(|_| helper_down())?;
                     let mut reader = BufReader::new(f);
                     reader
                         .get_mut()
@@ -117,6 +154,9 @@ impl HelperClient {
             }
         }
     }
+
+    /// Release keys held by a disconnected remote session.
+    pub fn release_input(&self) -> Result<()> { self.call(&HelperRequest::ReleaseInput)?.into_unit() }
 
     /// Connectivity probe; returns the helper's version/platform payload.
     pub fn ping(&self) -> Result<serde_json::Value> {
@@ -144,13 +184,29 @@ impl HelperClient {
     /// candidates come back in the payload (M4). Errors honestly when the
     /// helper was built without the `screen` feature.
     pub fn screen_offer(&self, sdp: &str, preset: &str, kind: &str) -> Result<serde_json::Value> {
-        self.call(&HelperRequest::ScreenOffer { sdp: sdp.to_string(), preset: preset.to_string(), kind: kind.to_string() })?
+        self.screen_offer_for(&ulid::Ulid::new().to_string(), sdp, preset, kind)
+    }
+
+    pub fn screen_offer_for(&self, session_id: &str, sdp: &str, preset: &str, kind: &str) -> Result<serde_json::Value> {
+        self.call(&HelperRequest::ScreenOffer { sdp: sdp.to_string(), preset: preset.to_string(), kind: kind.to_string(), session_id: session_id.into() })?
             .into_data()
     }
 
     /// Feed a trickle ICE candidate to the active helper session.
     pub fn add_ice(&self, candidate: &str) -> Result<()> {
-        self.call(&HelperRequest::AddIce { candidate: candidate.to_string() })?.into_unit()
+        self.add_ice_for("", candidate)
+    }
+
+    pub fn add_ice_for(&self, session_id: &str, candidate: &str) -> Result<()> {
+        self.call(&HelperRequest::AddIce { candidate: candidate.to_string(), session_id: session_id.into() })?.into_unit()
+    }
+
+    pub fn screen_stop_for(&self, session_id: &str) -> Result<()> {
+        self.call(&HelperRequest::ScreenStopSession { session_id: session_id.into() })?.into_unit()
+    }
+
+    pub fn screen_capabilities(&self) -> Result<serde_json::Value> {
+        self.call(&HelperRequest::ScreenCapabilities)?.into_data()
     }
 
     /// Tear down the helper's active screen session.
@@ -165,7 +221,8 @@ fn helper_down() -> Error {
 
 fn read_response(reader: &mut impl BufRead) -> Result<HelperResponse> {
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(|_| helper_down())?;
+    reader.take((MAX_FRAME_BYTES + 1) as u64).read_line(&mut line).map_err(|_| helper_down())?;
+    if line.len() > MAX_FRAME_BYTES || !line.ends_with('\n') { return Err(Error::Internal("invalid helper framing".into())); }
     if line.trim().is_empty() {
         return Err(helper_down());
     }
@@ -241,6 +298,13 @@ impl PowerControl for HelperClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_parser_rejects_unterminated_or_oversized_frames() {
+        assert!(read_response(&mut std::io::Cursor::new(b"{\"ok\":true}".as_slice())).is_err());
+        let bytes = vec![b'x'; MAX_FRAME_BYTES + 2];
+        assert!(read_response(&mut std::io::Cursor::new(bytes)).is_err());
+    }
 
     /// On unix with no helper socket present, detect() must return None so
     /// the hub keeps honest no-op controls instead of erroring per call.

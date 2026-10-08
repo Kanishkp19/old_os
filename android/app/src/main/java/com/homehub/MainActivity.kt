@@ -22,14 +22,22 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    private val requestedRoute = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     @Inject lateinit var queue: QueueRepository
+    @Inject lateinit var connectivity: com.homehub.net.HubConnectivity
+
+    override fun attachBaseContext(newBase: android.content.Context) { super.attachBaseContext(com.homehub.ui.LanguagePreference.wrap(newBase)) }
+    override fun onResume() { super.onResume(); connectivity.refresh() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        handleShareIntent(intent)
+        if (savedInstanceState == null) handleShareIntent(intent)
+        if (intent?.getStringExtra("route") == "transfers") requestedRoute.value = "transfers"
         setContent {
             MaterialTheme {
                 val nav = rememberNavController()
+                val openRoute by requestedRoute.collectAsState()
+                LaunchedEffect(openRoute) { if (openRoute == "transfers") { nav.navigate("transfers") { launchSingleTop = true }; requestedRoute.value = null } }
                 val navBackStackEntry by nav.currentBackStackEntryAsState()
                 val currentRoute = navBackStackEntry?.destination?.route ?: "home"
                 Scaffold(
@@ -71,6 +79,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getStringExtra("route") == "transfers") requestedRoute.value = "transfers"
         handleShareIntent(intent)
     }
 

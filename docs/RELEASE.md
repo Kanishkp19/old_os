@@ -1,0 +1,7 @@
+# Windows release gate
+
+Source work on `implementation/windows-home-hub` is distinct from a validated release. After all implementation phases, run the build, contract, security, transfer, backup, storage, UI, companion, performance and hardware matrix in `docs/TEST_PLAN.md` and record concrete evidence in `docs/WINDOWS_VALIDATION.md`. Two identical failures in a focused run warrant stopping that run to inspect the cause rather than repeating it.
+
+Prepare an x64 Windows installer through `installer/release/prepare.ps1` as described in `WINDOWS_INSTALLATION.md`. The official offline WebView2 installer must pass Authenticode verification. If signing credentials are absent, mark the output unsigned and do not call it a signed release. Enable the update channel only after publishing a manifest signed by the matching Ed25519 key and a signed installer; the Hub stages a verified copy but waits for explicit owner installation.
+
+Run first install, file send and backup on the owner's Windows laptop and Android phone, then reboot and verify service/tray/session recovery. Repeat upgrade, failed upgrade recovery, repair and uninstall on disposable data. Run long soak, sleep/resume and power-loss tests on isolated libraries or VM disks. Apple app builds and codesigning require a configured Xcode host and Apple identities. The four-week, 20-household pilot is a later measured gate; a source commit or simulated test cannot satisfy it. OS development is a separate decision after this pilot.

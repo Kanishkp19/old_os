@@ -47,6 +47,7 @@ impl TransferEngine {
             let owned: i64 = c.query_row("SELECT COUNT(*) FROM backup_sources WHERE id=?1 AND device_id=?2 AND enabled=1", rusqlite::params![source,device_id],|r|r.get(0)).map_err(|e| Error::Db(e.to_string()))?;
             if owned != 1 || req.kind != "backup" || req.client_item_id.is_none() { return Err(Error::ForbiddenScope("photos".into())); }
         }
+        self.check_activity(device_id)?;
         let name = paths::sanitize_component(&req.name)?;
         let chunk_size = req.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE).clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
         let chunk_count = req.size.div_ceil(chunk_size).max(1);
@@ -54,9 +55,9 @@ impl TransferEngine {
         // Idempotency: same client_item_id + size → resume existing session (§6.3).
         if let Some(item) = &req.client_item_id {
             if let Some(t) = self.db.find_resumable(device_id, item, req.size)? {
-                let source: Option<String> = { let c=self.db.lock()?;c.query_row("SELECT backup_source_id FROM transfers WHERE id=?1",[&t.id],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))? };
+                let (source,target): (Option<String>,Option<String>) = { let c=self.db.lock()?;c.query_row("SELECT backup_source_id,target_device_id FROM transfers WHERE id=?1",[&t.id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|Error::Db(e.to_string()))? };
                 let same_hash = match (&t.expected_root_hash,&req.root_hash) { (Some(a),Some(b))=>a.eq_ignore_ascii_case(b),(None,None)=>true,_=>false };
-                if same_hash && source == req.backup_source_id && t.kind == req.kind {
+                if same_hash && source == req.backup_source_id && target==req.target_device_id && t.kind == req.kind {
                 let have = self.db.chunk_bitmap(&t.id)?;
                 return Ok(CreateTransferResponse {
                     transfer_id: t.id,
@@ -144,6 +145,7 @@ impl TransferEngine {
         let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
         validate_hash(header_hash)?;
         let t = self.must_get_open(transfer_id)?;
+        self.check_activity(&t.device_id)?;
         if idx >= t.chunk_count {
             return Err(Error::BadRequest(format!("chunk index {idx} out of range")));
         }
@@ -185,12 +187,16 @@ impl TransferEngine {
     /// Finalize: verify whole-file BLAKE3 root, fsync, atomic rename, DB commit.
     pub fn complete(&self, transfer_id: &str, root_hash: &str) -> Result<CompleteResponse> {
         let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
+        let transfer=self.db.get_transfer(transfer_id)?.ok_or(Error::TransferGone)?;
+        self.check_activity(&transfer.device_id)?;
         self.complete_locked(transfer_id, root_hash)
     }
 
     fn complete_locked(&self, transfer_id: &str, root_hash: &str) -> Result<CompleteResponse> {
         validate_hash(root_hash)?;
         let t = self.db.get_transfer(transfer_id)?.ok_or(Error::TransferGone)?;
+        // Startup recovery is local maintenance; normal routes are already
+        // gated by certificate activity before entering this critical section.
         if t.status == "completed" {
             let c = self.db.lock()?;
             let result = c.query_row("SELECT id,hash,size,rel_path FROM files WHERE id=?1 AND deleted_at IS NULL",rusqlite::params![t.result_file_id],|r| Ok(CompleteResponse {file_id:r.get(0)?,hash:r.get(1)?,size:r.get::<_,i64>(2)? as u64,rel_path:r.get(3)?,verified:true,backup_item_id:None})).map_err(|e| Error::Db(e.to_string()))?;
@@ -240,7 +246,8 @@ impl TransferEngine {
         let dest = paths::jail_join(&self.cfg.library_dir(),&rel_path)?;
         if tmp.exists() {
             if dest.exists() { return Err(Error::Conflict("finalization destination exists".into())); }
-            std::fs::rename(&tmp,&dest)?;
+            #[cfg(windows)] std::fs::rename(&tmp,&dest)?;
+            #[cfg(not(windows))] {std::fs::hard_link(&tmp,&dest)?;std::fs::remove_file(&tmp)?;}
             if let Some(parent) = dest.parent() { if let Ok(f) = File::open(parent) { let _ = f.sync_all(); } }
         }
         let file = File::open(&dest)?;
@@ -333,13 +340,22 @@ impl TransferEngine {
         Ok(t)
     }
 
-    fn find_file_by_hash(&self, hash: &str) -> Result<Option<String>> {
-        let c = self.db.lock()?;
-        let mut st = c
-            .prepare("SELECT id FROM files WHERE hash=?1 AND deleted_at IS NULL LIMIT 1")
-            .map_err(|e| Error::Db(e.to_string()))?;
-        let mut rows = st.query_map([hash], |r| r.get(0)).map_err(|e| Error::Db(e.to_string()))?;
-        Ok(rows.next().transpose().map_err(|e| Error::Db(e.to_string()))?)
+    fn check_activity(&self,device_id:&str)->Result<()> {
+        if self.db.get_setting("sharing.paused")?.as_deref()==Some("true"){return Err(Error::StorageUnavailable("sharing paused".into()));}
+        let device=self.db.device_by_id(device_id)?.ok_or(Error::Unauthenticated)?;
+        if device.status!="active" {return Err(Error::DeviceRevoked);}
+        if !device.has_scope("transfer"){return Err(Error::ForbiddenScope("transfer".into()));}Ok(())
+    }
+
+    fn find_file_by_hash(&self,hash:&str)->Result<Option<String>> {
+        let c=self.db.lock()?;
+        let mut st=c.prepare("SELECT f.id,r.path,f.rel_path,f.size FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE f.hash=?1 AND f.deleted_at IS NULL AND r.is_active=1").map_err(|e|Error::Db(e.to_string()))?;
+        let rows=st.query_map([hash],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).map_err(|e|Error::Db(e.to_string()))?;
+        for row in rows {let (id,root,rel,size)=row.map_err(|e|Error::Db(e.to_string()))?;
+            let valid=(||->Result<bool>{let path=paths::jail_join(Path::new(&root),&rel)?;let f=File::open(path)?;Ok(f.metadata()?.len()==size as u64 && hash_file(&f)?.eq_ignore_ascii_case(hash))})();
+            if matches!(valid,Ok(true)){return Ok(Some(id));}
+        }
+        Ok(None)
     }
 
     fn ensure_library_root(&self) -> Result<String> {
@@ -476,7 +492,7 @@ mod tests {
             &DeviceRow {
                 id: "d1".into(), name: "n".into(), platform: "android".into(),
                 model: None, app_version: None, cert_serial: "s".into(),
-                cert_expires_at: 0, scopes: vec![], paired_at: 0, last_seen_at: None,
+                cert_expires_at: 0, scopes: vec!["transfer".into()], paired_at: 0, last_seen_at: None,
                 status: "active".into(),
             },
             "PEM", "PUB",

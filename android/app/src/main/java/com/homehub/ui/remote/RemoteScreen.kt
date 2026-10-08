@@ -49,6 +49,8 @@ class RemoteViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
+    val scopes get() = hub.scopes
+    val allowed get() = hub.hasScope("remote")
     private var ws: WebSocket? = null
     private var pendingDx = 0
     private var pendingDy = 0
@@ -74,7 +76,7 @@ class RemoteViewModel @Inject constructor(
                         connected.value = false; connecting = false; ws = null
                     }
                 })
-            }.onSuccess { ws = it; cacheWake() }.onFailure { connecting = false; error.value = it.message }
+            }.onSuccess { ws = it; cacheWake() }.onFailure { connecting = false; error.value = com.homehub.ui.UserErrors.message(context, it) }
         }
     }
 
@@ -105,11 +107,11 @@ class RemoteViewModel @Inject constructor(
 
     fun power(action: String) = viewModelScope.launch {
         try { hub.post("/v1/remote/power", JSONObject().put("action", action).put("confirm", true)); error.value = null }
-        catch (e: Exception) { error.value = e.message }
+        catch (e: Exception) { error.value = com.homehub.ui.UserErrors.message(context, e) }
     }
     fun media(key: String) = viewModelScope.launch {
         try { hub.post("/v1/remote/media", JSONObject().put("key", key)); error.value = null }
-        catch (e: Exception) { error.value = e.message }
+        catch (e: Exception) { error.value = com.homehub.ui.UserErrors.message(context, e) }
     }
     private fun cacheWake() = viewModelScope.launch {
         runCatching { hub.get("/v1/remote/wake-info") }.onSuccess {
@@ -135,7 +137,7 @@ class RemoteViewModel @Inject constructor(
                 }
             }
             error.value = context.getString(R.string.wake_attempted)
-        } catch (e: Exception) { error.value = e.message }
+        } catch (e: Exception) { error.value = com.homehub.ui.UserErrors.message(context, e) }
     }
     override fun onCleared() { disconnect(); if (screen.status.value != "casting") screen.stop() }
 }
@@ -143,6 +145,7 @@ class RemoteViewModel @Inject constructor(
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun RemoteScreen(vm: RemoteViewModel = hiltViewModel()) {
+    val grantedScopes = vm.scopes.collectAsState().value
     val connected by vm.connected.collectAsState()
     val error by vm.error.collectAsState()
     val screenState by vm.screen.status.collectAsState()
@@ -164,6 +167,7 @@ fun RemoteScreen(vm: RemoteViewModel = hiltViewModel()) {
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.remote_title), style = MaterialTheme.typography.headlineSmall)
+        if (!vm.allowed) { Text(stringResource(R.string.error_permission)); return@Column }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         screenError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

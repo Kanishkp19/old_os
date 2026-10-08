@@ -105,13 +105,33 @@ impl Db {
         tx.commit().map_err(db_err)
     }
 
-    /// Replace the current certificate and revoke the old serial atomically.
-    pub fn renew_device(&self, id: &str, old_serial: &str, cert: &str, serial: &str, expires: i64) -> Result<()> {
-        let mut c = self.lock()?;
-        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
-        if tx.execute("UPDATE devices SET cert_pem=?3,cert_serial=?4,cert_expires_at=?5 WHERE id=?1 AND cert_serial=?2 AND status='active'",params![id,old_serial,cert,serial,expires]).map_err(db_err)? != 1 { return Err(Error::Unauthenticated); }
-        tx.execute("INSERT INTO revoked_certs(cert_serial,device_id,revoked_at,reason) VALUES(?1,?2,?3,'renewed')",params![old_serial,id,now_ms()]).map_err(db_err)?;
-        tx.commit().map_err(db_err)
+    /// Renewal is staged until the new certificate first authenticates.
+    /// Retrying with the same CSR returns the same certificate after a lost
+    /// response; the old identity stays usable until activation or expiry.
+    pub fn pending_renewal(&self,id:&str,old:&str,csr:&str)->Result<Option<(String,i64)>> {
+        let c=self.lock()?;
+        let row:Option<(String,i64,String)>=c.query_row("SELECT cert_pem,cert_expires_at,csr_pem FROM certificate_renewals WHERE device_id=?1 AND old_serial=?2 AND expires_at>?3",params![id,old,now_ms()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_err)?;
+        match row {Some((cert,expiry,stored)) if stored==csr=>Ok(Some((cert,expiry))),Some(_)=>Err(Error::Conflict("renewal already pending with another key".into())),None=>Ok(None)}
+    }
+    pub fn stage_renewal(&self,id:&str,old:&str,csr:&str,cert:&str,serial:&str,expires:i64)->Result<()> {
+        let c=self.lock()?;
+        let active:i64=c.query_row("SELECT COUNT(*) FROM devices WHERE id=?1 AND cert_serial=?2 AND status='active'",params![id,old],|r|r.get(0)).map_err(db_err)?;
+        if active!=1{return Err(Error::Unauthenticated);}
+        let changed=c.execute("INSERT INTO certificate_renewals(device_id,old_serial,new_serial,cert_pem,csr_pem,cert_expires_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(device_id) DO UPDATE SET old_serial=excluded.old_serial,new_serial=excluded.new_serial,cert_pem=excluded.cert_pem,csr_pem=excluded.csr_pem,cert_expires_at=excluded.cert_expires_at,expires_at=excluded.expires_at WHERE certificate_renewals.expires_at<=?8",params![id,old,serial,cert,csr,expires,now_ms()+7*86400000,now_ms()]).map_err(db_err)?;
+        if changed!=1{return Err(Error::Conflict("renewal already pending; retry request".into()));}Ok(())
+    }
+    pub fn device_accepts_serial(&self,id:&str,serial:&str)->Result<bool> {
+        let c=self.lock()?;
+        let n:i64=c.query_row("SELECT COUNT(*) FROM devices d WHERE d.id=?1 AND d.status='active' AND ((d.cert_serial=?2 AND d.cert_expires_at>?3) OR EXISTS(SELECT 1 FROM certificate_renewals r WHERE r.device_id=d.id AND r.new_serial=?2 AND r.old_serial=d.cert_serial AND r.expires_at>?3 AND r.cert_expires_at>?3))",params![id,serial,now_ms()],|r|r.get(0)).map_err(db_err)?;
+        Ok(n==1)
+    }
+    pub fn activate_renewal(&self,id:&str,serial:&str)->Result<Option<String>> {
+        let mut c=self.lock()?;let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        let pending:Option<(String,String,i64)>=tx.query_row("SELECT old_serial,cert_pem,cert_expires_at FROM certificate_renewals WHERE device_id=?1 AND new_serial=?2 AND expires_at>?3",params![id,serial,now_ms()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_err)?;
+        let Some((old,cert,expires))=pending else {return Ok(None);};
+        if tx.execute("UPDATE devices SET cert_pem=?3,cert_serial=?4,cert_expires_at=?5 WHERE id=?1 AND cert_serial=?2 AND status='active'",params![id,old,cert,serial,expires]).map_err(db_err)?!=1{return Err(Error::Unauthenticated);}
+        tx.execute("INSERT OR REPLACE INTO revoked_certs(cert_serial,device_id,revoked_at,reason) VALUES(?1,?2,?3,'renewed')",params![old,id,now_ms()]).map_err(db_err)?;
+        tx.execute("DELETE FROM certificate_renewals WHERE device_id=?1",params![id]).map_err(db_err)?;tx.commit().map_err(db_err)?;Ok(Some(old))
     }
 
     pub fn device_by_id(&self, id: &str) -> Result<Option<DeviceRow>> {
@@ -521,7 +541,6 @@ impl Db {
             .map_err(db_err)?;
         Ok(rows)
     }
-}
 
     // ---- alerts ----
 

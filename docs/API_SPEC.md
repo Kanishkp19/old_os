@@ -101,12 +101,13 @@ Dashboard shows 6-digit code (TTL 2 min). Client calls `POST /pair` with `{"code
 
 | Method | Path | Scope | Description |
 |---|---|---|---|
-| GET | `/info` | any | Hub id, name, version, api range, features flags, time |
+| GET | `/info` | any | Hub id, name, version, api range, active feature flags, time, `backup_interval_minutes` |
 | GET | `/ping?bytes=N` | any | Returns N bytes (≤8 MiB) for throughput probe |
 | GET | `/status` | any | Free space, health summary, active transfers, alerts count |
 | GET | `/devices` | admin | List paired devices |
 | DELETE | `/devices/{id}` | admin | Revoke device |
 | PATCH | `/devices/me` | any | Rename self, update app_version, push token |
+| GET | `/devices/me` | any | Current device id, name and server-authoritative scopes |
 | POST | `/certs/renew` | any | CSR → new cert (if <30 days to expiry) |
 
 `GET /info` response:
@@ -119,6 +120,18 @@ Dashboard shows 6-digit code (TTL 2 min). Client calls `POST /pair` with `{"code
   "time": 1790000000000
 }
 ```
+
+### Windows Home Hub additions (compatible `/v1`)
+
+Pairing QR codes include `fp_sha256`, the full SHA-256 CA fingerprint. Clients verify the presented CA before sending a token. The older `fp` prefix remains for older clients. A certificate renewal response is staged for the same CSR and can be retried with the old certificate; the new certificate activates when first used. Revocation closes active API and screen sessions.
+
+`POST /backup/sources/{id}/cleanup-lease` accepts `{client_item_ids,client_review_id}`. The review ID is a stable 1–128 character device-generated nonce. Retrying the same review returns its original `lease_id`, `client_review_id` and pinned items. `GET /backup/sources/{id}/cleanup` lists active reviews for recovery after a lost response. `POST /backup/cleanup-leases/{id}/complete` releases the pins only after the phone reports which items the system actually removed. Unverified, missing or trashed Hub copies are never eligible.
+
+`GET /relay/devices` requires `transfer` and returns active other devices with `files` permission as `{items:[{id,name,platform}]}`. `POST /files/{id}/relay` stages an owned Hub file for a recipient. `GET /relay/inbox` shows the recipient's pending items; the recipient downloads through `/files/{id}/content`, checks the full BLAKE3 hash, then calls `POST /relay/{id}/delivered` with `{hash}`. The source or recipient can `DELETE /relay/{id}` while pending. Pending delivery pins the library item against trash and purge.
+
+`PATCH /screen/{id}` is an owner heartbeat. Screen direction is explicitly `view` or `cast`; sessions stop on owner removal, pause-sharing, helper disconnect or missed heartbeats. This release carries video only. The `remote` scope is required.
+
+Local owner routes under `http://127.0.0.1:47801/api` require the authorized Windows owner's session token and a same-origin CSRF check. `/api/settings` persists backup, scrub, copy, screen, wake and signed-update choices. `/api/update/stage` fetches an opt-in Ed25519-signed HTTPS manifest, bounds the download to 1 GiB and checks the installer SHA-256 before returning a protected staged path. It never installs an update without a user action. Storage jobs are durable and queryable through `/api/jobs/{id}`; implementing a job is separate from recording its acceptance result.
 
 ---
 

@@ -31,28 +31,37 @@ class TransfersViewModel @Inject constructor(
 
     fun retry(id: String) = viewModelScope.launch { queue.retry(id) }
     fun remove(id: String) = viewModelScope.launch { queue.remove(id) }
+    fun cancel(id: String) = viewModelScope.launch { queue.cancel(id) }
 }
 
 @Composable
 fun TransfersScreen(vm: TransfersViewModel = hiltViewModel()) {
     val items by vm.items.collectAsState()
+    var history by remember { mutableStateOf(false) }
+    var cancelItem by remember { mutableStateOf<QueueItem?>(null) }
+    val visible = items.filter { (it.state in listOf(QueueItem.DONE, QueueItem.CANCELLED)) == history }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text(stringResource(R.string.transfers_title), style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
-        if (items.isEmpty()) {
+        TextButton(onClick = { history = !history }) { Text(stringResource(if (history) R.string.nav_transfers else R.string.action_history)) }
+        if (visible.isEmpty()) {
             Text(stringResource(R.string.transfers_empty), color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(items, key = { it.id }) { item ->
-                    TransferRow(item, onRetry = { vm.retry(item.id) }, onRemove = { vm.remove(item.id) })
+                items(visible, key = { it.id }) { item ->
+                    TransferRow(item, onRetry = { vm.retry(item.id) }, onRemove = { vm.remove(item.id) }, onCancel = { cancelItem = item })
                 }
             }
         }
     }
+    cancelItem?.let { item -> AlertDialog(onDismissRequest = { cancelItem = null }, title = { Text(stringResource(R.string.cancel_transfer)) },
+        text = { Text(stringResource(R.string.cancel_transfer_confirm)) }, confirmButton = { TextButton(onClick = { vm.cancel(item.id); cancelItem = null }) { Text(stringResource(R.string.cancel_transfer)) } },
+        dismissButton = { TextButton(onClick = { cancelItem = null }) { Text(stringResource(R.string.action_cancel)) } }) }
+
 }
 
 @Composable
-private fun TransferRow(item: QueueItem, onRetry: () -> Unit, onRemove: () -> Unit) {
+private fun TransferRow(item: QueueItem, onRetry: () -> Unit, onRemove: () -> Unit, onCancel: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(12.dp).fillMaxWidth(),
@@ -70,13 +79,19 @@ private fun TransferRow(item: QueueItem, onRetry: () -> Unit, onRemove: () -> Un
                     },
                 )
             }
+            if (item.size > 0 && item.state == QueueItem.UPLOADING) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                Text(stringResource(R.string.progress_bytes, android.text.format.Formatter.formatFileSize(context, item.bytesSent),
+                    android.text.format.Formatter.formatFileSize(context, item.size)))
+            }
             when (item.state) {
                 QueueItem.FAILED_RETRY, QueueItem.FAILED_PERM -> TextButton(onClick = onRetry) {
                     Text(stringResource(R.string.action_retry))
                 }
-                QueueItem.DONE -> TextButton(onClick = onRemove) {
+                QueueItem.DONE, QueueItem.CANCELLED -> TextButton(onClick = onRemove) {
                     Text(stringResource(R.string.action_clear))
                 }
+                else -> TextButton(onClick = onCancel) { Text(stringResource(R.string.action_cancel)) }
             }
         }
     }
@@ -89,6 +104,7 @@ private fun stateLabel(item: QueueItem): String = when (item.state) {
     QueueItem.UPLOADING -> stringResource(R.string.state_uploading)
     QueueItem.VERIFYING -> stringResource(R.string.state_verifying)
     QueueItem.DONE -> stringResource(R.string.state_done)
+    QueueItem.CANCELLED -> stringResource(R.string.state_cancelled)
     QueueItem.FAILED_RETRY -> {
         val base = stringResource(R.string.state_waiting_retry)
         if (!item.lastError.isNullOrBlank()) "$base: ${item.lastError}" else base

@@ -1,72 +1,57 @@
-// ContentView.swift — home + pairing entry.
 import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
-
     var body: some View {
         NavigationStack {
-            if model.trust == nil {
-                PairView()
-            } else {
-                HomeView()
-            }
+            Group { if model.trust == nil { PairView() } else { HomeView() } }
+                .navigationTitle("Home Hub")
+                .overlay(alignment: .bottom) {
+                    if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).padding().background(.regularMaterial) }
+                }
         }
     }
 }
-
 struct HomeView: View {
     @EnvironmentObject var model: AppModel
-
     var body: some View {
         List {
             Section {
-                Label(model.trust?.name ?? "Home", systemImage: "house.fill")
-                Text("Share to Home Hub from any app; items send when you're on home Wi-Fi.")
-                    .foregroundStyle(.secondary)
+                Label(model.trust?.name ?? "Home Hub", systemImage: "house.fill")
+                Text("share_hint").foregroundStyle(.secondary)
+                Button("send_now") { Task { await model.send() } }
             }
-            Section("Waiting to send") {
-                ForEach(model.queue.pending()) { item in
+            Section("photos") {
+                Button("backup_now") { model.backupNow() }.disabled(model.busy)
+                Toggle("background_backup", isOn: Binding(get: { model.backupEnabled }, set: model.setBackupEnabled))
+                Text("background_limits").font(.caption).foregroundStyle(.secondary)
+                Text("originals_preserved").font(.caption)
+            }
+            Section("queue") {
+                ForEach(model.items) { item in
                     VStack(alignment: .leading) {
                         Text(item.name).lineLimit(1)
-                        Text(item.state.rawValue).font(.caption).foregroundStyle(.secondary)
+                        Text(LocalizedStringKey("state_" + item.state.rawValue)).font(.caption).foregroundStyle(.secondary)
+                        if let error = item.lastError { Text(error).font(.caption).foregroundStyle(.red) }
+                        if item.state == .failedPerm || item.state == .failedRetry { Button("retry") { model.retry(item) } }
                     }
                 }
             }
-        }
-        .navigationTitle("Home Hub")
+        }.refreshable { await model.send() }
     }
 }
-
-/// QR scan → verify CA fingerprint → exchange token for device cert (T3).
 struct PairView: View {
     @EnvironmentObject var model: AppModel
-    @State private var error: String?
-
+    @State private var text = ""
     var body: some View {
-        VStack(spacing: 24) {
-            Text("Connect to your Home").font(.title2)
-            Text("Open Home Hub on your computer, choose “Add a device”, and scan the code it shows.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            QRScannerView { raw in
-                guard let payload = PairPayload(raw: raw) else {
-                    error = "Not a Home Hub code"; return
-                }
-                Task {
-                    do {
-                        let trust = try await PairingClient().pair(payload)
-                        TrustStore.save(trust)
-                        await MainActor.run { model.trust = trust }
-                    } catch {
-                        await MainActor.run { self.error = error.localizedDescription }
-                    }
-                }
-            }
-            .frame(maxHeight: 320)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            if let error { Text(error).foregroundStyle(.red) }
-        }
-        .padding(24)
+        VStack(spacing: 16) {
+            Text("connect_home").font(.title2)
+            Text("scan_hint").multilineTextAlignment(.center).foregroundStyle(.secondary)
+            QRScannerView { raw in if !model.busy { Task { await model.pair(raw) } } }
+                .frame(maxHeight: 300).clipShape(RoundedRectangle(cornerRadius: 12))
+            TextField("pairing_text", text: $text).textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button("connect") { Task { await model.pair(text) } }.disabled(model.busy || text.isEmpty)
+            if model.busy { ProgressView() }
+        }.padding(24)
     }
 }

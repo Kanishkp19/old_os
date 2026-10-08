@@ -51,6 +51,8 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 ### Phase 5 — Protection and hardware
 
 - [~] Verified per-file second copies and reconnection
+- [x] Rebuild a corrupt existing second-copy file from a verified temporary copy; reject nested target paths
+- [x] Clear failed per-file coverage and derive freshness from every live file's verification time
 - [~] Scrub atomic repairs, low-space/health warnings
 - [~] Hardware/network/wake capability reporting
 - [ ] Completed phase commit and push recorded
@@ -101,6 +103,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 
 - Baseline source commit: `78610dd`. Runtime snapshot: sibling `home-hub-baseline-20261008`, kept outside version control.
 - Implementation checkpoint `add54d1` was pushed to `origin/implementation/windows-home-hub` on 2026-10-09. It is not a completed-phase or release claim.
+- Transfer authorization slice `286a5f2` was pushed on 2026-10-09; it also updated the task and validation ledgers.
 - Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.
@@ -112,7 +115,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - [~] Phase 2: finish guided setup, all launcher routes, persisted preferences, device security administration, notifications, accessibility and English/Hindi review.
 - [~] Phase 3: finish Keep/Import/Later, pagination and actions, trash/purge recovery, duplicate suggestions, library-move crash recovery and accurate reclaimable-space calculations.
 - [~] Phase 4: finish Android incremental backup, 1,000-item run, viewer/EXIF/unsupported-original behavior and cleanup-race verification.
-- [~] Phase 5: finish physical disk health, missing-drive/reconnect, scrub failure recovery, per-file second-copy coverage, hardware/network capability and wake checks.
+- [~] Phase 5: finish physical disk health, missing-drive/reconnect, scrub failure recovery, second-copy drive identity, hardware/network capability and wake checks.
 - [~] Phase 6: finish Windows helper/capture/encoder, Android/macOS rendering and cast, consent and reliable session teardown on real hardware.
 - [~] Phase 7: finish Android recovery journeys and reproducible macOS/iOS builds, pairing, queues, browsing, relay, share extension and iOS backup limits.
 - [~] Phase 8: finish browser/YouTube isolation and permissions, Music/Notes private persistence/import/export and calculator accessibility checks on Windows.

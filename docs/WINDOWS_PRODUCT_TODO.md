@@ -67,7 +67,6 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 ### Phase 7 — Companions
 
 - [~] Android workflows and recovery states
-- [x] Produce a local Android debug APK from the implementation branch
 - [~] Reproducible Apple projects with secure identities and persistent queues
 - [~] macOS browsing/relay/viewer and iOS share/photo backup
 - [ ] Completed phase commit and push recorded
@@ -94,7 +93,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 
 | Group | Status | Evidence required |
 |---|---|---|
-| Build/contracts | Partial | Rust workspace unit/doc tests, macOS Rust/Tauri checks, frontend and Android unit tests pass. Windows build, Apple build, migrations on upgrade, audits and packaging pending. |
+| Build/contracts | Partial | Rust workspace unit/doc tests, macOS Rust/Tauri checks, frontend and Android unit tests pass; Android debug APK packages locally. Windows build, Apple build, migrations on upgrade, audits and release packaging pending. |
 | Transfers | Pending | Empty through 20 GB, concurrency, crash/disk-full/lost responses, source changes, relay |
 | Backup/deletion | Pending | 1,000 mixed items, permissions/background limits, cancellation/hash changes/cleanup races |
 | Storage | Pending | Import preserves originals, trash, repair failures, missing drives and interrupted move |
@@ -110,24 +109,130 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - Implementation checkpoint `add54d1` was pushed to `origin/implementation/windows-home-hub` on 2026-10-09. It is not a completed-phase or release claim.
 - Transfer authorization slice `286a5f2` was pushed on 2026-10-09; it also updated the task and validation ledgers.
 - Second-copy repair and coverage slice `7ba6648` was pushed on 2026-10-09.
+- Browser-history clearing slice `ec660bd` and private tab-session restoration slice `ce7cc9c` were pushed on 2026-10-09.
 - Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.
 
 ## Detailed remaining gates from the approved plan
 
-- [ ] Phase 0: reproduce a final Windows build from this branch and confirm the running baseline's source relationship on the user's Windows laptop.
-- [~] Phase 1: finish rogue-hub, token replay/concurrency, renewal/revocation, transfer crash/disk-full/source-change, ownership, Range and pause-sharing cases.
-- [~] Phase 2: finish guided setup, all launcher routes, persisted preferences, device security administration, notifications, accessibility and English/Hindi review.
-- [~] Phase 3: finish Keep/Import/Later, pagination and actions, trash/purge recovery, duplicate suggestions, library-move crash recovery and accurate reclaimable-space calculations.
-- [~] Phase 4: finish Android incremental backup, 1,000-item run, viewer/EXIF/unsupported-original behavior and cleanup-race verification.
-- [~] Phase 5: finish physical disk health, missing-drive/reconnect, scrub failure recovery, second-copy drive identity, hardware/network capability and wake checks.
-- [~] Phase 6: finish Windows helper/capture/encoder, Android/macOS rendering and cast, consent and reliable session teardown on real hardware.
-- [~] Phase 7: finish Android recovery journeys and reproducible macOS/iOS builds, pairing, queues, browsing, relay, share extension and iOS backup limits.
-- [~] Phase 8: finish browser/YouTube isolation and permissions, Music/Notes private persistence/import/export and calculator accessibility checks on Windows.
-- [~] Phase 9: execute Inno installer, service/login/firewall/ACL upgrade/rollback/uninstall, signed update and diagnostics flows on Windows; prepare signatures when credentials exist.
-- [ ] Final testing: execute the complete matrix in `TEST_PLAN.md`, fix failures, rerun final regression, and record unavailable hardware honestly.
-- [ ] Release gate: signed artifacts where possible, physical Windows/Android validation, 72-hour soak, 100 resumes, 200 disposable-data crash runs, and the four-week 20-household pilot.
+This inventory mirrors every implementation item in the approved plan. `[~]` means source or a partial path exists; it is not an acceptance result. The validation table above and `WINDOWS_VALIDATION.md` track tests separately.
+
+### Phase 0 task inventory
+
+- [x] Trace and preserve the running dashboard binary, configuration, database, source snapshot and user data.
+- [x] Reconcile the existing GitHub history, create the dedicated implementation branch, and exclude local secrets/build products.
+- [x] Record Windows scope, phase order, known defects, implementation TODOs and the acceptance matrix.
+- [~] Repair baseline syntax, dependencies, configuration loading and API contract mismatches.
+- [ ] Reproduce the final Windows build from this branch and confirm its relationship to the running baseline on the user's laptop.
+
+### Phase 1 task inventory
+
+- [~] Verify the QR-pinned hub before Android/tooling token submission.
+- [~] Enforce pairing expiry, single use, attempt limits, manual consent and secure client key storage.
+- [~] Apply scope, status and ownership checks and revoke active API/event/remote/screen sessions promptly.
+- [~] Persist certificate renewal and handle old certificates correctly.
+- [~] Make chunk writes, verification, rename, database commit and response retries durable and synchronized.
+- [~] Revalidate interrupted chunk state and make completion idempotent.
+- [~] Handle changed sources, empty files, collisions, short writes, disk full and bounded concurrency.
+- [~] Stream large downloads with Range support.
+- [~] Pause new sharing, safely stop or pause active work, and keep owner administration available.
+
+### Phase 2 task inventory
+
+- [~] Deliver the Tauri/Svelte launcher and all 14 planned navigation destinations.
+- [~] Reuse navigation, dialogs, progress, alerts, empty states and actionable errors.
+- [~] Guide setup through hub name, library, hardware, existing data and pairing.
+- [~] Persist settings in the service instead of startup-only defaults.
+- [~] Administer device names, permissions, removal, last seen and security activity.
+- [~] Expose notifications, backup rules, privacy, updates and advanced diagnostics.
+- [~] Complete keyboard navigation, labels, text scaling and English/Hindi coverage.
+
+### Phase 3 task inventory
+
+- [~] Browse/search/sort/page files; select, rename, download, trash and restore them.
+- [~] Enforce purge eligibility and recover visibly from filesystem failures.
+- [~] Scan existing files and offer Keep / Import / Later, defaulting to Later; verify imported copies and preserve originals.
+- [~] Exclude kept-in-place files from destructive Hub retention.
+- [~] Move libraries with space checks, progress, verification and interruption recovery.
+- [~] Review exact duplicates before cleanup to trash.
+- [~] Suggest similar photos without automatic deletion.
+- [~] Derive storage totals and reclaimable space from actual file state.
+
+### Phase 4 task inventory
+
+- [~] Discover Android MediaStore photos/videos incrementally using the persistent Room queue.
+- [~] Offer source approval, schedules, Wi-Fi/charging conditions, foreground progress and permission recovery.
+- [~] Link backup items to completed transfers and mark verification only after durable finalization.
+- [~] Recheck changed source content and missing, trashed or corrupt Hub copies.
+- [~] Complete EXIF, thumbnails, Year/Month views, full viewers, zoom, sharing and details on Android/Windows.
+- [~] Preserve unsupported originals and show honest preview placeholders.
+- [~] Require fresh Hub eligibility and matching local hashes before Android system deletion.
+- [~] Protect eligible Hub copies during cleanup and record removal only after confirmed system results.
+
+### Phase 5 task inventory
+
+- [~] Collect Windows disk health and report Unknown where unsupported.
+- [~] Warn about low space, drive failure/removal, integrity and single-copy exposure.
+- [~] Schedule throttled scrub and use verified temporary files for atomic repair.
+- [~] Select stable external drives, copy incrementally, schedule/reconnect and report freshness.
+- [~] Derive second-copy indicators per file; partial jobs must not imply full protection.
+- [~] Preserve second-copy data independently from immediate library deletion.
+- [~] Audit hardware, show compatibility, recover DHCP/discovery and expose supported hotspot controls.
+- [~] Prefer Ethernet, attempt supported wake, and retain queued delivery when wake fails.
+- [~] Remove unconditional public-network probes from core status paths.
+
+### Phase 6 task inventory
+
+- [~] Finish permission-scoped trackpad, keyboard, scroll, media keys and confirmed power actions.
+- [~] Authenticate bounded helper IPC and fail closed on identity/permission errors.
+- [~] Recover helper startup, shutdown, user-session changes and reconnection.
+- [~] Capture real Windows screens, prefer hardware H.264 and fall back to software encoding.
+- [~] Complete Android/macOS viewers and consented Android-to-Windows cast.
+- [~] Render real receiver video with bounded buffering, quality presets and overload handling.
+- [~] Stop sessions on disconnect, revocation, pause, logout and user action.
+
+### Phase 7 task inventory
+
+- [~] Complete Android navigation, downloads, history, notifications, permissions and recovery states.
+- [~] Provide reproducible macOS/iOS Xcode projects and signing guidance.
+- [~] Finish macOS Keychain pairing, persistent queue, drag/drop, Finder sharing, browsing, downloads and viewer.
+- [~] Deliver phone-to-Mac hub-staged relay with verified recipient and delivery state.
+- [~] Finish iOS pairing, App Group share queue, sending and foreground photo backup.
+- [~] Continue iOS backup opportunistically in background, preserve originals and explain platform limits.
+
+### Phase 8 task inventory
+
+- [~] Browser address/search, tabs, navigation, bookmarks, session restore, downloads, permission prompts and clearing.
+- [~] YouTube isolated window, playback/fullscreen/sign-in where supported and installed-browser fallback.
+- [~] Music library playback, queue, seek, volume, repeat/shuffle and private playlists.
+- [~] Notes offline autosave, search, rename, trash/restore and Markdown/text import/export.
+- [~] Calculator arithmetic, percentages, parentheses, keyboard, history and safe expression parsing.
+- [~] Integrate all five apps into the launcher and common window behavior.
+
+### Phase 9 task inventory
+
+- [~] Package service, desktop, helper, tray, assets and runtime dependencies through canonical Inno Setup.
+- [~] Configure service ACLs, data folders, firewall, startup/recovery and non-elevated user components.
+- [~] Preserve data through upgrade, repair, rollback and uninstall; support keep-data choice.
+- [~] Stage opt-in signed updates with database backup and failed-upgrade recovery.
+- [~] Bound logs and export scrubbed diagnostics.
+- [ ] Sign release artifacts when credentials are available; validate Windows installer lifecycle.
+
+### Comprehensive validation and release inventory
+
+- [ ] Build/contracts: Rust format/lint/build/tests, frontend, Android, Apple, migrations, audits and Windows packages.
+- [ ] Transfers: empty/small/2 GB/20 GB, Unicode/folders, concurrency, resume, disk full, relay and lost responses.
+- [ ] Backup/deletion: 1,000 items, permission/background limits, local hash changes, cancelled cleanup and cleanup races.
+- [ ] Storage: original preservation, trash/purge, duplicates, scrub failures, drive removal and interrupted moves.
+- [ ] Security: rogue hub, replay, scope/ownership, renewal/revoke, path escapes, IPC, hostile web/uploaded content.
+- [ ] UI/apps: every route/error, accessibility, languages, private data, browser/YouTube and process cleanup.
+- [ ] Windows/companions: install/reboot/upgrade/uninstall, real remote/cast and Android/macOS/iOS workflows.
+- [ ] Performance/reliability: service <80 MB and <1% idle CPU, 72-hour soak, 100 resumes and 200 disposable-data crashes.
+- [ ] Fix all recorded failures, rerun affected checks and the full final regression suite.
+- [ ] Produce signed artifacts where possible, physical compatibility results and setup/recovery instructions.
+- [ ] Run the four-week 20-household pilot with backup usability, retention, satisfaction, zero-loss and resource results.
+- [ ] Make a separate OS/M6 decision only after these gates; do not implement M6 in this branch.
 
 ## Checkpoint 2026-10-08
 

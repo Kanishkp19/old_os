@@ -7,7 +7,7 @@ use store::{Result, Record, Store};
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
-pub struct AppState {store:Store, hub:proxy::Hub, browser:browser::Browser, ready:std::sync::atomic::AtomicBool, saving:std::sync::Mutex<std::collections::BTreeMap<String,std::sync::Arc<std::sync::atomic::AtomicBool>>>}
+pub struct AppState {store:Store, hub:proxy::Hub, browser:browser::Browser, ready:std::sync::atomic::AtomicBool, exiting:std::sync::atomic::AtomicBool, restoring:std::sync::atomic::AtomicBool, saving:std::sync::Mutex<std::collections::BTreeMap<String,std::sync::Arc<std::sync::atomic::AtomicBool>>>}
 fn trusted(window:&WebviewWindow)->Result<()> {
     let url=window.url().map_err(|_|"Cannot identify app window")?;
     let local=url.scheme()=="tauri"&&url.host_str()==Some("localhost") || matches!(url.scheme(),"http"|"https")&&url.host_str()==Some("tauri.localhost") || cfg!(debug_assertions)&&url.scheme()=="http"&&url.host_str()==Some("127.0.0.1")&&url.port()==Some(1420);
@@ -68,11 +68,39 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     {let saving=state.saving.lock().map_err(|_|"Downloads are busy")?;for flag in saving.values(){flag.store(true,std::sync::atomic::Ordering::Release);}}
     let started=std::time::Instant::now();
     loop {let empty=state.saving.lock().map_err(|_|"Downloads are busy")?.is_empty();if empty{break;}if started.elapsed()>std::time::Duration::from_secs(20){return Err("A drive is still finishing a file save. Wait and close Home Hub again.".into());}tokio::time::sleep(std::time::Duration::from_millis(50)).await;}
+    browser::remember(&state)?;
+    state.exiting.store(true,std::sync::atomic::Ordering::Release);
     app.exit(0);Ok(())
 }
 #[tauri::command] async fn browser_open(window:WebviewWindow,app:tauri::AppHandle,url:String)->Result<String> {trusted(&window)?;browser::open(&app,&url,false,vec![],false).await}
 #[tauri::command] async fn youtube_open(window:WebviewWindow,app:tauri::AppHandle,url:String)->Result<String> {trusted(&window)?;let parsed=browser::public_url(&url)?;if !matches!(parsed.host_str(),Some("youtube.com"|"www.youtube.com"|"m.youtube.com")){return Err("Choose a YouTube address".into());}browser::open(&app,&url,true,vec![],false).await}
-#[tauri::command] fn browser_list(window:WebviewWindow,app:tauri::AppHandle)->Result<Vec<browser::Tab>> {trusted(&window)?;let state=app.state::<AppState>();let mut tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;tabs.retain(|label,_|app.get_webview_window(label).is_some());Ok(tabs.values().cloned().collect())}
+#[tauri::command] fn browser_list(window:WebviewWindow,app:tauri::AppHandle)->Result<Vec<browser::Tab>> {trusted(&window)?;let state=app.state::<AppState>();let stale={let tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;tabs.keys().filter(|label|app.get_webview_window(label).is_none()).cloned().collect::<Vec<_>>()};for label in stale {browser::forget(&state,&label)?;}let result=state.browser.tabs.lock().map_err(|_|"Browser is busy")?.values().cloned().collect();Ok(result)}
+#[tauri::command] fn browser_previous(window:WebviewWindow,state:tauri::State<'_,AppState>)->Result<Vec<store::BrowserSessionTab>> {trusted(&window)?;state.store.browser_session()}
+#[tauri::command] async fn browser_restore(window:WebviewWindow,app:tauri::AppHandle)->Result<usize> {
+    trusted(&window)?;
+    let state=app.state::<AppState>();
+    let previous={
+        let tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;
+        if !tabs.is_empty() {return Err("Close current tabs before restoring a previous session".into());}
+        let previous=state.store.browser_session()?;
+        if state.restoring.swap(true,std::sync::atomic::Ordering::AcqRel) {return Err("Browser restore is already running".into());}
+        previous
+    };
+    let mut opened=Vec::new();
+    for tab in &previous {
+        match browser::open(&app,&tab.url,tab.isolated,vec![],false).await {
+            Ok(label)=>opened.push(label),
+            Err(error)=>{
+                for label in opened {if let Some(webview)=app.get_webview_window(&label) {let _=webview.close();}let _=browser::forget(&state,&label);}
+                state.restoring.store(false,std::sync::atomic::Ordering::Release);
+                return Err(error);
+            }
+        }
+    }
+    state.restoring.store(false,std::sync::atomic::Ordering::Release);
+    browser::remember(&state)?;
+    Ok(previous.len())
+}
 #[tauri::command] async fn browser_action(window:WebviewWindow,app:tauri::AppHandle,label:String,action:String,url:Option<String>)->Result<()> {
     trusted(&window)?;
     if !label.starts_with("browser-") {return Err("Invalid browser tab".into());}
@@ -80,7 +108,7 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     match action.as_str() {
         "navigate"=>tab.navigate(browser::public_url(url.as_deref().ok_or("Enter an address")?)?),
         "back"=>tab.eval("history.back()"),"forward"=>tab.eval("history.forward()"),"reload"=>tab.reload(),"focus"=>tab.set_focus(),
-        "close"=>{tab.close().map_err(|_|"Could not close tab")?;app.state::<AppState>().browser.tabs.lock().map_err(|_|"Browser is busy")?.remove(&label);return Ok(());},
+        "close"=>{tab.close().map_err(|_|"Could not close tab")?;let state=app.state::<AppState>();browser::forget(&state,&label)?;return Ok(());},
         _=>return Err("Unknown browser action".into())
     }.map_err(|_|"Browser action could not complete".into())
 }
@@ -94,7 +122,7 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     // not depend on which permissions an installed WebView2 caches persistently.
     webview.clear_all_browsing_data().map_err(|_|"Could not reset website permissions")?;
     webview.close().map_err(|_|"Could not close previous website session")?;
-    state.browser.tabs.lock().map_err(|_|"Browser is busy")?.remove(&label);
+    browser::forget(&state,&label)?;
     browser::open(&app,&tab.url,tab.isolated,permissions,downloads).await
 }
 #[tauri::command] async fn browser_clear(window:WebviewWindow,app:tauri::AppHandle)->Result<()> {
@@ -190,7 +218,7 @@ fn main() {
         })
         .setup(|app| {
             let root=app.path().app_local_data_dir()?;
-            let state=AppState {store:Store::open(root).map_err(std::io::Error::other)?,hub:proxy::Hub::new(token_path()).map_err(std::io::Error::other)?,browser:browser::Browser::default(),ready:std::sync::atomic::AtomicBool::new(false),saving:std::sync::Mutex::new(std::collections::BTreeMap::new())};app.manage(state);
+            let state=AppState {store:Store::open(root).map_err(std::io::Error::other)?,hub:proxy::Hub::new(token_path()).map_err(std::io::Error::other)?,browser:browser::Browser::default(),ready:std::sync::atomic::AtomicBool::new(false),exiting:std::sync::atomic::AtomicBool::new(false),restoring:std::sync::atomic::AtomicBool::new(false),saving:std::sync::Mutex::new(std::collections::BTreeMap::new())};app.manage(state);
             let trusted_directory=app.path().app_local_data_dir()?.join("trusted-webview");
             store::private_directory(&trusted_directory).map_err(std::io::Error::other)?;
             let url=if cfg!(debug_assertions) {WebviewUrl::External("http://127.0.0.1:1420".parse()?)}else{WebviewUrl::App("index.html".into())};
@@ -200,13 +228,13 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window,event| {
-            if window.label().starts_with("browser-") && matches!(event,tauri::WindowEvent::Destroyed) {if let Ok(mut tabs)=window.state::<AppState>().browser.tabs.lock(){tabs.remove(window.label());}}
+            if window.label().starts_with("browser-") && matches!(event,tauri::WindowEvent::Destroyed) {let state=window.state::<AppState>();if let Err(error)=browser::forget(&state,window.label()){eprintln!("Could not remember browser tabs: {error}");}}
             if window.label()=="main" {if let tauri::WindowEvent::CloseRequested {api,..}=event {
                 if window.state::<AppState>().ready.load(std::sync::atomic::Ordering::Acquire) {api.prevent_close();if window.emit("shell-close-requested",()).is_err(){let _=window.set_focus();}}
                 else {window.app_handle().exit(0);}
             }}
         })
-        .invoke_handler(tauri::generate_handler![hub_request,local_list,local_save,local_trash,local_restore,local_purge,local_export,local_import,note_export,note_import,shell_ready,finish_close,browser_open,youtube_open,browser_action,browser_list,browser_permissions,browser_clear,open_external,save_download,discard_download,save_hub_file,cancel_save])
+        .invoke_handler(tauri::generate_handler![hub_request,local_list,local_save,local_trash,local_restore,local_purge,local_export,local_import,note_export,note_import,shell_ready,finish_close,browser_open,youtube_open,browser_action,browser_list,browser_previous,browser_restore,browser_permissions,browser_clear,open_external,save_download,discard_download,save_hub_file,cancel_save])
         .run(tauri::generate_context!());
     if let Err(error)=app {eprintln!("Home Hub could not start: {error}");}
 }

@@ -76,6 +76,8 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 
 - [~] Isolated native browser tabs, downloads, permissions and bookmarks
 - [x] Remove all private browser-history rows, including trashed rows, when clearing website data
+- [x] Persist only tab addresses and the YouTube isolation flag in the private user database; offer explicit restoration without carrying forward website grants
+- [ ] Validate tab restoration, failed-restoration retry, and profile isolation with WebView2 on Windows
 - [ ] Verify closed-tab WebView2 profile cleanup and browsing-data clearing on Windows
 - [~] Isolated YouTube window and fallback
 - [~] Private offline Notes/playlists, Music and safe Calculator

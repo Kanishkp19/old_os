@@ -2,9 +2,35 @@
 use std::{collections::BTreeMap, net::IpAddr, sync::Mutex};
 use serde::Serialize;
 use tauri::{Manager, WebviewUrl, webview::{DownloadEvent, NewWindowResponse, PermissionKind, PermissionResponse, WebviewWindowBuilder}};
-use crate::{AppState, store::{Result, now}};
+use crate::{AppState, store::{BrowserSessionTab, Result, now}};
 #[derive(Clone,Serialize)] pub struct Tab {pub label:String,pub url:String,pub title:String,pub downloads:bool,pub permissions:Vec<String>,pub isolated:bool}
 #[derive(Default)] pub struct Browser {pub tabs:Mutex<BTreeMap<String,Tab>>}
+
+pub fn remember(state:&AppState)->Result<()> {
+    let tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;
+    if state.restoring.load(std::sync::atomic::Ordering::Acquire) {return Ok(());}
+    save_locked(state,&tabs)
+}
+
+fn save_locked(state:&AppState,tabs:&BTreeMap<String,Tab>)->Result<()> {
+    let session=tabs.values().map(|tab|BrowserSessionTab {url:tab.url.clone(),isolated:tab.isolated}).collect::<Vec<_>>();
+    state.store.save_browser_session(&session)
+}
+
+pub fn update_url(state:&AppState,label:&str,url:&str)->Result<()> {
+    let mut tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;
+    if let Some(tab)=tabs.get_mut(label) {
+        tab.url=url.into();
+        if !state.restoring.load(std::sync::atomic::Ordering::Acquire) {save_locked(state,&tabs)?;}
+    }
+    Ok(())
+}
+
+pub fn forget(state:&AppState,label:&str)->Result<()> {
+    let mut tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;
+    if tabs.remove(label).is_some() && !state.exiting.load(std::sync::atomic::Ordering::Acquire) && !state.restoring.load(std::sync::atomic::Ordering::Acquire) {save_locked(state,&tabs)?;}
+    Ok(())
+}
 
 pub fn public_url(input:&str)->Result<url::Url> {
     if input.len()>4096 {return Err("Address is too long".into());}
@@ -44,7 +70,7 @@ pub async fn open(app:&tauri::AppHandle,input:&str,isolated:bool,permissions:Vec
             if public_url(url.as_str()).is_err() {return false;}
             if let Some(window)=nav_app.get_webview_window(&nav_label) {let _=window.set_title(&format!("Home Hub Browser · {}",url.host_str().unwrap_or("Website")));}
             let state=nav_app.state::<AppState>();
-            if let Ok(mut tabs)=state.browser.tabs.lock() {if let Some(tab)=tabs.get_mut(&nav_label) {tab.url=url.as_str().into();}}
+            if let Err(error)=update_url(&state,&nav_label,url.as_str()) {eprintln!("Could not remember browser tabs: {error}");}
             true
         })
         .on_new_window(|_,_|NewWindowResponse::Deny)
@@ -80,7 +106,12 @@ pub async fn open(app:&tauri::AppHandle,input:&str,isolated:bool,permissions:Vec
                 _=>false
             }
         });
-    if builder.build().is_err() {state.browser.tabs.lock().map_err(|_|"Browser is busy")?.remove(&label);return Err("Could not open the browser. Install WebView2 or open the site in your default browser.".into());}
+    if builder.build().is_err() {forget(&state,&label)?;return Err("Could not open the browser. Install WebView2 or open the site in your default browser.".into());}
+    if let Err(error)=remember(&state) {
+        if let Some(window)=app.get_webview_window(&label) {let _=window.close();}
+        let _=forget(&state,&label);
+        return Err(error);
+    }
     // Website histories have a bounded size; their failure cannot orphan a live tab.
     let _=state.store.save(None,"browser".into(),tab.title,serde_json::json!({"url":tab.url}).to_string());
     Ok(label)

@@ -6,6 +6,8 @@ use std::{path::{Path, PathBuf}, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 pub type Result<T> = std::result::Result<T, String>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record { pub id: String, pub kind: String, pub title: String, pub body: String, pub updated_at: i64, pub deleted_at: Option<i64> }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserSessionTab { pub url: String, pub isolated: bool }
 pub struct Store { pub db: Mutex<Connection>, pub root: PathBuf }
 pub fn now() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|v| v.as_millis() as i64).unwrap_or(0) }
 
@@ -41,7 +43,7 @@ impl Store {
         private_directory(&root)?;
         for name in ["desktop.db", "desktop.db-wal", "desktop.db-shm"] { reject_link(&root.join(name))?; }
         let db = Connection::open(root.join("desktop.db")).map_err(|_| "Could not open private app storage")?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,updated_at INTEGER NOT NULL,deleted_at INTEGER); CREATE INDEX IF NOT EXISTS records_kind ON records(kind,deleted_at,updated_at);").map_err(|_| "Could not prepare private app storage")?;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,updated_at INTEGER NOT NULL,deleted_at INTEGER); CREATE INDEX IF NOT EXISTS records_kind ON records(kind,deleted_at,updated_at); CREATE TABLE IF NOT EXISTS browser_session(position INTEGER PRIMARY KEY,url TEXT NOT NULL,isolated INTEGER NOT NULL);").map_err(|_| "Could not prepare private app storage")?;
         let store=Self { db: Mutex::new(db), root };
         for row in store.list("download","",false)? {
             if let Ok(mut body)=serde_json::from_str::<serde_json::Value>(&row.body) {if body["status"]=="downloading" {body["status"]=serde_json::json!("failed");body["reason"]=serde_json::json!("interrupted");store.save(Some(row.id),row.kind,row.title,body.to_string())?;}}
@@ -86,8 +88,34 @@ impl Store {
         if changed!=1{return Err("Only items in private trash can be permanently removed".into());}Ok(())
     }
     pub fn clear_browser_history(&self)->Result<()> {
+        let mut db=self.db.lock().map_err(|_|"App storage is busy")?;
+        let tx=db.transaction().map_err(|_|"Could not clear browser history")?;
+        tx.execute("DELETE FROM records WHERE kind='browser'",[]).map_err(|_|"Could not clear browser history")?;
+        tx.execute("DELETE FROM browser_session",[]).map_err(|_|"Could not clear browser session")?;
+        tx.commit().map_err(|_|"Could not clear browser data")?;
+        Ok(())
+    }
+    pub fn browser_session(&self)->Result<Vec<BrowserSessionTab>> {
         let db=self.db.lock().map_err(|_|"App storage is busy")?;
-        db.execute("DELETE FROM records WHERE kind='browser'",[]).map_err(|_|"Could not clear browser history")?;
+        let mut stmt=db.prepare("SELECT url,isolated FROM browser_session ORDER BY position LIMIT 12").map_err(|_|"Could not read browser session")?;
+        let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).map_err(|_|"Could not read browser session")?;
+        rows.map(|row| {
+            let (url,isolated)=row.map_err(|_|"Could not read browser session")?;
+            crate::browser::public_url(&url)?;
+            if isolated!=0 && isolated!=1 {return Err("Invalid browser session".into());}
+            Ok(BrowserSessionTab {url,isolated:isolated==1})
+        }).collect()
+    }
+    pub fn save_browser_session(&self,tabs:&[BrowserSessionTab])->Result<()> {
+        if tabs.len()>12 {return Err("Too many browser tabs".into());}
+        for tab in tabs {crate::browser::public_url(&tab.url)?;}
+        let mut db=self.db.lock().map_err(|_|"App storage is busy")?;
+        let tx=db.transaction().map_err(|_|"Could not save browser session")?;
+        tx.execute("DELETE FROM browser_session",[]).map_err(|_|"Could not save browser session")?;
+        for (position,tab) in tabs.iter().enumerate() {
+            tx.execute("INSERT INTO browser_session(position,url,isolated) VALUES(?1,?2,?3)",params![position as i64,&tab.url,tab.isolated]).map_err(|_|"Could not save browser session")?;
+        }
+        tx.commit().map_err(|_|"Could not save browser session")?;
         Ok(())
     }
     pub fn export(&self) -> Result<String> {
@@ -160,7 +188,7 @@ fn validate_record(r:&Record)->Result<()> {
         drop(s.db.into_inner().unwrap());std::fs::remove_dir_all(&s.root).ok();
     }
     #[test] fn portable_exports_do_not_include_preferences_browser_sessions_or_download_paths() {
-        let s=store();s.save(None,"preference".into(),"interface".into(),"{\"private\":\"NOT_EXPORTED\"}".into()).unwrap();s.save(None,"browser".into(),"session".into(),"{\"url\":\"https://example.com/NOT_EXPORTED\"}".into()).unwrap();s.save(None,"download".into(),"download".into(),"{\"path\":\"NOT_EXPORTED\"}".into()).unwrap();s.save(None,"note".into(),"Note".into(),"Markdown".into()).unwrap();assert!(!s.export().unwrap().contains("NOT_EXPORTED"));
+        let s=store();s.save(None,"preference".into(),"interface".into(),"{\"private\":\"NOT_EXPORTED\"}".into()).unwrap();s.save(None,"browser".into(),"session".into(),"{\"url\":\"https://example.com/NOT_EXPORTED\"}".into()).unwrap();s.save_browser_session(&[BrowserSessionTab {url:"https://example.com/NOT_EXPORTED".into(),isolated:false}]).unwrap();s.save(None,"download".into(),"download".into(),"{\"path\":\"NOT_EXPORTED\"}".into()).unwrap();s.save(None,"note".into(),"Note".into(),"Markdown".into()).unwrap();assert!(!s.export().unwrap().contains("NOT_EXPORTED"));
         drop(s.db.into_inner().unwrap());std::fs::remove_dir_all(&s.root).ok();
     }
     #[test] fn clearing_browser_history_removes_active_and_trashed_rows_only() {
@@ -171,13 +199,26 @@ fn validate_record(r:&Record)->Result<()> {
         s.save(None,"note".into(),"Keep".into(),"Private".into()).unwrap();
         s.save(None,"bookmark".into(),"Keep".into(),"{\"url\":\"https://example.com/bookmark\"}".into()).unwrap();
         s.save(None,"download".into(),"Keep".into(),"{\"status\":\"complete\"}".into()).unwrap();
+        s.save_browser_session(&[BrowserSessionTab {url:"https://example.com/reopen".into(),isolated:false}]).unwrap();
         s.clear_browser_history().unwrap();
         assert!(s.list("browser","",false).unwrap().is_empty());
         assert!(s.list("browser","",true).unwrap().is_empty());
+        assert!(s.browser_session().unwrap().is_empty());
         assert_eq!(s.list("note","",false).unwrap().len(),1);
         assert_eq!(s.list("bookmark","",false).unwrap().len(),1);
         assert_eq!(s.list("download","",false).unwrap().len(),1);
         assert!(!s.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM records WHERE id=?1)",params![active.id],|r|r.get::<_,bool>(0)).unwrap());
+        drop(s.db.into_inner().unwrap());std::fs::remove_dir_all(&s.root).ok();
+    }
+    #[test] fn browser_session_roundtrip_replaces_tabs_without_restoring_grants() {
+        let s=store();
+        let previous=vec![BrowserSessionTab {url:"https://example.com/first".into(),isolated:false},BrowserSessionTab {url:"https://www.youtube.com/watch?v=1".into(),isolated:true}];
+        s.save_browser_session(&previous).unwrap();
+        assert_eq!(s.browser_session().unwrap(),previous);
+        assert!(s.save_browser_session(&[BrowserSessionTab {url:"https://127.0.0.1:47801".into(),isolated:false}]).is_err());
+        assert_eq!(s.browser_session().unwrap(),previous);
+        s.save_browser_session(&previous[1..]).unwrap();
+        assert_eq!(s.browser_session().unwrap(),previous[1..]);
         drop(s.db.into_inner().unwrap());std::fs::remove_dir_all(&s.root).ok();
     }
 }

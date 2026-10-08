@@ -1,6 +1,7 @@
 export const routes = ['Home','Photos','Files','Transfers','Storage','Remote','Browser','YouTube','Music','Notes','Calculator','Devices','Hardware','Settings'];
 export const icons = ['⌂','▧','▤','⇄','◴','⌘','◎','▶','♫','✎','+','▣','⚙','☷'];
 const hi = {
+  'Restore previous tabs':'पिछले टैब फिर खोलें',
   'Private apps ready':'निजी ऐप तैयार हैं',
   'Private app trash':'निजी ऐप का कूड़ेदान','note':'नोट','playlist':'प्लेलिस्ट','bookmark':'बुकमार्क',
   'Expression is too long.':'गणना बहुत लंबी है।','Result is outside the supported range.':'परिणाम समर्थित सीमा से बाहर है।','Too many brackets.':'बहुत अधिक कोष्ठक हैं।','Close the bracket.':'कोष्ठक बंद करें।','Enter a number.':'संख्या दर्ज करें।','Expression is too complex.':'गणना बहुत जटिल है।','Cannot divide by zero.':'शून्य से भाग नहीं कर सकते।','Use numbers, brackets and arithmetic operators only.':'केवल संख्या, कोष्ठक और गणना चिह्न इस्तेमाल करें।',

@@ -85,6 +85,11 @@ impl Store {
         let changed=db.execute("DELETE FROM records WHERE id=?1 AND deleted_at IS NOT NULL AND kind IN ('note','playlist','bookmark')",params![id]).map_err(|_|"Could not empty private trash")?;
         if changed!=1{return Err("Only items in private trash can be permanently removed".into());}Ok(())
     }
+    pub fn clear_browser_history(&self)->Result<()> {
+        let db=self.db.lock().map_err(|_|"App storage is busy")?;
+        db.execute("DELETE FROM records WHERE kind='browser'",[]).map_err(|_|"Could not clear browser history")?;
+        Ok(())
+    }
     pub fn export(&self) -> Result<String> {
         let mut records = Vec::new();
         for kind in ["note","playlist","bookmark"] { records.extend(self.list(kind,"",false)?); records.extend(self.list(kind,"",true)?); }
@@ -156,6 +161,23 @@ fn validate_record(r:&Record)->Result<()> {
     }
     #[test] fn portable_exports_do_not_include_preferences_browser_sessions_or_download_paths() {
         let s=store();s.save(None,"preference".into(),"interface".into(),"{\"private\":\"NOT_EXPORTED\"}".into()).unwrap();s.save(None,"browser".into(),"session".into(),"{\"url\":\"https://example.com/NOT_EXPORTED\"}".into()).unwrap();s.save(None,"download".into(),"download".into(),"{\"path\":\"NOT_EXPORTED\"}".into()).unwrap();s.save(None,"note".into(),"Note".into(),"Markdown".into()).unwrap();assert!(!s.export().unwrap().contains("NOT_EXPORTED"));
+        drop(s.db.into_inner().unwrap());std::fs::remove_dir_all(&s.root).ok();
+    }
+    #[test] fn clearing_browser_history_removes_active_and_trashed_rows_only() {
+        let s=store();
+        let active=s.save(None,"browser".into(),"Page A".into(),"{\"url\":\"https://example.com/a\"}".into()).unwrap();
+        let trashed=s.save(None,"browser".into(),"Page B".into(),"{\"url\":\"https://example.com/b\"}".into()).unwrap();
+        s.trash(&trashed.id,false).unwrap();
+        s.save(None,"note".into(),"Keep".into(),"Private".into()).unwrap();
+        s.save(None,"bookmark".into(),"Keep".into(),"{\"url\":\"https://example.com/bookmark\"}".into()).unwrap();
+        s.save(None,"download".into(),"Keep".into(),"{\"status\":\"complete\"}".into()).unwrap();
+        s.clear_browser_history().unwrap();
+        assert!(s.list("browser","",false).unwrap().is_empty());
+        assert!(s.list("browser","",true).unwrap().is_empty());
+        assert_eq!(s.list("note","",false).unwrap().len(),1);
+        assert_eq!(s.list("bookmark","",false).unwrap().len(),1);
+        assert_eq!(s.list("download","",false).unwrap().len(),1);
+        assert!(!s.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM records WHERE id=?1)",params![active.id],|r|r.get::<_,bool>(0)).unwrap());
         drop(s.db.into_inner().unwrap());std::fs::remove_dir_all(&s.root).ok();
     }
 }

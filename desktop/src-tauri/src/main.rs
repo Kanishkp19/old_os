@@ -102,7 +102,7 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     let state=app.state::<AppState>(); let labels=state.browser.tabs.lock().map_err(|_|"Browser is busy")?.keys().cloned().collect::<Vec<_>>();
     for label in labels {if let Some(tab)=app.get_webview_window(&label) {tab.clear_all_browsing_data().map_err(|_|"Could not clear website data")?;tab.close().map_err(|_|"Could not close browser")?;}}
     state.browser.tabs.lock().map_err(|_|"Browser is busy")?.clear();
-    for r in state.store.list("browser","",false)? {state.store.trash(&r.id,false)?;}
+    state.store.clear_browser_history()?;
     Ok(())
 }
 #[tauri::command] async fn open_external(window:WebviewWindow,url:String)->Result<()> {

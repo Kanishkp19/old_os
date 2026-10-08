@@ -67,6 +67,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 ### Phase 7 — Companions
 
 - [~] Android workflows and recovery states
+- [x] Produce a local Android debug APK from the implementation branch
 - [~] Reproducible Apple projects with secure identities and persistent queues
 - [~] macOS browsing/relay/viewer and iOS share/photo backup
 - [ ] Completed phase commit and push recorded
@@ -74,6 +75,8 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 ### Phase 8 — Everyday apps
 
 - [~] Isolated native browser tabs, downloads, permissions and bookmarks
+- [x] Remove all private browser-history rows, including trashed rows, when clearing website data
+- [ ] Verify closed-tab WebView2 profile cleanup and browsing-data clearing on Windows
 - [~] Isolated YouTube window and fallback
 - [~] Private offline Notes/playlists, Music and safe Calculator
 - [ ] Completed phase commit and push recorded
@@ -104,6 +107,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - Baseline source commit: `78610dd`. Runtime snapshot: sibling `home-hub-baseline-20261008`, kept outside version control.
 - Implementation checkpoint `add54d1` was pushed to `origin/implementation/windows-home-hub` on 2026-10-09. It is not a completed-phase or release claim.
 - Transfer authorization slice `286a5f2` was pushed on 2026-10-09; it also updated the task and validation ledgers.
+- Second-copy repair and coverage slice `7ba6648` was pushed on 2026-10-09.
 - Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.

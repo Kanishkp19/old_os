@@ -1074,7 +1074,7 @@ async fn wake_info(
     let macs = s.hw.wake_info()?;
     Ok(Json(serde_json::json!({
         "macs": macs.iter().map(|(i, m)| serde_json::json!({"iface": i, "mac": m})).collect::<Vec<_>>(),
-        "capability": if s.cfg.features.wol { "supported_where_nic_allows" } else { "unknown" },
+        "capability": if s.cfg.features.wol && !macs.is_empty() { "supported_where_nic_allows" } else { "unknown" },
         "note": "Wake is best-effort; queued transfers are the guarantee."
     })))
 }

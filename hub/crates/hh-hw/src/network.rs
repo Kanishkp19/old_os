@@ -23,6 +23,21 @@ pub struct Iface {
 }
 
 impl HwService {
+    /// Refresh locally observed NICs; only live, nonzero MACs are offered for wake.
+    pub fn refresh_wake_interfaces(&self)->Result<()> {
+        let nets=Networks::new_with_refreshed_list();
+        let c=self.db.lock()?;
+        for (name,data) in nets.iter() {
+            let n=name.to_ascii_lowercase();
+            let kind=if n.contains("ethernet")||n.starts_with("eth")||n=="en0"{"ethernet"}else if n.contains("wi-fi")||n.contains("wifi")||n.contains("wlan"){"wifi"}else{continue};
+            let mac=data.mac_address().to_string();
+            if mac=="00:00:00:00:00:00"||mac=="ff:ff:ff:ff:ff:ff"{continue;}
+            let ip=data.ip_networks().iter().map(|value|value.addr).find(|ip|!ip.is_loopback()&&!ip.is_unspecified()&&!matches!(ip,std::net::IpAddr::V4(v4) if v4.is_link_local()));
+            let Some(ip)=ip else {continue};
+            c.execute("INSERT INTO hub_network(id,iface_name,mac_address,kind,last_ip,updated_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET mac_address=excluded.mac_address,kind=excluded.kind,last_ip=excluded.last_ip,updated_at=excluded.updated_at",rusqlite::params![format!("nic:{name}"),name,mac,kind,ip.to_string(),now_ms()]).map_err(db_e)?;
+        }
+        Ok(())
+    }
     pub fn network_info(&self) -> Result<NetworkInfo> {
         let nets = Networks::new_with_refreshed_list();
         let mut ifaces = Vec::new();
@@ -73,10 +88,10 @@ impl HwService {
     pub fn wake_info(&self) -> Result<Vec<(String, String)>> {
         let c = self.db.lock()?;
         let mut st = c
-            .prepare("SELECT iface_name, mac_address FROM hub_network WHERE mac_address IS NOT NULL")
+            .prepare("SELECT iface_name, mac_address FROM hub_network WHERE mac_address IS NOT NULL AND kind IN ('ethernet','wifi') AND updated_at>=?1 AND (kind='ethernet' OR NOT EXISTS(SELECT 1 FROM hub_network e WHERE e.kind='ethernet' AND e.mac_address IS NOT NULL AND e.updated_at>=?1)) ORDER BY iface_name")
             .map_err(db_e)?;
         let rows = st
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_map([now_ms()-10*60*1000], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .map_err(db_e)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_e)?;

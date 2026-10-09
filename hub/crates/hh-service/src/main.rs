@@ -156,6 +156,7 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
                     .map(|ip|format!("{ip}:{}",hh_core::PAIRING_PORT)).collect();
                 if let Ok(mut w)=address_state.lan_addrs.write(){*w=addrs;}
             }
+            if let Err(e)=address_state.hw.refresh_wake_interfaces(){tracing::warn!(error=%e,"network interface inventory failed");}
         }
     });
 

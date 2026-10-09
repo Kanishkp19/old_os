@@ -1,9 +1,10 @@
 # Windows Home Hub session handoff
-Current slice: BUILD only. Phase 1 source complete through c1f14cf; Phase 3 file paging and trash purge source complete through 4ee70a0. No tests run in this BUILD session.
-Done: `872c7a8` ledger reconciliation; `4f74add` API contract; `ba20b57` pairing safety pushed.
-Verified: Mac Rust workspace check/tests, Tauri tests/check, frontend check/test/build, Android debug tests/APK; pairing 12/5/6 crate tests.
-Next 1: Phase 3 bullet 3 — scan existing files and offer Keep / Import / Later, default Later; verify copies and preserve originals.
-Next 2: Continue Phase 3 bullets 4–8, then BUILD phase order 4, 5, 8, 2, 9, 7, 6.
-Next 3: TEST pass only after all BUILD source is complete; FIXLIST.md currently has 1 item.
-Blockers: Windows/WebView2/installer/hardware validation, full Xcode, rustfmt/clippy, signing, soak and pilot require unavailable environments or tooling.
-Last verified implementation commit: ba20b57 (pushed to origin/implementation/windows-home-hub).
+Goal: Complete BUILD source for Phases 1–9 on implementation/windows-home-hub; stop before the TEST pass.
+Current state: Phase 1 and Phase 3 source complete; Phase 4 bullets 1–4 code complete, untested. Branch clean through a9d2ba3, pushed to origin.
+Completed this session: Phase 3 bullets 3–8 (cee2c80–33a4f6f); Phase 4 incremental discovery 47f1adf, permission recovery 5b79369, durable backup verification babd4b2, changed-source and lost-copy recheck a9d2ba3.
+Next 1: Phase 4 bullet 5 — Complete EXIF, thumbnails, Year/Month views, full viewers, zoom, sharing and details on Android/Windows.
+Next 2: Phase 4 bullets 6–8, then Phase 5, 8, 2, 9, 7, 6, one bullet at a time.
+Decisions: BUILD only; keep each completed source bullet [~] code complete, untested; commit and push after each bullet; no test suites or new tests until TEST pass.
+Verification: cargo check -p hh-db -p hh-photos -p hh-net and Android :app:compileDebugKotlin --offline passed for Phase 4 bullets 3–4; no tests run in BUILD.
+FIXLIST.md: 2 deferred defects; see exact file and line there. Windows and Android device validation remains UNVERIFIED in WINDOWS_VALIDATION.md.
+Working tree: clean before this handoff edit; no unrelated changes.

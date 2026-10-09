@@ -215,9 +215,9 @@
   </aside>
   <main id="content" tabindex="-1">
     <header><div><p class="eyebrow">HOME HUB</p><h1>{t(route)}</h1></div><div class="toolbar"><label class="language"><span class="sr-only">{t('Language')}</span><select bind:value={language} on:change={savePreferences}><option value="en">English</option><option value="hi">हिन्दी</option></select></label><button disabled={busy} on:click={() => run(load)}>{t('Refresh')}</button>{#if route === 'Home' || route === 'Devices'}<button class="primary" disabled={busy} on:click={() => run(pair)}>{t('Pair a device')}</button>{/if}</div></header>
-    {#if error}<div class="banner error" role="alert"><span>{error}</span><button on:click={() => error = ''} aria-label={t('Close')}>×</button></div>{/if}
+    {#if error}<div class="banner error" role="alert"><span>{error}</span><button on:click={() => run(load)} disabled={busy}>{t('Retry')}</button><button on:click={() => error = ''} aria-label={t('Close')}>×</button></div>{/if}
     {#if notice}<div class="banner success" role="status">{notice}</div>{/if}
-    {#if busy}<p class="busy" role="status">{t('Saving…')}</p>{/if}
+    {#if busy}<p class="busy" role="status">{t('Working…')}</p>{/if}
     {#if saveProgress}<section class="card" role="status"><div class="row"><span>{saveProgress.name} · {bytes(saveProgress.done)} / {bytes(saveProgress.total)}</span><button on:click={() => command('cancel_save',{id:saveProgress.id}).catch(e => error = message(e))}>{t('Cancel')}</button></div><progress max={saveProgress.total || 1} value={saveProgress.done} aria-label={saveProgress.name}></progress></section>{/if}
     {#if authNeeded && !native}<section class="card auth"><h2>{t('Unlock dashboard')}</h2><p>{t('No secret is included in this page. Use the installed app, or enter its local session key.')}</p><form on:submit|preventDefault={() => run(unlock)}><label>{t('Local session key')}<input type="password" autocomplete="off" bind:value={authKey} required /></label><button class="primary" disabled={busy}>{t('Unlock dashboard')}</button></form></section>{/if}
 

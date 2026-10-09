@@ -1,8 +1,8 @@
 # Windows Home Hub session handoff
 Goal: Complete BUILD source for Phases 1–9 on implementation/windows-home-hub; stop before the TEST pass.
-Current state: Phases 1, 3, 4, 5 and 8 BUILD source complete, untested; Phase 2 bullet 1 source complete.
-Completed this session: Phase 8 Notes 43ac133, Calculator 5818a73, launcher 3a4366d; Phase 2 route audit.
-Next 1: Phase 2 bullet 2 — Reuse navigation, dialogs, progress, alerts, empty states and actionable errors.
+Current state: Phases 1, 3, 4, 5 and 8 BUILD source complete, untested; Phase 2 bullets 1–2 source complete.
+Completed this session: Phase 8 Notes 43ac133, Calculator 5818a73, launcher 3a4366d; Phase 2 routes ca1b842 and shared feedback.
+Next 1: Phase 2 bullet 3 — Guide setup through hub name, library, hardware, existing data and pairing.
 Next 2: Phase 2, 9, 7, 6, one bullet at a time.
 Decisions: BUILD only; keep each completed source bullet [~] code complete, untested; commit and push after each bullet; no test suites or new tests until TEST pass.
 Verification: Svelte typecheck for Phase 8 bullet 4; Windows target and rustup unavailable on Mac. No tests run in BUILD.

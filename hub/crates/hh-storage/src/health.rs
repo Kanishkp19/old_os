@@ -27,8 +27,10 @@ impl StorageService {
         if disks.is_empty() {
             disks.push(hh_core::platform::DiskInfo{id:"library-volume".into(),model:Some("Library volume".into()),serial:None,media_type:"unknown".into(),size_bytes:0});
         }
+        let mut worst=0;
         for disk in disks {
             let report = disk_health.smart(&disk.id).unwrap_or_else(|_|unknown_report());
+            worst=worst.max(match report.health.as_str(){"failing"=>2,"caution"=>1,_=>0});
             {
                 let c = self.db.lock()?;
                 c.execute(
@@ -57,25 +59,11 @@ impl StorageService {
                 )
                 .map_err(db_e)?;
             }
-            // FR-6.3: warn on failing drive; prompt immediate second copy.
-            match report.health.as_str() {
-                "failing" => {
-                    self.db.create_alert(
-                        "critical",
-                        "DISK_FAILING",
-                        "Your Home Hub's drive may be failing. Back up important photos to a second drive now.",
-                    )?;
-                }
-                "caution" => {
-                    self.db.create_alert(
-                        "warning",
-                        "DISK_CAUTION",
-                        "Your Home Hub's drive shows early warning signs. Consider adding a second copy.",
-                    )?;
-                }
-                _ => {}
-            }
         }
+        self.db.set_condition_alert((worst==2).then_some("critical"),"DISK_FAILING",
+            "Your Home Hub's drive may be failing. Back up important photos to a second drive now.")?;
+        self.db.set_condition_alert((worst==1).then_some("warning"),"DISK_CAUTION",
+            "Your Home Hub's drive shows early warning signs. Consider adding a second copy.")?;
         Ok(())
     }
 

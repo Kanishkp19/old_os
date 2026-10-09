@@ -42,8 +42,11 @@ impl StorageService {
             drop(c);
             let outcome = match std::fs::File::open(&path) {
                 Ok(f) => hh_transfer::hash_file(&f),
-                Err(_) => {
-                    self.record_integrity_event(Some(&id), "missing", Some(&rel))?;
+                Err(e) => {
+                    let kind=if e.kind()==std::io::ErrorKind::NotFound {"missing"} else {"read_error"};
+                    self.record_integrity_event(Some(&id), kind, Some(&rel))?;
+                    self.db.set_condition_alert(Some("critical"),"INTEGRITY_FAILURE",
+                        "A Home file is missing or unreadable. Check Storage for integrity events and repair from a verified copy.")?;
                     mismatched += 1;
                     continue;
                 }
@@ -68,11 +71,8 @@ impl StorageService {
                         "hash_mismatch",
                         Some(&format!("expected {expected}, got {actual}")),
                     )?;
-                    self.db.create_alert(
-                        "critical",
-                        "INTEGRITY_MISMATCH",
-                        "A stored file failed its integrity check. If you have a second copy, we'll repair from it.",
-                    )?;
+                    self.db.set_condition_alert(Some("critical"),"INTEGRITY_FAILURE",
+                        "A Home file failed its integrity check. Check Storage and repair from a verified copy.")?;
                     // A cleanup lease may still have an Android system dialog
                     // open. Preserve its copy and expose the integrity failure.
                     let c=self.db.lock()?;
@@ -94,6 +94,8 @@ impl StorageService {
                 Err(e) => {
                     mismatched += 1;
                     self.record_integrity_event(Some(&id), "read_error", Some(&e.to_string()))?;
+                    self.db.set_condition_alert(Some("critical"),"INTEGRITY_FAILURE",
+                        "A Home file could not be read during an integrity check. Check Storage and the drive.")?;
                 }
             }
         }

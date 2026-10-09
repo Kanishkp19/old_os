@@ -555,6 +555,26 @@ impl Db {
         Ok(id)
     }
 
+    /// Maintain one current alert for a periodically sampled condition.
+    pub fn set_condition_alert(&self, severity:Option<&str>, code:&str, message:&str)->Result<()> {
+        let mut c=self.lock()?;
+        let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        match severity {
+            Some(severity)=>{
+                let existing:Option<String>=tx.query_row("SELECT id FROM alerts WHERE code=?1 AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1",[code],|r|r.get(0)).optional().map_err(db_err)?;
+                if let Some(id)=existing {
+                    tx.execute("UPDATE alerts SET severity=?2,message=?3,acknowledged_at=CASE WHEN severity=?2 THEN acknowledged_at ELSE NULL END WHERE id=?1",params![id,severity,message]).map_err(db_err)?;
+                    tx.execute("UPDATE alerts SET resolved_at=?2 WHERE code=?1 AND resolved_at IS NULL AND id<>?3",params![code,now_ms(),id]).map_err(db_err)?;
+                } else {
+                    tx.execute("INSERT INTO alerts(id,severity,code,message,created_at) VALUES(?1,?2,?3,?4,?5)",params![ulid::Ulid::new().to_string(),severity,code,message,now_ms()]).map_err(db_err)?;
+                }
+            }
+            None=>{tx.execute("UPDATE alerts SET resolved_at=?2 WHERE code=?1 AND resolved_at IS NULL",params![code,now_ms()]).map_err(db_err)?;}
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
     pub fn active_alert_count(&self) -> Result<u32> {
         let c = self.lock()?;
         let n: i64 = c

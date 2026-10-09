@@ -94,22 +94,37 @@ impl StorageService {
 
     /// Free-space alert thresholds (TRD §7.4): warn 15%, critical 5%.
     pub fn check_free_space_alerts(&self) -> Result<()> {
-        let free = fs2::free_space(&self.cfg.library_root).unwrap_or(0);
-        let total = fs2::total_space(&self.cfg.library_root).unwrap_or(1);
+        let (free,total)=match (fs2::free_space(&self.cfg.library_root),fs2::total_space(&self.cfg.library_root)) {
+            (Ok(free),Ok(total)) if total>0=>(free,total),
+            _=>{
+                self.db.set_condition_alert(Some("critical"),"STORAGE_UNAVAILABLE","The Home library drive is unavailable. Check its connection before storing more files.")?;
+                self.db.set_condition_alert(None,"LOW_SPACE","")?;
+                return Ok(());
+            }
+        };
+        self.db.set_condition_alert(None,"STORAGE_UNAVAILABLE","")?;
         let pct = (free as f64 / total.max(1) as f64) * 100.0;
         if pct < 5.0 {
-            self.db.create_alert(
-                "critical",
+            self.db.set_condition_alert(
+                Some("critical"),
                 "LOW_SPACE",
                 &format!("Home is almost full ({pct:.0}% free). Free up space or add a drive."),
             )?;
         } else if pct < 15.0 {
-            self.db.create_alert(
-                "warning",
+            self.db.set_condition_alert(
+                Some("warning"),
                 "LOW_SPACE",
                 &format!("Home is getting full ({pct:.0}% free)."),
             )?;
-        }
+        } else {self.db.set_condition_alert(None,"LOW_SPACE","")?;}
+        let target=self.db.get_setting("second_copy.root")?.filter(|v|!v.is_empty()).map(std::path::PathBuf::from).or_else(||self.cfg.second_copy_root.clone());
+        let coverage=self.copy_coverage()?;
+        let disconnected=target.is_some() && coverage["drive_connected"].as_bool()!=Some(true);
+        self.db.set_condition_alert(disconnected.then_some("warning"),"SECOND_COPY_DISCONNECTED",
+            "The second-copy drive is disconnected. Reconnect it to protect new and changed files.")?;
+        let exposed=coverage["total_files"].as_i64().unwrap_or(0)>0 && coverage["all_protected"].as_bool()!=Some(true);
+        self.db.set_condition_alert(exposed.then_some("warning"),"SINGLE_COPY",
+            "Some files have only one verified copy. Connect a second drive and run protection.")?;
         Ok(())
     }
 }

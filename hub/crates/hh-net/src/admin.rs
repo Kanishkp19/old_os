@@ -137,8 +137,10 @@ async fn device_patch(State(st):State<DashboardState>,Path(id):Path<String>,Json
 async fn device_revoke(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{
     let d=st.app.db.device_by_id(&id)?.ok_or_else(||Error::NotFound("device".into()))?;
     st.app.db.revoke_device(&id,"local owner")?;st.app.revocation.revoke(&d.cert_serial);
-    let sessions:Vec<String>=st.app.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.iter().filter(|(_,owner)|**owner==id).map(|(id,_)|id.clone()).collect();
-    for sid in sessions {let _=st.app.stream.stop_session(&sid);if let Some(h)=&st.app.helper{let _=h.screen_stop();}st.app.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.remove(&sid);}
+    let stopping = st.app.clone();
+    let revoked_id = id.clone();
+    tokio::task::spawn_blocking(move || stopping.stop_device_screens(&revoked_id))
+        .await.map_err(|e|Error::Internal(e.to_string()))?;
     st.app.events.emit("device.revoked",json!({"device_id":id}));st.app.db.audit(None,"revoke",Some(&id),None)?;Ok(StatusCode::NO_CONTENT)
 }
 async fn capabilities(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let helper=st.app.helper.clone();let ping=tokio::task::spawn_blocking(move||helper.and_then(|h|h.ping().ok())).await.map_err(|e|Error::Internal(e.to_string()))?;Ok(Json(json!({"photos":st.app.cfg.features.photos,"remote":st.app.db.get_setting("remote.enabled")?.as_deref()==Some("true")&&ping.is_some(),"screen":ping.as_ref().is_some_and(|v|v["screen"]["available"]==true),"hotspot":ping.as_ref().is_some_and(|v|v["hotspot"]==true),"wol":st.app.cfg.features.wol,"helper_available":ping.is_some(),"hardware":st.app.hw.latest_audit()?})))}

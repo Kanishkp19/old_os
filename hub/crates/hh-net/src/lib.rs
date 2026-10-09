@@ -61,6 +61,22 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Close only the revoked device's screen sessions. The helper fallback
+    /// targets the same session, so other devices keep their streams.
+    pub fn stop_device_screens(&self, device_id: &str) {
+        for session in self.stream.active_sessions().into_iter().filter(|s| s.device_id == device_id) {
+            if let Err(error) = self.stream.stop_session(&session.id) {
+                tracing::warn!(session_id = %session.id, %error, "screen stop after revocation failed");
+                if let Some(helper) = &self.helper {
+                    if let Err(error) = helper.screen_stop_for(&session.id) {
+                        tracing::warn!(session_id = %session.id, %error, "helper screen stop after revocation failed");
+                    }
+                }
+            }
+            if let Ok(mut owners) = self.screen_owners.lock() { owners.remove(&session.id); }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Db,

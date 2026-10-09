@@ -321,6 +321,10 @@ async fn revoke_device(
         .ok_or_else(|| Error::NotFound(device_id.clone()))?;
     s.db.revoke_device(&device_id, "user")?;
     s.revocation.revoke(&dev.cert_serial);
+    let stopping = s.clone();
+    let revoked_id = device_id.clone();
+    tokio::task::spawn_blocking(move || stopping.stop_device_screens(&revoked_id))
+        .await.map_err(|e| Error::Internal(e.to_string()))?;
     s.db.audit(Some(&id.device_id), "revoke", Some(&device_id), None)?;
     s.events.emit("device.revoked", serde_json::json!({"device_id": device_id}));
     Ok(StatusCode::NO_CONTENT)

@@ -279,7 +279,11 @@ impl TransferEngine {
         let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
         for t in self.db.list_transfers(None,Some("verifying"))? {
             let hash: String = { let c = self.db.lock()?; c.query_row("SELECT hash FROM transfer_finalizations WHERE transfer_id=?1",[&t.id],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))? };
-            self.complete_locked(&t.id,&hash)?;
+            // A transient disk or database failure must not prevent the Hub
+            // from starting. Leave the journal and partial file for retry.
+            if let Err(error) = self.complete_locked(&t.id,&hash) {
+                tracing::warn!(transfer_id = %t.id, %error, "transfer finalization remains pending");
+            }
         }
         for t in self.db.list_transfers(None,Some("open"))? {
             let chunks = self.all_chunk_hashes(&t.id)?;
@@ -301,10 +305,9 @@ impl TransferEngine {
         for path in self.db.expire_idle_transfers(TRANSFER_IDLE_TTL_MS)? {
             let _ = std::fs::remove_file(path);
         }
-        let known: std::collections::HashSet<String> = self
-            .db
-            .list_transfers(None, Some("open"))?
-            .iter()
+        let mut retained = self.db.list_transfers(None, Some("open"))?;
+        retained.extend(self.db.list_transfers(None, Some("verifying"))?);
+        let known: std::collections::HashSet<String> = retained.iter()
             .filter_map(|t| t.tmp_path.clone())
             .collect();
         let cutoff = now_ms() - TRANSFER_IDLE_TTL_MS;

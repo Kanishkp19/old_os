@@ -24,7 +24,7 @@ Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partia
   - [x] Renewal regression slice: SQLite keeps the old identity until new-certificate activation, then revokes it; real client retry remains in validation.
     - Done test `staged_renewal_keeps_old_identity_until_activation`: the old cert remains usable before activation; activation revokes it and enables the new cert.
 - [~] Make chunk writes, verification, rename, database commit and response retries durable and synchronized. Code complete, untested in BUILD; Windows move durability remains unverified.
-- [~] Revalidate interrupted chunk state and make completion idempotent.
+- [~] Revalidate interrupted chunk state and make completion idempotent. Code complete, untested in BUILD; crash recovery validation remains.
 - [~] Handle changed sources, empty files, collisions, short writes, disk full and bounded concurrency.
 - [~] Stream large downloads with Range support.
 - [~] Pause new sharing, safely stop or pause active work, and keep owner administration available.

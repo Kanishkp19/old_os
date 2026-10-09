@@ -22,7 +22,8 @@ pub struct Config {
     pub features: FeatureFlags,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FeatureFlags {
     pub photos: bool,
     pub remote: bool,
@@ -30,6 +31,19 @@ pub struct FeatureFlags {
     pub hotspot: bool,
     pub wol: bool,
     pub telemetry_opt_in: bool,
+}
+
+impl Default for FeatureFlags {
+    fn default() -> Self {
+        Self {
+            photos: true,
+            remote: false,
+            screen: false,
+            hotspot: false,
+            wol: true,
+            telemetry_opt_in: false,
+        }
+    }
 }
 
 impl Default for Config {
@@ -42,14 +56,7 @@ impl Default for Config {
             data_dir,
             library_root,
             second_copy_root: None,
-            features: FeatureFlags {
-                photos: true,
-                remote: false, // off by default; per-device opt-in (SECURITY §6)
-                screen: false,
-                hotspot: false,
-                wol: true,
-                telemetry_opt_in: false,
-            },
+            features: FeatureFlags::default(),
         }
     }
 }
@@ -162,4 +169,28 @@ fn default_hub_name() -> String {
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "My".into());
     format!("{user}'s Home Hub")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn partial_feature_flags_keep_safe_defaults() {
+        let cfg: Config = serde_json::from_str(r#"{"features":{"remote":true}}"#)
+            .expect("older config with partial features loads");
+        assert!(cfg.features.photos);
+        assert!(cfg.features.wol);
+        assert!(cfg.features.remote);
+        assert!(!cfg.features.screen);
+    }
+
+    #[test]
+    fn omitted_feature_flags_keep_defaults() {
+        let cfg: Config = serde_json::from_str("{}").expect("older config loads");
+        assert!(cfg.features.photos);
+        assert!(cfg.features.wol);
+        assert!(!cfg.features.remote);
+        assert!(!cfg.features.screen);
+    }
 }

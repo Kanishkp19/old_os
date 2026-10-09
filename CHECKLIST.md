@@ -2,7 +2,7 @@
 
 Source details: `docs/phases/phase-N.md`; validation: `docs/WINDOWS_VALIDATION.md`.
 
-- Phase 0 — Baseline and delivery: in progress; no phase acceptance or completed-phase push recorded.
+- Phase 0 — Baseline and delivery: in progress; config compatibility verified locally; Windows build and phase acceptance pending.
 - Phase 1 — Security and transfers: in progress; no phase acceptance or completed-phase push recorded.
 - Phase 2 — Windows interface: in progress; no phase acceptance or completed-phase push recorded.
 - Phase 3 — Files and import: in progress; no phase acceptance or completed-phase push recorded.

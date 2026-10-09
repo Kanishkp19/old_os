@@ -108,6 +108,7 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     match action.as_str() {
         "navigate"=>tab.navigate(browser::address_or_search(url.as_deref().ok_or("Enter an address or search terms")?)?),
         "back"=>tab.eval("history.back()"),"forward"=>tab.eval("history.forward()"),"reload"=>tab.reload(),"focus"=>tab.set_focus(),
+        "fullscreen"=>tab.is_fullscreen().and_then(|active|tab.set_fullscreen(!active)),
         "close"=>{tab.close().map_err(|_|"Could not close tab")?;let state=app.state::<AppState>();browser::forget(&state,&label)?;return Ok(());},
         _=>return Err("Unknown browser action".into())
     }.map_err(|_|"Browser action could not complete".into())

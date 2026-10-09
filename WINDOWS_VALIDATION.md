@@ -9,3 +9,4 @@
 - UNVERIFIED: Pause sharing during a Windows chunk write and screen stream; confirm pause waits for the write, stops the stream, rejects new LAN work and leaves loopback owner administration usable.
 - UNVERIFIED: Deny deletion of an expired trashed file on Windows; confirm it remains in Trash with one owner alert, then restore access and confirm purge resolves the alert.
 - UNVERIFIED: Scan Windows folders with mixed file types, leave the choice at Later, then import copies and interrupt mid-copy; confirm originals remain intact and recovered files match their hashes.
+- UNVERIFIED: Move a Windows library to a separate volume, interrupt during copy and during config switch, then confirm hash-verified recovery and preserved originals; reject overlapping destinations.

@@ -123,12 +123,14 @@ impl StorageService {
             if active>0 || pins>0{return Err(Error::Conflict("finish transfers and pending phone cleanup before moving".into()));}
         }
         std::fs::create_dir_all(&new)?;let new=new.canonicalize()?;
-        if new.starts_with(self.cfg.library_root.canonicalize()?) {return Err(Error::BadRequest("destination must be outside existing library".into()));}
+        let old=self.cfg.library_root.canonicalize()?;
+        if new.starts_with(&old) || old.starts_with(&new) {return Err(Error::BadRequest("destination must not overlap existing library".into()));}
         let id=self.create_job("library_move",json!({"path":new}))?;let service=self.clone();let job_id=id.clone();
         std::thread::spawn(move||{
             let result=(||->Result<Value>{
-                let files:Vec<(String,String,String,i64)>={let c=service.db.lock()?;let mut st=c.prepare("SELECT f.id,f.rel_path,f.hash,f.size FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE r.kind='library'").map_err(db_e)?;let rows=st.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_e)?;rows.collect::<std::result::Result<_,_>>().map_err(db_e)?};
-                let required=files.iter().map(|f|f.3.max(0) as u64).sum::<u64>();if fs2::free_space(&new)?<required.saturating_add(64*1024*1024){return Err(Error::StorageFull);}
+                let files:Vec<(String,String,String,i64)>={let c=service.db.lock()?;let mut st=c.prepare("SELECT f.id,f.rel_path,f.hash,f.size FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE r.kind='library' AND r.is_active=1").map_err(db_e)?;let rows=st.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_e)?;rows.collect::<std::result::Result<_,_>>().map_err(db_e)?};
+                let required=files.iter().try_fold(0u64,|total,f|total.checked_add(f.3.max(0) as u64).ok_or_else(||Error::TooLarge("library size exceeds supported range".into())))?;
+                if fs2::free_space(&new)?<required.saturating_add(64*1024*1024){return Err(Error::StorageFull);}
                 let dest=new.join("Library");std::fs::create_dir_all(&dest)?;
                 service.job_progress(&job_id,"running",files.len(),0,None)?;
                 for (n,(fid,rel,hash,_)) in files.iter().enumerate(){

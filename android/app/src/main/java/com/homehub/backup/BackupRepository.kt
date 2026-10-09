@@ -76,7 +76,7 @@ class BackupRepository @Inject constructor(
 
     /** Called only after explicit approval and media permission. */
     suspend fun approve() = withContext(Dispatchers.IO) {
-        require(MediaAccess.granted(context))
+        if (!MediaAccess.granted(context)) throw SecurityException(context.getString(com.homehub.R.string.backup_permission_required))
         val hubId = requireNotNull(trust.load()).hubId
         val source = hub.post("/v1/backup/sources", JSONObject().put("kind", "camera_roll").put("label", android.os.Build.MODEL))
         require(prefs.edit().putString("source_id", source.getString("id")).putString("source_hub_id", hubId)
@@ -144,7 +144,7 @@ class BackupRepository @Inject constructor(
     }
     suspend fun scanAndQueue() = withContext(Dispatchers.IO) {
         if (!ownSource()) return@withContext
-        require(MediaAccess.granted(context))
+        if (!MediaAccess.granted(context)) throw SecurityException(context.getString(com.homehub.R.string.backup_permission_required))
         val source = prefs.getString("source_id", null) ?: return@withContext
         if (!BackupRules.allowed(context)) return@withContext
         val scanStarted = System.currentTimeMillis()

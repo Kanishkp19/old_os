@@ -13,3 +13,4 @@
 - UNVERIFIED: Change a Windows file after an exact-duplicate scan and attempt cleanup; confirm rehash blocks trash, then rescan and confirm an atomic keeper/loser decision.
 - UNVERIFIED: Remove or resize a managed file and inspect Windows Storage; confirm visible category totals reflect disk metadata, missing files are counted, and trash reclaimable bytes reflect existing files only.
 - UNVERIFIED: On an Android device paired with a Windows Hub, add and edit MediaStore photos across two scans, interrupt one scan before cursor commit, then confirm the Room queue resumes without losing either item.
+- UNVERIFIED: Revoke and restore Android photo permission during scheduled backup to a Windows Hub; confirm the queue survives, foreground progress resumes, and the permission warning clears after success.

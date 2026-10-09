@@ -20,6 +20,7 @@ class BackupWorker @AssistedInject constructor(@Assisted context: Context, @Assi
         setForeground(TransferNotifications.foreground(applicationContext))
         try {
             backup.scanAndQueue()
+            backup.status.value = null
             val pending = pipeline.processDue { setForeground(TransferNotifications.foreground(applicationContext, it)) }
             if (pending) Result.retry() else { TransferNotifications.completed(applicationContext, pipeline.hasOutstanding()); Result.success() }
         } catch (e: CancellationException) { throw e }

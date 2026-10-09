@@ -23,8 +23,12 @@ pub struct DiskHealthView {
 impl StorageService {
     /// Poll all disks and store snapshots (called every 6 h and on boot).
     pub fn collect_health(&self, disk_health: &dyn DiskHealth) -> Result<()> {
-        for disk in disk_health.list().unwrap_or_default() {
-            let report = disk_health.smart(&disk.id)?;
+        let mut disks=disk_health.list().unwrap_or_default();
+        if disks.is_empty() {
+            disks.push(hh_core::platform::DiskInfo{id:"library-volume".into(),model:Some("Library volume".into()),serial:None,media_type:"unknown".into(),size_bytes:0});
+        }
+        for disk in disks {
+            let report = disk_health.smart(&disk.id).unwrap_or_else(|_|unknown_report());
             {
                 let c = self.db.lock()?;
                 c.execute(
@@ -90,7 +94,11 @@ impl StorageService {
                 Ok(DiskHealthView {
                     disk_id: r.get(0)?,
                     model: r.get(1)?,
-                    health: r.get(2)?,
+                    health: {
+                        let recorded:String=r.get(2)?;
+                        let checked:i64=r.get(5)?;
+                        if now_ms().saturating_sub(checked)>24*3600*1000 {"unknown".into()} else {recorded}
+                    },
                     temperature_c: r.get(3)?,
                     free_bytes: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
                     last_checked_at: r.get(5)?,
@@ -106,17 +114,20 @@ impl StorageService {
 /// Windows Storage Management health; unsupported SMART fields remain None.
 /// Uses Microsoft's local Get-PhysicalDisk and Get-StorageReliabilityCounter.
 pub struct NativeDiskHealth;
+fn unknown_report()->hh_core::platform::SmartReport {
+    hh_core::platform::SmartReport{health:"unknown".into(),predict_failure:None,temperature_c:None,power_on_hours:None,reallocated_sectors:None,pending_sectors:None,raw_json:None}
+}
 impl DiskHealth for NativeDiskHealth {
     fn list(&self)->Result<Vec<hh_core::platform::DiskInfo>> {
         #[cfg(windows)] {
-            if let Ok(rows)=physical_disks(){return Ok(rows.iter().map(|r|hh_core::platform::DiskInfo{
-                id:r["UniqueId"].as_str().unwrap_or("unknown").to_string(),model:r["FriendlyName"].as_str().map(str::to_string),serial:r["SerialNumber"].as_str().map(str::to_string),media_type:match r["MediaType"].as_u64(){Some(3)=>"hdd",Some(4)=>"ssd",_=>"unknown"}.into(),size_bytes:r["Size"].as_u64().unwrap_or(0)}).collect());}
+            if let Ok(rows)=physical_disks(){let physical:Vec<_>=rows.iter().filter_map(|r|Some(hh_core::platform::DiskInfo{
+                id:r["UniqueId"].as_str().filter(|v|!v.trim().is_empty())?.to_string(),model:r["FriendlyName"].as_str().map(str::to_string),serial:r["SerialNumber"].as_str().map(str::to_string),media_type:match r["MediaType"].as_u64(){Some(3)=>"hdd",Some(4)=>"ssd",_=>"unknown"}.into(),size_bytes:r["Size"].as_u64().unwrap_or(0)})).collect();if !physical.is_empty(){return Ok(physical);}}
         }
         Ok(sysinfo::Disks::new_with_refreshed_list().iter().map(|d|hh_core::platform::DiskInfo{id:d.mount_point().to_string_lossy().to_string(),model:Some(d.name().to_string_lossy().to_string()),serial:None,media_type:"unknown".into(),size_bytes:d.total_space()}).collect())
     }
     fn smart(&self,id:&str)->Result<hh_core::platform::SmartReport> {
         #[allow(unused_mut)]
-        let mut report=hh_core::platform::SmartReport{health:"unknown".into(),predict_failure:None,temperature_c:None,power_on_hours:None,reallocated_sectors:None,pending_sectors:None,raw_json:None};
+        let mut report=unknown_report();
         #[cfg(not(windows))] let _=id;
         #[cfg(windows)] if let Ok(rows)=physical_disks(){if let Some(row)=rows.iter().find(|r|r["UniqueId"].as_str()==Some(id)) {
             // Numeric enum values are emitted by ConvertTo-Json.
@@ -132,8 +143,26 @@ fn physical_disks()->Result<Vec<serde_json::Value>> {
     use std::process::{Command,Stdio};use std::io::Read;use std::os::windows::process::CommandExt;
     let script="$ErrorActionPreference='Stop'; @((Get-PhysicalDisk | ForEach-Object { $d=$_; $r=$null; try {$r=$d | Get-StorageReliabilityCounter} catch {}; [pscustomobject]@{UniqueId=$d.UniqueId;FriendlyName=$d.FriendlyName;SerialNumber=$d.SerialNumber;Size=$d.Size;MediaType=[int]$d.MediaType;HealthStatus=[int]$d.HealthStatus;Temperature=$r.Temperature;PowerOnHours=$r.PowerOnHours} })) | ConvertTo-Json -Compress";
     let mut child=Command::new("powershell.exe").args(["-NoLogo","-NoProfile","-NonInteractive","-Command",script]).creation_flags(0x08000000).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
-    let start=std::time::Instant::now();loop{if let Some(status)=child.try_wait()?{if !status.success(){return Err(hh_core::Error::StorageUnavailable("disk health provider unavailable".into()));}break;}if start.elapsed()>std::time::Duration::from_secs(15){let _=child.kill();let _=child.wait();return Err(hh_core::Error::StorageUnavailable("disk health provider timeout".into()));}std::thread::sleep(std::time::Duration::from_millis(50));}
-    let mut bytes=Vec::new();if let Some(stdout)=child.stdout.take(){stdout.take(1024*1024).read_to_end(&mut bytes)?;}
+    let stdout=child.stdout.take().ok_or_else(||hh_core::Error::StorageUnavailable("disk health output unavailable".into()))?;
+    let reader=std::thread::spawn(move||->std::io::Result<(Vec<u8>,bool)>{
+        let mut stdout=stdout;let mut bytes=Vec::new();let mut too_large=false;let mut buf=[0u8;8192];
+        loop {let n=stdout.read(&mut buf)?;if n==0 {break;}if bytes.len()+n<=1024*1024 {bytes.extend_from_slice(&buf[..n]);}else {too_large=true;}}
+        Ok((bytes,too_large))
+    });
+    let start=std::time::Instant::now();
+    let status=loop {
+        let polled=match child.try_wait(){Ok(value)=>value,Err(e)=>{
+            let _=child.kill();let _=child.wait();let _=reader.join();return Err(e.into());
+        }};
+        if let Some(status)=polled {break status;}
+        if start.elapsed()>std::time::Duration::from_secs(15) {
+            let _=child.kill();let _=child.wait();let _=reader.join();
+            return Err(hh_core::Error::StorageUnavailable("disk health provider timeout".into()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let (bytes,too_large)=reader.join().map_err(|_|hh_core::Error::StorageUnavailable("disk health reader failed".into()))??;
+    if !status.success() || too_large {return Err(hh_core::Error::StorageUnavailable("disk health provider unavailable".into()));}
     let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|hh_core::Error::Internal(e.to_string()))?;
     Ok(match value {serde_json::Value::Array(v)=>v,serde_json::Value::Object(_)=>vec![value],_=>Vec::new()})
 }

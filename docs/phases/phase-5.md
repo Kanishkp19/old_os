@@ -2,7 +2,7 @@
 
 Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partial source, not acceptance.
 
-- [~] Collect Windows disk health and report Unknown where unsupported.
+- [~] Collect Windows disk health and report Unknown where unsupported. Code complete, untested in BUILD; provider failures and stale snapshots become Unknown, with bounded Windows provider output and a fallback library-volume row.
 - [~] Warn about low space, drive failure/removal, integrity and single-copy exposure.
 - [~] Schedule throttled scrub and use verified temporary files for atomic repair.
 - [~] Select stable external drives, copy incrementally, schedule/reconnect and report freshness.

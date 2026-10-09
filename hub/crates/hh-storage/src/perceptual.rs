@@ -21,6 +21,41 @@ pub fn hamming(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
 }
 
+fn candidate_groups(rows: Vec<(String, i64, i64)>) -> Vec<Vec<(String, u64, u64)>> {
+    use std::collections::HashMap;
+    let mut buckets: HashMap<i64, Vec<(String, u64, u64)>> = HashMap::new();
+    for (fid, phash, size) in rows {
+        let h = phash as u64;
+        buckets
+            .entry((h >> 48) as i64)
+            .or_default()
+            .push((fid, h, size as u64));
+    }
+
+    let mut groups = Vec::new();
+    for mut members in buckets.into_values() {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_by_key(|(_, h, _)| *h);
+        let mut group = vec![members[0].clone()];
+        for member in members.into_iter().skip(1) {
+            let last = group.last().map(|(_, hash, _)| *hash).unwrap_or(member.1);
+            if hamming(last, member.1) > NEAR {
+                if group.len() >= 2 {
+                    groups.push(std::mem::take(&mut group));
+                }
+                group.clear();
+            }
+            group.push(member);
+        }
+        if group.len() >= 2 {
+            groups.push(group);
+        }
+    }
+    groups
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SimilarGroup {
     pub id: String,
@@ -51,33 +86,7 @@ impl StorageService {
         };
 
         // Bucket by top 16 bits; compare pairs within each bucket only.
-        use std::collections::HashMap;
-        let mut buckets: HashMap<i64, Vec<(String, u64, u64)>> = HashMap::new();
-        for (fid, phash, size) in rows {
-            let h = phash as u64;
-            buckets.entry((h >> 48) as i64).or_default().push((fid, h, size as u64));
-        }
-
-        let mut pairs: Vec<Vec<(String, u64, u64)>> = Vec::new();
-        for (_k, mut members) in buckets {
-            if members.len() < 2 {
-                continue;
-            }
-            members.sort_by_key(|(_, h, _)| *h);
-            let mut group: Vec<(String, u64, u64)> = vec![members[0].clone()];
-            for m in members.into_iter().skip(1) {
-                let last = group.last().expect("non-empty").1;
-                if hamming(last, m.1) <= NEAR {
-                    group.push(m);
-                } else {
-                    pairs.push(std::mem::take(&mut group));
-                    group.push(m);
-                }
-            }
-            if group.len() >= 2 {
-                pairs.push(group);
-            }
-        }
+        let pairs = candidate_groups(rows);
 
         let mut created = 0;
         for group in pairs {
@@ -156,12 +165,30 @@ impl StorageService {
 
 #[cfg(test)]
 mod tests {
-    use super::hamming;
+    use super::{candidate_groups, hamming};
 
     #[test]
     fn hamming_distance() {
         assert_eq!(hamming(0, 0), 0);
         assert_eq!(hamming(0, u64::MAX), 64);
         assert_eq!(hamming(0b1010, 0b0110), 2);
+    }
+
+    #[test]
+    fn split_boundaries_never_offer_single_photos_as_duplicates() {
+        let groups = candidate_groups(vec![
+            ("first".into(), 0, 10),
+            ("second".into(), 1, 12),
+            ("unrelated".into(), 0xffff, 8),
+            ("other_bucket".into(), 1_i64 << 48, 7),
+        ]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0]
+                .iter()
+                .map(|(id, _, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
     }
 }

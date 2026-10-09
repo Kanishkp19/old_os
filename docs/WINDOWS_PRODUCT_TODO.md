@@ -39,6 +39,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - [~] Stable browsing, search/sort, rename/copy/move and trash recovery
 - [~] Keep/Import/Later with verified copies and external-data protection
 - [~] Durable jobs, library moves and duplicate review
+- [x] Exclude singleton photos from similar-photo suggestion groups after a hash split
 - [ ] Completed phase commit and push recorded
 
 ### Phase 4 — Photos and phone cleanup

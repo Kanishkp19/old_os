@@ -2,7 +2,7 @@
 
 Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partial source, not acceptance.
 
-- [~] Verify the QR-pinned hub before Android/tooling token submission.
+- [~] Verify the QR-pinned hub before Android/tooling token submission. Code complete, untested in BUILD; live rogue-Hub validation remains.
   - [x] Android server-purpose validation: reject a paired device's client-only certificate during pinned TLS verification. The focused test failed before the fix and the full Android debug unit suite passes afterward.
     - Done test `clientOnlyCertificateCannotImpersonateHomeServer`: synthetic server certificate passes, client-auth-only certificate from the same CA fails.
     - Done check `:app:testDebugUnitTest`: Android unit tests pass after the trust change.

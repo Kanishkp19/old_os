@@ -149,8 +149,18 @@ impl PinnedCaVerifier {
         Ok(Arc::new(Self { ca_der: pem_first(ca_cert_pem)? }))
     }
 
-    pub fn fingerprint_matches(&self, fp16: &str) -> bool {
-        fp16.len() == 16 && hh_auth::hub_fingerprint(&self.ca_der).eq_ignore_ascii_case(fp16)
+    pub fn fingerprint_matches(&self, fingerprint: &str) -> bool {
+        if fingerprint.len() == 16 {
+            return hh_auth::hub_fingerprint(&self.ca_der).eq_ignore_ascii_case(fingerprint);
+        }
+        if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+        use sha2::Digest;
+        let actual = sha2::Sha256::digest(&self.ca_der);
+        actual.iter().enumerate().all(|(i, byte)| {
+            u8::from_str_radix(&fingerprint[i * 2..i * 2 + 2], 16).ok() == Some(*byte)
+        })
     }
 }
 

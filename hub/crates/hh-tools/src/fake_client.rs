@@ -41,20 +41,38 @@ pub async fn run(action: Action) -> Result<()> {
 
 /// Parse `homehub://pair?h=<hub>&t=<token>&fp=<fp>&a=<ip:port,...>&n=<name>`.
 pub fn parse_qr(payload: &str) -> Result<(String, String, String, Vec<String>, String)> {
+    if payload.len() > 8192 { return Err(anyhow!("QR payload too large")); }
     let url = url::Url::parse(payload).context("invalid QR payload")?;
+    if url.scheme() != "homehub" || url.host_str() != Some("pair") || !["", "/"].contains(&url.path()) {
+        return Err(anyhow!("invalid pairing QR endpoint"));
+    }
     let get = |k: &str| {
         url.query_pairs()
             .find(|(key, _)| key == k)
             .map(|(_, v)| v.to_string())
             .ok_or_else(|| anyhow!("missing {k}"))
     };
-    let addrs = get("a").map(|a| a.split(',').map(String::from).collect())?;
-    Ok((get("h")?, get("t")?, get("fp")?, addrs, get("n")?))
+    let token = get("t")?;
+    if token.len() != 22 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(anyhow!("invalid pairing token"));
+    }
+    let fp = get("fp_sha256")?;
+    if fp.len() != 64 || !fp.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid Hub fingerprint"));
+    }
+    let addrs: Vec<String> = get("a")?.split(',').map(String::from).collect();
+    if addrs.is_empty() || addrs.iter().any(|addr| {
+        let Ok(parsed) = url::Url::parse(&format!("https://{addr}")) else { return true; };
+        parsed.username() != "" || parsed.password().is_some() || parsed.path() != "/"
+            || parsed.query().is_some() || parsed.fragment().is_some() || parsed.port() != Some(47802)
+            || parsed.host_str().is_none()
+    }) { return Err(anyhow!("invalid Hub address")); }
+    Ok((get("h")?, token, fp, addrs, get("n")?))
 }
 
 async fn pair(qr: &str, name: &str, identity_path: &Path) -> Result<()> {
     let (_hub_id, token, fp, addrs, _hub_name) = parse_qr(qr)?;
-    let addr = addrs.first().cloned().unwrap_or_else(|| "127.0.0.1:47802".into());
+    let addr = addrs.first().ok_or_else(|| anyhow!("no Hub address"))?;
 
     // Device keypair + CSR (keystore-backed on real clients).
     let mut params = rcgen::CertificateParams::new(Vec::<String>::new())?;
@@ -71,15 +89,24 @@ async fn pair(qr: &str, name: &str, identity_path: &Path) -> Result<()> {
         .use_rustls_tls()
         .danger_accept_invalid_certs(true) // chain pinned manually below
         .danger_accept_invalid_hostnames(true)
+        .timeout(std::time::Duration::from_secs(10))
         .build()?;
     let response=client.get(format!("https://{addr}/pair/ca")).send().await?.error_for_status()?;
     if response.content_length().is_some_and(|n|n>65536){return Err(anyhow!("oversized CA response"));}
-    let ca_pem=response.json::<serde_json::Value>().await?["ca_cert_pem"].as_str().ok_or_else(||anyhow!("pairing CA missing"))?.to_owned();
+    let mut response = response;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > 65536 { return Err(anyhow!("oversized CA response")); }
+        body.extend_from_slice(&chunk);
+    }
+    let ca_pem=serde_json::from_slice::<serde_json::Value>(&body)?["ca_cert_pem"].as_str().ok_or_else(||anyhow!("pairing CA missing"))?.to_owned();
     let verifier=hh_net::tls::PinnedCaVerifier::new(&ca_pem)?;
     if !verifier.fingerprint_matches(&fp){return Err(anyhow!("Hub does not match scanned QR"));}
     let mut tls=rustls::ClientConfig::builder().with_root_certificates(rustls::RootCertStore::empty()).with_no_client_auth();
     tls.dangerous().set_certificate_verifier(verifier);
-    let client=reqwest::Client::builder().use_preconfigured_tls(tls).timeout(std::time::Duration::from_secs(20)).build()?;
+    let client=reqwest::Client::builder().use_preconfigured_tls(tls)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(20)).build()?;
 
     let resp = client
         .post(format!("https://{addr}/pair"))

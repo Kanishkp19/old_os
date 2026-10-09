@@ -9,7 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.net.URLEncoder
+import java.io.ByteArrayOutputStream
 import java.security.KeyPairGenerator
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
@@ -35,8 +35,8 @@ data class QrPayload(
             return QrPayload(
                 hubId = (params["h"] ?: return null).takeIf { it.length in 1..128 } ?: return null,
                 token = (params["t"] ?: return null).takeIf { it.matches(Regex("[A-Za-z0-9_-]{22}")) } ?: return null,
-                caFingerprint = (params["fp_sha256"] ?: params["fp"] ?: return null).also {
-                    if (!it.matches(Regex("[a-fA-F0-9]{16}|[a-fA-F0-9]{64}"))) return null
+                caFingerprint = (params["fp_sha256"] ?: return null).also {
+                    if (!it.matches(Regex("[a-fA-F0-9]{64}"))) return null
                 },
                 addrs = params["a"]?.split(',')?.filter { rawAddress ->
                     runCatching {
@@ -84,7 +84,17 @@ class PairingClient @Inject constructor(
         val caCert = bootstrap.newCall(Request.Builder().url("https://$addr/pair/ca").get().build())
             .execute().use { response ->
                 require(response.isSuccessful) { "Unable to verify Home (${response.code})" }
-                val pem = JSONObject(requireNotNull(response.body).string()).getString("ca_cert_pem")
+                val caBody = ByteArrayOutputStream()
+                requireNotNull(response.body).byteStream().use { input ->
+                    val chunk = ByteArray(4096)
+                    while (true) {
+                        val count = input.read(chunk)
+                        if (count < 0) break
+                        require(caBody.size() + count <= 65536) { "Home CA response is too large" }
+                        caBody.write(chunk, 0, count)
+                    }
+                }
+                val pem = JSONObject(caBody.toString(Charsets.UTF_8.name())).getString("ca_cert_pem")
                 val ca = cf.generateCertificate(pem.byteInputStream()) as X509Certificate
                 PinnedCaTrustManager.verifyFingerprint(ca, payload.caFingerprint)
                 val leaf = response.handshake?.peerCertificates?.firstOrNull() as? X509Certificate

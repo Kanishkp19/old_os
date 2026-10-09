@@ -46,6 +46,7 @@ pub fn router() -> Router<DashboardState> {
         .route("/api/storage/scrub",post(scrub))
         .route("/api/alerts/{id}/ack",post(alert_ack))
         .route("/api/network",get(network))
+        .route("/api/network/hotspot",post(hotspot))
         .route("/api/remote/status",get(remote_status))
         .route("/api/screen/sessions",get(screen_sessions))
         .route("/api/screen/sessions/{id}",delete(screen_stop))
@@ -158,7 +159,7 @@ async fn device_revoke(State(st):State<DashboardState>,Path(id):Path<String>)->A
 }
 async fn capabilities(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let helper=st.app.helper.clone();let ping=tokio::task::spawn_blocking(move||helper.and_then(|h|h.ping().ok())).await.map_err(|e|Error::Internal(e.to_string()))?;Ok(Json(json!({"photos":st.app.cfg.features.photos,"remote":st.app.db.get_setting("remote.enabled")?.as_deref()==Some("true")&&ping.is_some(),"screen":ping.as_ref().is_some_and(|v|v["screen"]["available"]==true),"hotspot":ping.as_ref().is_some_and(|v|v["hotspot"]==true),"wol":st.app.cfg.features.wol,"helper_available":ping.is_some(),"hardware":st.app.hw.latest_audit()?})))}
 async fn hardware(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(st.app.hw.latest_audit()?.unwrap_or(Value::Null)))}
-async fn hardware_run(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let svc=st.app.hw.clone();let result=tokio::task::spawn_blocking(move||svc.run_audit()).await.map_err(|e|Error::Internal(e.to_string()))??;Ok(Json(json!(result)))}
+async fn hardware_run(State(st):State<DashboardState>)->AdminResult<Json<Value>>{let svc=st.app.hw.clone();let helper=st.app.helper.clone();let result=tokio::task::spawn_blocking(move||{let extra=helper.and_then(|h|h.system_info().ok());svc.run_audit_with_helper(extra.as_ref())}).await.map_err(|e|Error::Internal(e.to_string()))??;Ok(Json(json!(result)))}
 async fn transfer_abort(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{let svc=st.app.transfers.clone();tokio::task::spawn_blocking(move||svc.abort(&id)).await.map_err(|e|Error::Internal(e.to_string()))??;Ok(StatusCode::NO_CONTENT)}
 #[derive(Deserialize)] struct NameReq{name:String}
 async fn file_rename(State(st):State<DashboardState>,Path(id):Path<String>,Json(req):Json<NameReq>)->AdminResult<StatusCode>{st.app.storage.rename_file(&id,&req.name)?;Ok(StatusCode::NO_CONTENT)}
@@ -194,6 +195,14 @@ async fn scrub(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Jso
 async fn duplicate_scan(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(st.app.storage.start_maintenance("duplicates")?))}
 async fn alert_ack(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{let c=st.app.db.lock()?;if c.execute("UPDATE alerts SET acknowledged_at=?2 WHERE id=?1",rusqlite::params![id,hh_core::time::now_ms()]).map_err(|e|Error::Db(e.to_string()))?==0{return Err(Error::NotFound("alert".into()).into());}Ok(StatusCode::NO_CONTENT)}
 async fn network(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.hw.network_info()?)))}
+#[derive(Deserialize)] struct HotspotChange { enable:bool, ssid:Option<String>, passphrase:Option<String> }
+async fn hotspot(State(st):State<DashboardState>,Json(req):Json<HotspotChange>)->AdminResult<Json<Value>> {
+    if !st.app.cfg.features.hotspot{return Err(Error::ForbiddenScope("hotspot".into()).into());}
+    let helper=st.app.helper.clone().ok_or_else(||Error::StorageUnavailable("Windows session helper is unavailable".into()))?;
+    let result=tokio::task::spawn_blocking(move||helper.hotspot(req.enable,req.ssid.as_deref(),req.passphrase.as_deref())).await.map_err(|e|Error::Internal(e.to_string()))??;
+    st.app.db.audit(None,"hotspot_toggle",Some(if req.enable{"on"}else{"off"}),None)?;
+    Ok(Json(result))
+}
 
 async fn remote_status(State(st):State<DashboardState>)->AdminResult<Json<Value>> {
     let helper=st.app.helper.clone();

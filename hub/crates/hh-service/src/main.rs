@@ -144,23 +144,37 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
     state.storage.recover_storage_jobs()?;
 
     // LAN addresses for QR payload hints.
-    if let Ok(net) = state.hw.network_info() {
-        let addrs: Vec<String> = net
-            .interfaces
-            .iter()
-            .flat_map(|i| i.ips.iter())
-            .filter(|ip| ip.parse::<std::net::IpAddr>().map(hh_net::is_lan_ip).unwrap_or(false))
-            .map(|ip| format!("{ip}:{}", hh_core::PAIRING_PORT))
-            .collect();
-        if let Ok(mut w) = state.lan_addrs.write() {
-            *w = addrs;
+    let address_state=state.clone();
+    tokio::spawn(async move {
+        let mut refresh=tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            refresh.tick().await;
+            if let Ok(net)=address_state.hw.network_info() {
+                let addrs=net.interfaces.iter().flat_map(|i|i.ips.iter())
+                    .filter_map(|ip|ip.parse::<std::net::IpAddr>().ok())
+                    .filter(|ip|hh_net::is_lan_ip(*ip))
+                    .map(|ip|format!("{ip}:{}",hh_core::PAIRING_PORT)).collect();
+                if let Ok(mut w)=address_state.lan_addrs.write(){*w=addrs;}
+            }
         }
-    }
+    });
 
     // Discovery: mDNS + broadcast fallback (NW-01/02).
     let fp = ca.fingerprint()?;
     let (_hub_id2, hub_name2) = db.hub_identity()?;
-    let _mdns = hh_net::mdns::MdnsAdvertisement::start(&hub_id, &hub_name2, &fp, false).ok();
+    let mdns_id=hub_id.clone();let mdns_name=hub_name2.clone();let mdns_fp=fp.clone();
+    tokio::spawn(async move {
+        let mut advertisement=None;
+        loop {
+            if advertisement.is_none() {
+                match hh_net::mdns::MdnsAdvertisement::start(&mdns_id,&mdns_name,&mdns_fp,false) {
+                    Ok(guard)=>advertisement=Some(guard),
+                    Err(e)=>tracing::warn!(error=%e,"mDNS unavailable; retrying"),
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
     tokio::spawn(hh_net::mdns::broadcast_responder(hub_id.clone(), hub_name2.clone(), fp));
 
     // TLS configs.

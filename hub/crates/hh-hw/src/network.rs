@@ -31,10 +31,8 @@ impl HwService {
         for (name, data) in nets.iter() {
             let n = name.to_lowercase();
             let kind = if n.contains("eth") || n.contains("en0") || n.contains("ethernet") {
-                has_eth = true;
                 "ethernet"
             } else if n.contains("wi") || n.contains("wlan") {
-                has_wifi = true;
                 "wifi"
             } else if n.contains("lo") {
                 continue;
@@ -42,6 +40,8 @@ impl HwService {
                 "unknown"
             };
             let ips: Vec<String> = data.ip_networks().iter().map(|i| i.addr.to_string()).collect();
+            let active=ips.iter().filter_map(|ip|ip.parse::<std::net::IpAddr>().ok()).any(|ip|!ip.is_loopback()&&!ip.is_unspecified()&&!matches!(ip,std::net::IpAddr::V4(v4) if v4.is_link_local()));
+            if active {if kind=="ethernet" {has_eth=true;} else if kind=="wifi" {has_wifi=true;}}
             ifaces.push(Iface { name: name.clone(), kind: kind.into(), ips });
         }
         let mode = if has_eth {

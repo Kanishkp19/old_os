@@ -1264,7 +1264,8 @@ async fn hardware_audit_run(
     let peer = ident(ext)?;
     require_scope(&peer, "admin")?;
     let hw = s.hw.clone();
-    let r = tokio::task::spawn_blocking(move || hw.run_audit())
+    let helper=s.helper.clone();
+    let r = tokio::task::spawn_blocking(move || {let extra=helper.and_then(|h|h.system_info().ok());hw.run_audit_with_helper(extra.as_ref())})
         .await
         .map_err(|e| Error::Internal(e.to_string()))??;
     Ok(Json(serde_json::json!({

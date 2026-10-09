@@ -19,24 +19,35 @@ class HubConnectivity @Inject constructor(@ApplicationContext private val contex
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var started = false
     private var refreshJob: Job? = null
+    private var discoveryJob: Job? = null
     @Synchronized fun start() {
         if (started) return
         started = true
         context.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { refresh() }
-            override fun onLost(network: Network) { reachable.value = false }
+            override fun onAvailable(network: Network) { restartDiscovery(); refresh() }
+            override fun onLost(network: Network) { reachable.value = false; restartDiscovery() }
         })
-        scope.launch {
-            discovery.browseHubs().collect { found ->
-                val current = trust.load() ?: return@collect
-                if (found.hubId == current.hubId && com.homehub.screen.LanSdp.privateAddress(found.host)) {
-                    val host = if (found.host.contains(':')) "[${found.host}]" else found.host
-                    trust.updateAddr(current.hubId, "$host:${found.port}")
-                    refresh()
+        restartDiscovery()
+        refresh()
+    }
+    @Synchronized private fun restartDiscovery() {
+        discoveryJob?.cancel()
+        discoveryJob = scope.launch {
+            while (isActive) {
+                try {
+                    discovery.browseHubs().collect { found ->
+                        val current = trust.load() ?: return@collect
+                        if (found.hubId == current.hubId && com.homehub.screen.LanSdp.privateAddress(found.host)) {
+                            val host = if (found.host.contains(':')) "[${found.host}]" else found.host
+                            trust.updateAddr(current.hubId, "$host:${found.port}")
+                            refresh()
+                        }
+                    }
                 }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { delay(30_000) }
             }
         }
-        refresh()
     }
     @Synchronized fun refresh() {
         if (refreshJob?.isActive == true) return

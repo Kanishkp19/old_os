@@ -52,11 +52,12 @@ class HubDiscovery @Inject constructor(
                 })
             }
             override fun onServiceLost(service: NsdServiceInfo) {}
-            override fun onDiscoveryStopped(serviceType: String) {}
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            override fun onDiscoveryStopped(serviceType: String) { close(IllegalStateException("discovery stopped")) }
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) { close(IllegalStateException("discovery failed: $errorCode")) }
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) { close(IllegalStateException("discovery stop failed: $errorCode")) }
         }
-        nsd.discoverServices("_homehub._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
+        try { nsd.discoverServices("_homehub._tcp", NsdManager.PROTOCOL_DNS_SD, listener) }
+        catch (e: Exception) { close(e) }
         awaitClose {
             runCatching { nsd.stopServiceDiscovery(listener) }
             runCatching { lock.release() }

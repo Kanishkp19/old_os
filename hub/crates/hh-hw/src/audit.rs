@@ -4,6 +4,7 @@ use hh_core::error::Result;
 use hh_core::platform::{DiskInfo, HardwareReport};
 use hh_core::time::now_ms;
 use serde::Serialize;
+use rusqlite::OptionalExtension;
 use sysinfo::{Disks, Networks, System};
 
 use crate::{db_e, HwService};
@@ -123,7 +124,16 @@ pub fn rate(report: &HardwareReport) -> Ratings {
 impl HwService {
     /// Run an audit, persist it, and derive feature flags (TRD §11).
     pub fn run_audit(&self) -> Result<AuditResult> {
-        let report = collect()?;
+        self.run_audit_with_helper(None)
+    }
+
+    pub fn run_audit_with_helper(&self,extra:Option<&serde_json::Value>) -> Result<AuditResult> {
+        let mut report = collect()?;
+        if let Some(extra)=extra {
+            report.battery_health_pct=extra["battery_health_pct"].as_u64().and_then(|v|u32::try_from(v).ok());
+            report.has_camera=extra["has_camera"].as_bool().unwrap_or(false);
+            if let Some(standard)=extra["wifi_standard"].as_str(){report.wifi_standard=Some(standard.to_owned());}
+        }
         let ratings = rate(&report);
         let supported_status = self.compat_status(&report)?;
         let id = ulid::Ulid::new().to_string();
@@ -147,15 +157,18 @@ impl HwService {
 
     pub fn latest_audit(&self) -> Result<Option<serde_json::Value>> {
         let c = self.db.lock()?;
-        let row: Option<String> = c
+        let row = c
             .query_row(
-                "SELECT report_json FROM hardware_audit ORDER BY taken_at DESC LIMIT 1",
+                "SELECT id,taken_at,report_json,rating_storage,rating_photo_backup,rating_file_sharing,rating_streaming,rating_local_ai,supported_status FROM hardware_audit ORDER BY taken_at DESC LIMIT 1",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?)),
             )
-            .ok();
+            .optional().map_err(db_e)?;
         match row {
-            Some(j) => Ok(serde_json::from_str(&j).ok()),
+            Some((id,taken_at,report,storage,photo_backup,file_sharing,streaming,local_ai,supported_status)) => Ok(Some(serde_json::json!({
+                "id":id,"taken_at":taken_at,"report":serde_json::from_str::<serde_json::Value>(&report).map_err(|e|hh_core::Error::Db(e.to_string()))?,
+                "ratings":{"storage":storage,"photo_backup":photo_backup,"file_sharing":file_sharing,"streaming":streaming,"local_ai":local_ai},"supported_status":supported_status
+            }))),
             None => Ok(None),
         }
     }

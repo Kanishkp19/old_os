@@ -1,10 +1,10 @@
 # Windows Home Hub session handoff
 Goal: Complete BUILD source for Phases 1–9 on implementation/windows-home-hub; stop before the TEST pass.
-Current state: Phases 1, 3, 4 and 5 BUILD source complete, untested; Phase 8 bullets 1–3 complete.
-Completed this session: Phase 3 bullets 3–8 (cee2c80–33a4f6f); Phase 4 incremental discovery 47f1adf, permission recovery 5b79369, durable backup verification babd4b2, changed-source and lost-copy recheck a9d2ba3.
-Next 1: Phase 8 bullet 4 — Notes offline autosave, search, rename, trash/restore and Markdown/text import/export.
+Current state: Phases 1, 3, 4 and 5 BUILD source complete, untested; Phase 8 bullets 1–4 complete.
+Completed this session: Phase 8 Notes save failure rollback and source audit.
+Next 1: Phase 8 bullet 5 — Calculator arithmetic, percentages, parentheses, keyboard, history and safe expression parsing.
 Next 2: Phase 8, 2, 9, 7, 6, one bullet at a time.
 Decisions: BUILD only; keep each completed source bullet [~] code complete, untested; commit and push after each bullet; no test suites or new tests until TEST pass.
-Verification: desktop cargo check and Svelte typecheck passed for Phase 8 bullet 1; Windows target and rustup unavailable on Mac. No tests run in BUILD.
+Verification: Svelte typecheck for Phase 8 bullet 4; Windows target and rustup unavailable on Mac. No tests run in BUILD.
 FIXLIST.md: 4 deferred defects; see exact file and line there. Windows and Android device validation remains UNVERIFIED in WINDOWS_VALIDATION.md.
 Working tree: no unrelated changes; BUILD source is committed and pushed per bullet.

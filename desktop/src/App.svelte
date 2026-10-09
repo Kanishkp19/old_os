@@ -20,7 +20,7 @@
   let records = [], note = null, noteTitle = '', noteBody = '', noteTrash = false, saveState = '', saveTimer, saveQueue = Promise.resolve(), noteRevision = 0;
   let address = 'https://www.wikipedia.org', tabs = [], previousTabs = [], bookmarks = [], downloads = [], permissionTab = null, requestedPermission = '', websitePermissions = [], allowDownloads = false;
   let playlists = [], playlist = null, music = [], playing = null, queuedTracks = [], shuffle = false, repeat = false;
-  let expression = '', answer = '', history = [];
+  let expression = '', answer = '', history = [], historyId = null;
   let remoteSessions = [], remoteStatus = {};
   let hotspotName = '', hotspotPassword = '';
   let loadGeneration = 0, mounted = false, alertIds = new Set(), alertsInitialized = false;
@@ -59,6 +59,7 @@
     if (['Notes','Browser','YouTube','Calculator'].includes(current)) {
       if (!native && current !== 'Calculator') return;
       if (current === 'Notes') records = await command('local_list', { kind: 'note', query: '', trash: noteTrash });
+      if (current === 'Calculator') await loadCalculatorHistory();
       if (current === 'Browser' || current === 'YouTube') { tabs = await command('browser_list'); previousTabs = await command('browser_previous'); bookmarks = await command('local_list', { kind: 'bookmark', query: '', trash: false }); downloads = await command('local_list', { kind: 'download', query: '', trash: false }); }
       return;
     }
@@ -148,7 +149,22 @@
     const next = shuffle && shuffled.length ? shuffled[Math.floor(Math.random() * shuffled.length)] : choices[(index + direction + choices.length) % choices.length];
     playing = next;
   }
-  function calc() { try { const value = calculate(expression); answer = String(value); history = [{ expression, answer }, ...history].slice(0, 30); error = ''; } catch (e) { error = message(e); } }
+  async function loadCalculatorHistory() {
+    const saved = native ? (await command('local_list', { kind: 'preference', query: '', trash: false })).find(row => row.title === 'calculator-history') : null;
+    historyId = saved?.id || null;
+    let raw = saved?.body;
+    if (!native) { try { raw = localStorage.getItem('hh-calculator-history'); } catch { raw = null; } }
+    const value = json(raw, []);
+    history = Array.isArray(value) ? value.filter(row => typeof row?.expression === 'string' && row.expression.length <= 512 && typeof row.answer === 'string').slice(0, 30) : [];
+  }
+  async function saveCalculatorHistory() {
+    if (native) historyId = (await command('local_save', { id: historyId, kind: 'preference', title: 'calculator-history', body: JSON.stringify(history) })).id;
+    else localStorage.setItem('hh-calculator-history', JSON.stringify(history));
+  }
+  async function calc() {
+    try { const value = calculate(expression); answer = String(value); history = [{ expression, answer }, ...history].slice(0, 30); error = ''; await saveCalculatorHistory(); }
+    catch (e) { answer = ''; error = message(e); }
+  }
   async function unlock() { await authorize(authKey); authKey = ''; authNeeded = false; await load(); }
   async function diagnostics() { const value = await api('/api/diagnostics'); exportText(`homehub-diagnostics-${Date.now()}.json`, JSON.stringify(value, null, 2), 'application/json'); }
   async function stopSession(id) { await api(`/api/screen/sessions/${id}`, 'DELETE'); await load(); }
@@ -237,7 +253,7 @@
       {#if playing}<section class="card player"><strong>{playing.name}</strong><audio src={media(playing.id)} controls autoplay loop={repeat} on:ended={() => nextTrack(1,true)} on:error={() => { error = t("This track could not be played."); playing = null; }}></audio><button on:click={() => nextTrack(-1)}>{t('Previous')}</button><button on:click={() => nextTrack()}>{t('Next')}</button></section>{/if}
       <section class="card"><h2>{t("Up next")}</h2>{#each queuedTracks as queued, index}<div class="row"><span>{queued.name}</span><button on:click={() => queuedTracks = queuedTracks.filter((_, i) => i !== index)}>{t("Remove")}</button></div>{:else}<p>{t("Queue is empty")}</p>{/each}</section><section class="card">{#each musicTracks as track}<div class="row"><button class="link" on:click={() => playing = track}>{t('Play')} · {track.name}</button><span>{bytes(track.size)}</span><button on:click={() => queuedTracks = [...queuedTracks, track]}>{t("Add to queue")}</button>{#if playlist}<button on:click={() => run(() => addTrack(track,true))}>{t('Remove')}</button>{/if}</div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{#if playlist}<section class="card"><h2>{t('Add to playlist')}</h2>{#each music.filter(f => !json(playlist.body,{ids:[]}).ids?.includes(f.id)) as track}<button on:click={() => run(() => addTrack(track))}>{track.name}</button>{/each}<button class="danger" on:click={() => confirm(t('Remove'), async () => { await command('local_trash',{id:playlist.id}); playlist = null; await load(); })}>{t('Remove')} {playlist.title}</button></section>{/if}{#if cursor}<button on:click={() => run(more)}>{t('Load more')}</button>{/if}
     {:else if route === 'Calculator'}
-      <section class="card calculator"><form on:submit|preventDefault={calc}><label>{t('Expression')}<input bind:value={expression} inputmode="decimal" placeholder="(24 + 36) / 2" autocomplete="off"/></label><output aria-live="polite">{answer || '0'}</output><div class="keypad">{#each ['(',')','%','/','7','8','9','*','4','5','6','-','1','2','3','+','0','.','^','='] as key}<button type="button" on:click={() => key === '=' ? calc() : expression += key}>{key}</button>{/each}</div><div class="toolbar"><button class="primary">{t('Calculate')}</button><button type="button" on:click={() => { expression = ''; answer = ''; }}>{t('Clear')}</button></div></form></section><section class="card"><h2>{t('History')}</h2>{#each history as row}<button class="history" on:click={() => expression = row.expression}>{row.expression} = {row.answer}</button>{/each}</section>
+      <section class="card calculator"><form on:submit|preventDefault={calc}><label>{t('Expression')}<input bind:value={expression} inputmode="decimal" placeholder="(24 + 36) / 2" autocomplete="off"/></label><output aria-live="polite">{answer || '0'}</output><div class="keypad">{#each ['(',')','%','/','7','8','9','*','4','5','6','-','1','2','3','+','0','.','^','='] as key}<button type="button" on:click={() => key === '=' ? calc() : expression += key}>{key}</button>{/each}</div><div class="toolbar"><button class="primary">{t('Calculate')}</button><button type="button" on:click={() => { expression = ''; answer = ''; }}>{t('Clear')}</button></div></form></section><section class="card"><h2>{t('History')}</h2><button disabled={!history.length} on:click={async () => { history = []; try { await saveCalculatorHistory(); error = ""; } catch (e) { error = message(e); } }}>{t('Clear history')}</button>{#each history as row}<button class="history" on:click={() => expression = row.expression}>{row.expression} = {row.answer}</button>{/each}</section>
     {:else if route === 'Devices'}
       <section class="card">{#each data.devices || [] as device}<article class="device"><div class="row"><div><h2>{device.name}</h2><small>{device.platform} · {device.status === 'revoked' ? t('Revoke device') : date(device.last_seen_at)}</small></div><button class="danger" disabled={device.status === 'revoked'} on:click={() => confirm(t('Revoke device'),() => mutate(`/api/devices/${device.id}`,'DELETE'),device.name)}>{t('Revoke device')}</button></div><fieldset disabled={device.status === 'revoked'}><legend>{t('Device permissions')}</legend>{#each ['files','transfer','photos','remote','admin'] as scope}<label class="check"><input type="checkbox" checked={(Array.isArray(device.scopes) ? device.scopes : String(device.scopes || '').split(',')).includes(scope)} on:change={event => changeScope(device,scope,event.currentTarget.checked)}/>{t(scope === 'files' ? 'Files' : scope === 'transfer' ? 'Transfers' : scope === 'photos' ? 'Photos' : scope === 'remote' ? 'Remote' : 'Settings')}</label>{/each}</fieldset><button on:click={() => { form = { action:'device',file:device }; formValue = device.name; }}>{t('Rename')}</button></article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
     {:else if route === 'Hardware'}

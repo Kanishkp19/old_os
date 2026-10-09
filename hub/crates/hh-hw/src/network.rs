@@ -98,7 +98,3 @@ impl HwService {
         Ok(rows)
     }
 }
-
-/// Core status never probes public networks. Browser/update connectivity is
-/// handled explicitly by those internet-enabled applications.
-pub fn probe_internet() -> Option<bool> { None }

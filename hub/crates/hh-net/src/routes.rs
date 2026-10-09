@@ -212,28 +212,12 @@ async fn get_info(State(s): State<AppState>) -> ApiResult<Json<HubInfo>> {
             kind: net.mode,
             link_mbps: None,
             wifi_standard: None,
-            // W2.9: distinguish "no internet" from "no LAN". A LAN without
-            // internet is a supported, healthy Home Hub state.
-            internet: cached_internet_probe(),
+            // LAN status cannot establish public Internet reachability.
+            internet: None,
         },
         time: hh_core::time::now_ms(),
         backup_interval_minutes: s.db.get_setting("backup.interval_minutes")?.and_then(|v|v.parse::<u64>().ok()).unwrap_or(60).clamp(1,10080),
     }))
-}
-
-/// 60 s cache so /v1/info stays cheap (probe itself is a 2 s connect).
-fn cached_internet_probe() -> Option<bool> {
-    use std::sync::{Mutex, OnceLock};
-    use std::time::Instant;
-    static CACHE: OnceLock<Mutex<(Option<Instant>, Option<bool>)>> = OnceLock::new();
-    let cell = CACHE.get_or_init(|| Mutex::new((None, None)));
-    let mut g = cell.lock().ok()?;
-    let fresh = g.0.map(|t| t.elapsed() < std::time::Duration::from_secs(60)).unwrap_or(false);
-    if !fresh {
-        g.1 = hh_hw::network::probe_internet();
-        g.0 = Some(Instant::now());
-    }
-    g.1
 }
 
 #[derive(Deserialize)]

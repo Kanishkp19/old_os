@@ -7,7 +7,7 @@ Source details: `docs/phases/phase-N.md`; validation: `docs/WINDOWS_VALIDATION.m
 - Phase 2 — Windows interface: in progress; no phase acceptance or completed-phase push recorded.
 - Phase 3 — Files and import: BUILD source complete, untested in this pass; phase acceptance pending.
 - Phase 4 — Photos and phone cleanup: BUILD source complete, untested; Windows and Android device validation and phase acceptance pending.
-- Phase 5 — Protection and hardware: in progress; no phase acceptance or completed-phase push recorded.
+- Phase 5 — Protection and hardware: BUILD source complete, untested; no phase acceptance recorded.
 - Phase 6 — Remote and screens: in progress; no phase acceptance or completed-phase push recorded.
 - Phase 7 — Companions: in progress; no phase acceptance or completed-phase push recorded.
 - Phase 8 — Everyday apps: in progress; no phase acceptance or completed-phase push recorded.

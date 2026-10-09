@@ -190,6 +190,7 @@ impl StorageService {
             else if kind=="move"{tx.execute("UPDATE files SET name=?2,rel_path=?3 WHERE id=?1",params![fid,value["name"].as_str(),value["rel_path"].as_str()]).map_err(db_e)?;}
             tx.execute("UPDATE file_operation_journal SET state='done' WHERE id=?1",params![jid]).map_err(db_e)?;tx.commit().map_err(db_e)?;
         }
+        c.execute("UPDATE second_copy_runs SET status='partial',finished_at=?1 WHERE status='running'",params![now_ms()]).map_err(db_e)?;
         c.execute("UPDATE jobs SET status='interrupted',error='Interrupted; verified completed copies preserved. Retry the operation.',updated_at=?1 WHERE status IN ('queued','running')",params![now_ms()]).map_err(db_e)?;Ok(())
     }
 }

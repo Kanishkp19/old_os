@@ -22,3 +22,4 @@
 - UNVERIFIED: On Windows, inspect supported and unsupported physical disks, deny Storage Management access and stall its PowerShell provider; confirm health becomes Unknown without hanging or claiming a healthy drive.
 - UNVERIFIED: On Windows, fill and remove library/second-copy drives, trigger a health warning and corrupt a stored file; confirm distinct alerts appear once, measured conditions clear on recovery and integrity history stays visible.
 - UNVERIFIED: On Windows, run a scheduled bounded scrub with concurrent uploads, corrupt and remove library files, then interrupt repair before and after atomic replacement; confirm original/verified copies survive and later scrub batches rotate.
+- UNVERIFIED: Select a Windows external second-copy drive, reject the library volume, copy incrementally, unplug mid-run, reconnect under a changed drive letter and confirm marker identity, partial-run recovery and current-drive freshness.

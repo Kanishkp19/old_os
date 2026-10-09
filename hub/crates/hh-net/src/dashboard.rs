@@ -204,6 +204,8 @@ async fn storage(State(st): State<DashboardState>, headers: HeaderMap) -> Result
         "reclaimable_trash_bytes": sum.reclaimable_trash_bytes,
         "missing_files": sum.missing_files,
         "disks": health,
+        "second_copy": st.app.storage.copy_coverage().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?,
+        "second_copy_age_ms": st.app.storage.last_second_copy_age_ms().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?,
     })))
 }
 
@@ -456,6 +458,7 @@ async fn second_copy_get(State(st): State<DashboardState>, headers: HeaderMap) -
         "interval_hours": interval / 60,
         "interval_minutes": interval,
         "last_run_age_ms": st.app.storage.last_second_copy_age_ms().ok().flatten(),
+        "coverage": st.app.storage.copy_coverage().ok(),
     })))
 }
 

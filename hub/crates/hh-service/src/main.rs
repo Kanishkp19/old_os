@@ -211,9 +211,12 @@ fn spawn_workers(state: AppState) {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
                 let interval=s.db.get_setting("second_copy.interval_minutes").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(1440).clamp(1,43200)*60*1000;
-                let configured=s.db.get_setting("second_copy.root").ok().flatten().is_some_and(|v|!v.is_empty()) || s.cfg.second_copy_root.is_some();
+                let target=s.db.get_setting("second_copy.root").ok().flatten().filter(|v|!v.is_empty()).map(std::path::PathBuf::from).or_else(||s.cfg.second_copy_root.clone());
                 let due=s.storage.last_second_copy_age_ms().ok().flatten().map(|age|age>=interval).unwrap_or(true);
-                if configured && due && s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false) {
+                let now=hh_core::time::now_ms();
+                let last_attempt=s.db.get_setting("second_copy.last_attempt").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(0);
+                if target.as_ref().is_some_and(|path|path.is_dir()) && due && now.saturating_sub(last_attempt)>=15*60*1000 && s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false) {
+                    let _=s.db.set_setting("second_copy.last_attempt",&now.to_string());
                     let storage=s.storage.clone();
                     match tokio::task::spawn_blocking(move||storage.start_maintenance("second_copy")).await {
                         Ok(Ok(_))=>{},Ok(Err(error))=>tracing::warn!(%error,"scheduled second copy failed"),Err(error)=>tracing::warn!(%error,"second copy worker failed"),

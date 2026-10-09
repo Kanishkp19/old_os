@@ -79,7 +79,8 @@ class BackupRepository @Inject constructor(
         require(MediaAccess.granted(context))
         val hubId = requireNotNull(trust.load()).hubId
         val source = hub.post("/v1/backup/sources", JSONObject().put("kind", "camera_roll").put("label", android.os.Build.MODEL))
-        require(prefs.edit().putString("source_id", source.getString("id")).putString("source_hub_id", hubId).putBoolean("enabled", true).commit())
+        require(prefs.edit().putString("source_id", source.getString("id")).putString("source_hub_id", hubId)
+            .putBoolean("enabled", true).remove("scan_since_sec").remove("last_full_scan").commit())
         updateRules(true, settings.value.wifiOnly, settings.value.chargingOnly, settings.value.intervalHours)
     }
     suspend fun updateRules(enabled: Boolean, wifiOnly: Boolean, chargingOnly: Boolean, intervalHours: Long) = withContext(Dispatchers.IO) {
@@ -114,13 +115,19 @@ class BackupRepository @Inject constructor(
             .setRequiresCharging(prefs.getBoolean("charging_only", false)).build()).build()
         WorkManager.getInstance(context).enqueueUniqueWork("homehub-photo-backup-now", ExistingWorkPolicy.KEEP, request)
     }
-    private suspend fun media(): List<LocalMedia> {
+    private suspend fun media(sinceSeconds: Long = 0): List<LocalMedia> {
         val items = mutableListOf<LocalMedia>()
         val collection = MediaStore.Files.getContentUri("external")
         val columns = arrayOf(MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE)
-        val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?,?)"
-        context.contentResolver.query(collection, columns, selection, arrayOf(
-            MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(), MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()),
+        val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?,?)" +
+            if (sinceSeconds > 0) " AND (${MediaStore.MediaColumns.DATE_MODIFIED}>=? OR ${MediaStore.MediaColumns.DATE_ADDED}>=?)" else ""
+        val args = mutableListOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+            MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString())
+        if (sinceSeconds > 0) {
+            val overlap = (sinceSeconds - 1).toString()
+            args += overlap; args += overlap
+        }
+        context.contentResolver.query(collection, columns, selection, args.toTypedArray(),
             "${MediaStore.Files.FileColumns._ID} ASC")?.use { cursor ->
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(0)
@@ -140,7 +147,12 @@ class BackupRepository @Inject constructor(
         require(MediaAccess.granted(context))
         val source = prefs.getString("source_id", null) ?: return@withContext
         if (!BackupRules.allowed(context)) return@withContext
-        for (batch in media().chunked(100)) {
+        val scanStarted = System.currentTimeMillis()
+        // Full sweeps catch older copies lost on the Hub and newly granted
+        // photos under Android's partial-library permission.
+        val full = MediaAccess.partial(context) || scanStarted - prefs.getLong("last_full_scan", 0) >= 7L * 24 * 3600 * 1000
+        val since = if (full) 0 else prefs.getLong("scan_since_sec", 0)
+        for (batch in media(since).chunked(100)) {
             if (!BackupRules.allowed(context)) return@withContext
             val payload = JSONArray()
             batch.forEach { payload.put(JSONObject().put("client_item_id", it.clientId).put("size", it.size)
@@ -149,7 +161,10 @@ class BackupRepository @Inject constructor(
             val ids = (0 until needed.length()).map { needed.getString(it) }.toSet()
             queue.enqueuePersisted(batch.filter { it.clientId in ids }.map { it.uri }, "backup", source)
         }
-        prefs.edit().putLong("last_run", System.currentTimeMillis()).apply(); refresh()
+        val saved = prefs.edit().putLong("last_run", scanStarted).putLong("scan_since_sec", scanStarted / 1000)
+        if (full) saved.putLong("last_full_scan", scanStarted)
+        require(saved.commit()) { "Unable to save photo scan progress" }
+        refresh()
     }
     /** Pins durable, freshly rehashed Hub copies across the OS confirmation. */
     suspend fun prepareCleanup(): List<Uri> = withContext(Dispatchers.IO) {

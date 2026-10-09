@@ -2,7 +2,7 @@
 
 Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partial source, not acceptance.
 
-- [~] Discover Android MediaStore photos/videos incrementally using the persistent Room queue.
+- [~] Discover Android MediaStore photos/videos incrementally using the persistent Room queue. Code complete, untested in BUILD; Windows Hub and Android device validation remain.
 - [~] Offer source approval, schedules, Wi-Fi/charging conditions, foreground progress and permission recovery.
 - [~] Link backup items to completed transfers and mark verification only after durable finalization.
 - [~] Recheck changed source content and missing, trashed or corrupt Hub copies.

@@ -15,7 +15,7 @@
   let privateTrash = [];
   let overview = {}, settings = {}, caps = {}, data = {}, query = '', sort = 'newest', category = '', cursor = null;
   let selected = null, previewError = false, photoZoom = 1, photoMonth = '', confirmation = null, form = null, formValue = '', formName = '';
-  let setup = false, setupStep = 0, hubName = '', copyFolder = '', importFolders = '', importScan = null, importChoice = 'later';
+  let setup = false, setupStep = 0, setupHardware = null, hubName = '', copyFolder = '', importFolders = '', importScan = null, importChoice = 'later';
   let qr = null, pending = null, pairingDeadline = 0, remaining = 0;
   let records = [], note = null, noteTitle = '', noteBody = '', noteTrash = false, saveState = '', saveTimer, saveQueue = Promise.resolve(), noteRevision = 0;
   let address = 'https://www.wikipedia.org', tabs = [], previousTabs = [], bookmarks = [], downloads = [], permissionTab = null, requestedPermission = '', websitePermissions = [], allowDownloads = false;
@@ -95,6 +95,7 @@
   async function accept() { const value = confirmation; confirmation = null; await run(value.action, t('Saved')); }
   async function pair() { await api('/api/pair/open', 'POST'); qr = await api('/api/pair/qr'); pairingDeadline = Date.now() + qr.expires_in * 1000; remaining = qr.expires_in; }
   async function finishSetup() { await api('/api/setup', 'POST', { hub_name: hubName, second_copy_root: copyFolder, setup_complete: true, remote_enabled: false }); setup = false; await load(); }
+  async function nextSetup() { if (setupStep === 3 && importScan && importChoice !== 'later') await startImport(); setupStep++; }
   async function saveSettings() { settings = await api('/api/settings', 'PATCH', { hub_name: hubName, second_copy_root: copyFolder, remote_enabled: settings.remote_enabled, screen_enabled: settings.screen_enabled, update_enabled: settings.update_enabled, update_manifest_url: settings.update_manifest_url || '', update_pubkey_hex: settings.update_pubkey_hex || '', backup_interval_minutes: Number(settings.backup_interval_minutes), scrub_interval_hours: Number(settings.scrub_interval_hours), second_copy_interval_minutes: Number(settings.second_copy_interval_minutes), wake_enabled: settings.wake_enabled, wake_time: settings.wake_time }); }
   function viewFile(file) { previewError = false; photoZoom = 1; selected = file; }
   async function shareSelected() {
@@ -271,7 +272,40 @@
   </main>
 </div>
 
-{#if setup}<div class="overlay"><div use:dialogFocus class="modal" role="dialog" aria-modal="true" aria-labelledby="setup-title"><h2 id="setup-title">{t('Welcome to Home Hub')}</h2><p>{setupStep + 1} / 3</p>{#if setupStep === 0}<label>{t('Hub name')}<input bind:value={hubName} maxlength="120"/></label><label>{t('Library folder')}<input value={settings.library_root || ''} readonly/></label><p>{t('Original files stay where they are.')}</p>{:else if setupStep === 1}<h3>{t('Protect your memories')}</h3><p>{t('A single drive is not a backup.')}</p><label>{t('Second-copy folder')} · {t('Optional')}<input bind:value={copyFolder}/></label><p>{t('Choose an external drive for a second copy.')}</p><p>{t('Turn on BitLocker in Windows to protect data at rest.')}</p>{:else}<h3>{t('Pair a device')}</h3><p>{t('Remote is off until you grant a device permission.')}</p><button on:click={() => run(pair)}>{t('Pair a device')}</button>{/if}<div class="toolbar">{#if setupStep > 0}<button on:click={() => setupStep--}>{t('Back')}</button>{/if}{#if setupStep < 2}<button class="primary" disabled={!hubName.trim()} on:click={() => setupStep++}>{t('Next')}</button>{:else}<button class="primary" disabled={busy} on:click={() => run(finishSetup)}>{t('Finish setup')}</button>{/if}<button on:click={() => setup = false}>{t('Later')}</button></div></div></div>{/if}
+{#if setup}
+  <div class="overlay"><div use:dialogFocus class="modal" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <h2 id="setup-title">{t('Welcome to Home Hub')}</h2><p>{setupStep + 1} / 5</p>
+    {#if setupStep === 0}
+      <label>{t('Hub name')}<input bind:value={hubName} maxlength="120"/></label>
+      <label>{t('Library folder')}<input value={settings.library_root || ''} readonly/></label>
+      <p>{t('Original files stay where they are.')}</p>
+      <button on:click={() => { setup = false; go('Storage'); }}>{t('Choose a different library folder in Storage')}</button>
+    {:else if setupStep === 1}
+      <h3>{t('Protect your memories')}</h3><p>{t('A single drive is not a backup.')}</p>
+      <label>{t('Second-copy folder')} · {t('Optional')}<input bind:value={copyFolder}/></label>
+      <p>{t('Choose an external drive for a second copy.')}</p><p>{t('Turn on BitLocker in Windows to protect data at rest.')}</p>
+    {:else if setupStep === 2}
+      <h3>{t('Hardware')}</h3><p>{t('Check this laptop before enabling hardware features.')}</p>
+      <button disabled={busy} on:click={() => run(async () => { setupHardware = await api('/api/hardware/audit/run','POST'); })}>{t('Run hardware check')}</button>
+      {#if setupHardware}<Details {t} value={setupHardware}/>{/if}
+    {:else if setupStep === 3}
+      <h3>{t('Existing files')}</h3><p>{t('Original files stay where they are.')}</p>
+      <label>{t('Folder paths (one per line)')}<textarea rows="3" bind:value={importFolders} on:input={() => importScan = null}></textarea></label>
+      <button disabled={busy || !importFolders.trim()} on:click={() => run(scanImport)}>{t('Scan folders')}</button>
+      {#if importScan}<Details {t} value={importScan}/><fieldset><legend>{t('Existing files')}</legend>{#each [['later','Later'],['keep','Keep in place'],['copy','Import a copy']] as choice}<label class="check"><input type="radio" bind:group={importChoice} value={choice[0]}/>{t(choice[1])}</label>{/each}</fieldset>{/if}
+      <p>{t('Later is selected unless you choose an import option.')}</p>
+    {:else}
+      <h3>{t('Pair a device')}</h3><p>{t('Remote is off until you grant a device permission.')}</p>
+      <button on:click={() => run(pair)}>{t('Pair a device')}</button>
+    {/if}
+    <div class="toolbar">
+      {#if setupStep > 0}<button on:click={() => setupStep--}>{t('Back')}</button>{/if}
+      {#if setupStep < 4}<button class="primary" disabled={busy || !hubName.trim() || (setupStep === 3 && !!importFolders.trim() && !importScan)} on:click={() => run(nextSetup)}>{t('Next')}</button>
+      {:else}<button class="primary" disabled={busy} on:click={() => run(finishSetup)}>{t('Finish setup')}</button>{/if}
+      <button on:click={() => setup = false}>{t('Later')}</button>
+    </div>
+  </div></div>
+{/if}
 {#if qr}<div class="overlay"><div use:dialogFocus class="modal pairing" role="dialog" aria-modal="true" aria-labelledby="pair-title"><h2 id="pair-title">{t('Pair a device')}</h2>{#if qr.qr}<img src={qr.qr} alt={t('Pair a device')}/>{/if}<p>{t('Manual code')}: <strong>{qr.manual_code}</strong></p><p>{t('Pairing expires in')} {remaining} {t('seconds')}</p><button on:click={() => qr = null}>{t('Close')}</button></div></div>{/if}
 {#if pending}<div class="overlay"><div use:dialogFocus class="modal" role="dialog" aria-modal="true" aria-labelledby="pending-title"><h2 id="pending-title">{t('Device permissions')}</h2><Details {t} value={{ name:pending.device_name || pending.name,platform:pending.platform }}/><div class="toolbar"><button class="primary" on:click={() => run(async () => { await api('/api/pair/confirm','POST',{request_id:pending.request_id,allow:true}); pending = null; })}>{t('Approve')}</button><button on:click={() => run(async () => { await api('/api/pair/confirm','POST',{request_id:pending.request_id,allow:false}); pending = null; })}>{t('Deny')}</button></div></div></div>{/if}
 {#if selected}<div class="overlay"><div use:dialogFocus class="modal viewer" role="dialog" aria-modal="true" aria-labelledby="viewer-title"><div class="row"><h2 id="viewer-title">{selected.name}</h2><button on:click={() => selected = null}>{t('Close')}</button></div>{#if selected.mime?.startsWith('image/')}<div class="photo-canvas"><img src={media(selected.id)} alt={selected.name} style:transform={`scale(${photoZoom})`} on:error={() => previewError = true}/></div><div class="toolbar"><button on:click={() => photoZoom = Math.max(1, photoZoom - 0.5)} disabled={photoZoom === 1} aria-label="Zoom out">−</button><span>{Math.round(photoZoom * 100)}%</span><button on:click={() => photoZoom = Math.min(6, photoZoom + 0.5)} disabled={photoZoom === 6} aria-label="Zoom in">+</button></div>{:else if selected.mime?.startsWith('video/')}<video controls autoplay src={media(selected.id)} aria-label={selected.name} on:error={() => previewError = true}></video>{:else if selected.mime?.startsWith('audio/')}<audio controls src={media(selected.id)} aria-label={selected.name} on:error={() => previewError = true}></audio>{:else}<Details {t} value={{category:selected.category,size:bytes(selected.size),created:date(selected.created_at)}}/>{/if}{#if previewError}<p role="status">{t('This format cannot be previewed here. Download it to open in another app.')}</p>{/if}{#if selected.taken_at}<Details {t} value={{taken:date(selected.taken_at),dimensions:selected.width && selected.height ? `${selected.width} × ${selected.height}` : null,camera:[selected.camera_make,selected.camera_model].filter(Boolean).join(" ") || null,duration:selected.duration_ms ? `${Math.round(selected.duration_ms / 1000)} s` : null}}/>{/if}<div class="toolbar"><button on:click={() => run(shareSelected)}>{t('Share')}</button><button on:click={() => run(() => saveFile(selected))}>{t('Download')}</button></div></div></div>{/if}

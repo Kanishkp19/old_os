@@ -1,6 +1,8 @@
 export const routes = ['Home','Photos','Files','Transfers','Storage','Remote','Browser','YouTube','Music','Notes','Calculator','Devices','Hardware','Settings'];
 export const icons = ['⌂','▧','▤','⇄','◴','⌘','◎','▶','♫','✎','+','▣','⚙','☷'];
 const hi = {
+  'Choose a different library folder in Storage':'स्टोरेज में दूसरा लाइब्रेरी फ़ोल्डर चुनें','Check this laptop before enabling hardware features.':'हार्डवेयर सुविधाएँ चालू करने से पहले इस लैपटॉप की जाँच करें।',
+  'Existing files':'मौजूदा फ़ाइलें','Later is selected unless you choose an import option.':'आयात विकल्प चुनने तक बाद में का विकल्प लागू रहेगा।',
   'Working…':'काम चल रहा है…',
   'Fullscreen':'पूर्ण स्क्रीन','Up next':'अगले गीत','Queue is empty':'कतार खाली है','Add to queue':'कतार में जोड़ें','This track could not be played.':'यह गीत नहीं चल सका।','Clear history':'इतिहास मिटाएँ',
   'Website requested':'वेबसाइट ने अनुरोध किया','Grant permission and retry the website action.':'अनुमति दें और वेबसाइट में फिर कोशिश करें।','Private playlists are available in the installed Windows app.':'निजी प्लेलिस्ट इंस्टॉल किए हुए Windows ऐप में उपलब्ध हैं।',

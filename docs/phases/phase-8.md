@@ -2,7 +2,7 @@
 
 Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partial source, not acceptance.
 
-- [~] Browser address/search, tabs, navigation, bookmarks, session restore, downloads, permission prompts and clearing.
+- [~] Browser address/search, tabs, navigation, bookmarks, session restore, downloads, permission prompts and clearing. Code complete, untested in BUILD; denied website and download requests now prompt the owner to grant per-tab permissions and retry, while native history/session/download controls retain existing behavior.
 - [~] YouTube isolated window, playback/fullscreen/sign-in where supported and installed-browser fallback.
 - [~] Music library playback, queue, seek, volume, repeat/shuffle and private playlists.
 - [~] Notes offline autosave, search, rename, trash/restore and Markdown/text import/export.

@@ -1,7 +1,7 @@
 //! Untrusted webviews have separate WebView2 storage, no capabilities and no native commands.
 use std::{collections::BTreeMap, net::IpAddr, sync::Mutex};
 use serde::Serialize;
-use tauri::{Manager, WebviewUrl, webview::{DownloadEvent, NewWindowResponse, PermissionKind, PermissionResponse, WebviewWindowBuilder}};
+use tauri::{Emitter,Manager, WebviewUrl, webview::{DownloadEvent, NewWindowResponse, PermissionKind, PermissionResponse, WebviewWindowBuilder}};
 use crate::{AppState, store::{BrowserSessionTab, Result, now}};
 #[derive(Clone,Serialize)] pub struct Tab {pub label:String,pub url:String,pub title:String,pub downloads:bool,pub permissions:Vec<String>,pub isolated:bool}
 #[derive(Default)] pub struct Browser {pub tabs:Mutex<BTreeMap<String,Tab>>}
@@ -94,7 +94,10 @@ pub async fn open(app:&tauri::AppHandle,input:&str,isolated:bool,permissions:Vec
             let origin=url.origin().ascii_serialization();
             let state=webview.app_handle().state::<AppState>();
             let allowed=state.browser.tabs.lock().ok().and_then(|tabs|tabs.get(webview.label()).cloned()).is_some_and(|t|t.permissions.contains(&format!("{origin}|{permission}")));
-            if allowed {PermissionResponse::Allow} else {PermissionResponse::Deny}
+            if allowed {PermissionResponse::Allow} else {
+                let _=webview.app_handle().emit_to("main","website-permission-request",serde_json::json!({"label":webview.label(),"origin":origin,"permission":permission}));
+                PermissionResponse::Deny
+            }
         })
         .on_download(move |_,event| {
             let state=download_app.state::<AppState>();
@@ -102,7 +105,7 @@ pub async fn open(app:&tauri::AppHandle,input:&str,isolated:bool,permissions:Vec
                 DownloadEvent::Requested {url,destination}=> {
                     if public_url(url.as_str()).is_err() {return false;}
                     let allowed=state.browser.tabs.lock().ok().and_then(|t|t.get(&download_label).map(|t|t.downloads)).unwrap_or(false);
-                    if !allowed {return false;}
+                    if !allowed {let _=download_app.emit_to("main","website-permission-request",serde_json::json!({"label":download_label,"origin":url.origin().ascii_serialization(),"permission":"downloads"}));return false;}
                     if state.store.list("download","",false).map(|r|r.len()>=64).unwrap_or(true) {return false;}
                     let name=url.path_segments().and_then(|mut p|p.next_back()).unwrap_or("download").chars().filter(|c|c.is_ascii_alphanumeric()||".-_".contains(*c)).take(120).collect::<String>();
                     let name=if name.is_empty(){"download".to_owned()}else{name};

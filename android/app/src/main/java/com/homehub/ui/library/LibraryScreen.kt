@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import android.content.Intent
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.*
@@ -38,6 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import android.widget.VideoView
 import javax.inject.Inject
 
 @HiltViewModel
@@ -63,22 +65,16 @@ class LibraryViewModel @Inject constructor(private val hub: HubClient,
             loading.value = true
             try {
                 val path = if (photos) "/v1/photos/timeline?limit=100" else if (trash) "/v1/trash?limit=100" else "/v1/files?limit=100"
-                val initial = month?.plusMonths(1)?.atDay(1)?.atStartOfDay(java.time.ZoneOffset.UTC)?.toInstant()?.toEpochMilli()?.let { "${it - 1}:~" }
-                val pageCursor = if (more) cursor else if (photos) initial else null
+                val pageCursor = if (more) cursor else null
                 val page = hub.get(path + (pageCursor?.let { "&cursor=${Uri.encode(it)}" } ?: "") +
+                    (if (photos && month != null) "&year=${month!!.year}&month=${month!!.monthValue}" else "") +
                     (if (!photos && !trash) "&sort=${if (sort == "date") "newest" else sort}" +
                         (if (query.isNotBlank()) "&q=${Uri.encode(query)}" else "") +
                         (if (category.isNotBlank()) "&category=${Uri.encode(category)}" else "") else ""))
                 val array = page.getJSONArray("items")
                 val pageRows = (0 until array.length()).map(array::getJSONObject)
-                val new = if (photos && month != null) pageRows.filter {
-                    java.time.YearMonth.from(java.time.Instant.ofEpochMilli(it.getLong("taken_at")).atZone(java.time.ZoneOffset.UTC)) == month
-                } else pageRows
                 cursor = page.optString("next_cursor").takeIf { it.isNotBlank() && it != "null" }
-                rows.value = ((if (more) rows.value else emptyList()) + new).distinctBy { id(it) }
-                if (photos && month != null && pageRows.any {
-                    java.time.YearMonth.from(java.time.Instant.ofEpochMilli(it.getLong("taken_at")).atZone(java.time.ZoneOffset.UTC)) < month!!
-                }) cursor = null
+                rows.value = ((if (more) rows.value else emptyList()) + pageRows).distinctBy { id(it) }
                 hasMore.value = cursor != null
                 error.value = null
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -166,6 +162,12 @@ class LibraryViewModel @Inject constructor(private val hub: HubClient,
     suspend fun thumbnail(row: JSONObject, size: Int = 256) = withContext(Dispatchers.IO) {
         val data = hub.bytes("/v1/photos/${id(row)}/thumb?size=$size")
         BitmapFactory.decodeByteArray(data, 0, data.size)
+    }
+    suspend fun viewerFile(row: JSONObject): File = withContext(Dispatchers.IO) {
+        val folder = File(context.cacheDir, "verified-viewer").apply { mkdirs() }
+        val file = File(folder, "${id(row)}.part")
+        hub.download(id(row), file)
+        file
     }
     fun id(row: JSONObject) = row.optString("file_id").ifBlank { row.getString("id") }
 }
@@ -295,21 +297,62 @@ private fun FileDetails(row: JSONObject, vm: LibraryViewModel) {
             value.optString("mime").takeIf { it != "null" }.orEmpty()))
         Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(value.getLong("created_at"))))
         if (row.has("width") && !row.isNull("width")) Text("${row.optInt("width")} × ${row.optInt("height")}")
+        if (row.has("taken_at")) Text(stringResource(R.string.photo_taken,
+            java.text.DateFormat.getDateTimeInstance().format(java.util.Date(row.getLong("taken_at")))))
+        row.optString("camera_make").takeIf { it.isNotBlank() && it != "null" }?.let { make ->
+            Text(stringResource(R.string.photo_camera, listOf(make,row.optString("camera_model"))
+                .filter { it.isNotBlank() && it != "null" }.joinToString(" ")))
+        }
+        row.optLong("duration_ms").takeIf { it > 0 }?.let { Text(stringResource(R.string.photo_duration, it / 1000)) }
     }
 }
 @Composable
 private fun PhotoViewer(row: JSONObject, vm: LibraryViewModel, close: () -> Unit, save: () -> Unit, relay: () -> Unit) {
-    val bitmap by produceState<android.graphics.Bitmap?>(null, vm.id(row)) { value = runCatching { vm.thumbnail(row, 1024) }.getOrNull() }
+    val isVideo = row.optString("type_") == "video"
+    val file by produceState<File?>(null, vm.id(row)) {
+        if (vm.canFiles) value = runCatching { vm.viewerFile(row) }.getOrNull()
+    }
+    val bitmap by produceState<android.graphics.Bitmap?>(null, vm.id(row), file) {
+        value = withContext(Dispatchers.IO) {
+            if (isVideo) null else if (file == null) runCatching { vm.thumbnail(row, 1024) }.getOrNull()
+            else runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file!!.path, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 3072 || bounds.outHeight / sample > 3072) sample *= 2
+                BitmapFactory.decodeFile(file!!.path, BitmapFactory.Options().apply { inSampleSize = sample })
+            }.getOrNull()
+        }
+    }
+    val context = LocalContext.current
+    val player = remember(vm.id(row)) { VideoView(context).apply {
+        setMediaController(android.widget.MediaController(context))
+    } }
+    var playbackError by remember(vm.id(row)) { mutableStateOf(false) }
+    LaunchedEffect(file, isVideo) {
+        if (isVideo && file != null) {
+            player.setOnErrorListener { _, _, _ -> playbackError = true; true }
+            player.setOnPreparedListener { player.start() }
+            player.setVideoPath(file!!.absolutePath)
+        }
+    }
+    DisposableEffect(player, file) { onDispose {
+        player.stopPlayback()
+        file?.delete()
+        file?.let { File(it.path + ".identity").delete() }
+    } }
     var zoom by remember { mutableFloatStateOf(1f) }
     var x by remember { mutableFloatStateOf(0f) }; var y by remember { mutableFloatStateOf(0f) }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(row.getString("name"), style = MaterialTheme.typography.titleLarge)
-                Box(Modifier.weight(1f).fillMaxWidth().pointerInput(Unit) {
+                Box(Modifier.weight(1f).fillMaxWidth().then(if (isVideo) Modifier else Modifier.pointerInput(Unit) {
                     detectTransformGestures { _, pan, scale, _ -> zoom = (zoom * scale).coerceIn(1f, 6f); x += pan.x; y += pan.y }
-                }) {
-                    bitmap?.let { Image(it.asImageBitmap(), row.getString("name"), Modifier.fillMaxSize().graphicsLayer {
+                })) {
+                    if (isVideo && file != null && !playbackError) AndroidView(factory = { player }, modifier = Modifier.fillMaxSize())
+                    else if (isVideo) Text(stringResource(R.string.photo_unsupported))
+                    else bitmap?.let { Image(it.asImageBitmap(), row.getString("name"), Modifier.fillMaxSize().graphicsLayer {
                         scaleX = zoom; scaleY = zoom; translationX = x; translationY = y
                     }) } ?: Text(stringResource(R.string.photo_unsupported))
                 }

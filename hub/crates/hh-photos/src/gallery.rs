@@ -18,6 +18,12 @@ pub struct TimelineItem {
     pub duration_ms: Option<u64>,
     pub thumb_status: String,
     pub name: String,
+    pub size: u64,
+    pub mime: Option<String>,
+    pub taken_at_source: String,
+    pub orientation: Option<u32>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,26 +35,26 @@ pub struct YearMonthCount {
 
 impl PhotoService {
     pub fn timeline(&self, cursor: Option<(i64, String)>, limit: u32) -> Result<(Vec<TimelineItem>, Option<String>)> {
+        self.timeline_month(cursor,limit,None)
+    }
+
+    pub fn timeline_month(&self, cursor: Option<(i64, String)>, limit: u32, month:Option<(i32,u32)>) -> Result<(Vec<TimelineItem>, Option<String>)> {
         let limit = limit.clamp(1, 500) as i64;
         let c = self.db.lock()?;
-        let (sql, vals): (String, Vec<Box<dyn rusqlite::ToSql>>) = match cursor {
-            Some((ts, fid)) => (
-                "SELECT m.file_id, m.type, m.taken_at, m.width, m.height, m.duration_ms, m.thumb_status, f.name
-                 FROM media m JOIN files f ON f.id = m.file_id
-                 WHERE f.deleted_at IS NULL AND (m.taken_at < ?1 OR (m.taken_at = ?1 AND m.file_id < ?2))
-                 ORDER BY m.taken_at DESC, m.file_id DESC LIMIT ?3"
-                    .to_string(),
-                vec![Box::new(ts), Box::new(fid), Box::new(limit + 1)],
-            ),
-            None => (
-                "SELECT m.file_id, m.type, m.taken_at, m.width, m.height, m.duration_ms, m.thumb_status, f.name
-                 FROM media m JOIN files f ON f.id = m.file_id
-                 WHERE f.deleted_at IS NULL
-                 ORDER BY m.taken_at DESC, m.file_id DESC LIMIT ?1"
-                    .to_string(),
-                vec![Box::new(limit + 1)],
-            ),
-        };
+        let mut sql="SELECT m.file_id,m.type,m.taken_at,m.width,m.height,m.duration_ms,m.thumb_status,f.name,
+            m.taken_at_source,m.orientation,m.camera_make,m.camera_model,f.size,f.mime
+            FROM media m JOIN files f ON f.id=m.file_id WHERE f.deleted_at IS NULL".to_string();
+        let mut vals:Vec<Box<dyn rusqlite::ToSql>>=Vec::new();
+        if let Some((year,month))=month {
+            sql.push_str(" AND strftime('%Y-%m',m.taken_at/1000,'unixepoch')=?");
+            vals.push(Box::new(format!("{year:04}-{month:02}")));
+        }
+        if let Some((ts,fid))=cursor {
+            sql.push_str(" AND (m.taken_at < ? OR (m.taken_at = ? AND m.file_id < ?))");
+            vals.push(Box::new(ts));vals.push(Box::new(ts));vals.push(Box::new(fid));
+        }
+        sql.push_str(" ORDER BY m.taken_at DESC,m.file_id DESC LIMIT ?");
+        vals.push(Box::new(limit+1));
         let mut st = c.prepare(&sql).map_err(db_e)?;
         let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|b| b.as_ref()).collect();
         let mut items: Vec<TimelineItem> = st
@@ -62,6 +68,12 @@ impl PhotoService {
                     duration_ms: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
                     thumb_status: r.get(6)?,
                     name: r.get(7)?,
+                    taken_at_source: r.get(8)?,
+                    orientation: r.get::<_,Option<i64>>(9)?.map(|v|v as u32),
+                    camera_make: r.get(10)?,
+                    camera_model: r.get(11)?,
+                    size: r.get::<_,i64>(12)? as u64,
+                    mime: r.get(13)?,
                 })
             })
             .map_err(db_e)?

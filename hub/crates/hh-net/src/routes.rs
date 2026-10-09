@@ -686,6 +686,8 @@ async fn library_summary(
 struct TimelineQ {
     cursor: Option<String>,
     limit: Option<u32>,
+    year: Option<i32>,
+    month: Option<u32>,
 }
 
 async fn photos_timeline(
@@ -699,7 +701,12 @@ async fn photos_timeline(
         let (ts, fid) = c.split_once(':')?;
         Some((ts.parse().ok()?, fid.to_string()))
     });
-    let (items, next_cursor) = s.photos.timeline(cursor, q.limit.unwrap_or(100))?;
+    let month=match (q.year,q.month) {
+        (None,None)=>None,
+        (Some(y),Some(m)) if (1900..=2200).contains(&y) && (1..=12).contains(&m)=>Some((y,m)),
+        _=>return Err(Error::BadRequest("invalid gallery month".into()).into()),
+    };
+    let (items, next_cursor) = s.photos.timeline_month(cursor, q.limit.unwrap_or(100),month)?;
     Ok(Json(serde_json::json!({"items": items, "next_cursor": next_cursor})))
 }
 

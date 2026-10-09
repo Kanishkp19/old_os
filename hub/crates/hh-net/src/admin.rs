@@ -169,8 +169,8 @@ async fn file_copy(State(st):State<DashboardState>,Path(id):Path<String>,Json(re
 async fn trash(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.storage.list_trash(500)?)))}
 async fn restore(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{st.app.storage.restore_file(&id)?;Ok(StatusCode::NO_CONTENT)}
 async fn purge(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{st.app.storage.purge_file(&id)?;Ok(StatusCode::NO_CONTENT)}
-#[derive(Deserialize)] struct TimelineReq{cursor:Option<String>,limit:Option<u32>}
-async fn timeline(State(st):State<DashboardState>,Query(q):Query<TimelineReq>)->AdminResult<Json<Value>>{let cursor=q.cursor.and_then(|v|v.split_once(':').and_then(|(ts,id)|Some((ts.parse().ok()?,id.to_owned()))));let (items,next_cursor)=st.app.photos.timeline(cursor,q.limit.unwrap_or(100).clamp(1,500))?;Ok(Json(json!({"items":items,"next_cursor":next_cursor})))}
+#[derive(Deserialize)] struct TimelineReq{cursor:Option<String>,limit:Option<u32>,year:Option<i32>,month:Option<u32>}
+async fn timeline(State(st):State<DashboardState>,Query(q):Query<TimelineReq>)->AdminResult<Json<Value>>{let cursor=q.cursor.and_then(|v|v.split_once(':').and_then(|(ts,id)|Some((ts.parse().ok()?,id.to_owned()))));let month=match(q.year,q.month){(None,None)=>None,(Some(y),Some(m)) if (1900..=2200).contains(&y)&&(1..=12).contains(&m)=>Some((y,m)),_=>return Err(Error::BadRequest("invalid gallery month".into()).into())};let (items,next_cursor)=st.app.photos.timeline_month(cursor,q.limit.unwrap_or(100).clamp(1,500),month)?;Ok(Json(json!({"items":items,"next_cursor":next_cursor})))}
 async fn years(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.photos.years()?)))}
 async fn duplicates(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.storage.list_duplicates()?)))}
 async fn similar(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.storage.list_similar()?)))}

@@ -150,6 +150,9 @@
     <string name="gallery_all_months">All months</string>
     <string name="gallery_month">%1$s · %2$d items</string>
     <string name="photo_original">Open verified original</string>
+    <string name="photo_taken">Taken %1$s</string>
+    <string name="photo_camera">Camera: %1$s</string>
+    <string name="photo_duration">Duration: %1$d seconds</string>
     <string name="photo_unsupported">This format has no preview here. Save or open the original in a compatible app.</string>
     <string name="file_details">%1$s · %2$s</string>
     <string name="backup_partial">Only selected photos and videos are accessible. Choose more to expand your backup.</string>

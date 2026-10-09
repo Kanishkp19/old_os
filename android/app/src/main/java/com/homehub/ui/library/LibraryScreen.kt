@@ -248,7 +248,7 @@ fun LibraryScreen(photos: Boolean = false, vm: LibraryViewModel = hiltViewModel(
         } else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(rows, key = { vm.id(it) }) { row ->
                 Card(Modifier.fillMaxWidth().clickable { selected = row }) {
-                    Column(Modifier.padding(12.dp)) { Text(row.getString("name")); Text(android.text.format.Formatter.formatFileSize(androidx.compose.ui.platform.LocalContext.current, row.optLong("size"))) }
+                    Column(Modifier.padding(12.dp)) { Text(row.getString("name")); Text(android.text.format.Formatter.formatFileSize(androidx.compose.ui.platform.LocalContext.current, row.optLong("size"))); if (!showTrash) Text(when (row.optString("second_copy_status")) { "verified" -> "Second copy verified"; "disconnected" -> "Second-copy drive disconnected"; else -> "Needs second copy" }, style = MaterialTheme.typography.labelSmall) }
                 }
             }
         }

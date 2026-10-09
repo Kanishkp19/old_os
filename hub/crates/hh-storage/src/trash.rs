@@ -50,6 +50,7 @@ impl StorageService {
                     modified_at: r.get(7)?,
                     path: rel.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default(),
                     last_verified_at: r.get(9)?,
+                    second_copy_status: String::new(),
                 })
             })
             .map_err(db_e)?

@@ -234,6 +234,8 @@ pub struct FileObject {
     pub modified_at: Option<i64>,
     pub path: String,
     pub last_verified_at: Option<i64>,
+    #[serde(default)]
+    pub second_copy_status: String, // verified | needs_copy | disconnected
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

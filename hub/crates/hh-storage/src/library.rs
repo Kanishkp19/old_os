@@ -51,18 +51,24 @@ impl StorageService {
             items.truncate(limit as usize);
             items.last().map(|f|serde_json::json!([sort,match column {"name"=>serde_json::json!(f.name),"size"=>serde_json::json!(f.size),_=>serde_json::json!(f.created_at)},f.id]).to_string())
         } else {None};
+        drop(st);
+        drop(c);
+        for file in &mut items { file.second_copy_status=self.file_second_copy_status(&file.id,&file.hash,file.size)?; }
         Ok(Page{items,next_cursor})
     }
 
     pub fn get_file(&self, id: &str) -> Result<FileObject> {
         let c = self.db.lock()?;
-        c.query_row(
+        let mut file=c.query_row(
             "SELECT id,name,category,mime,size,hash,created_at,modified_at,rel_path,last_verified_at
              FROM files WHERE id=?1 AND deleted_at IS NULL",
             params![id],
             file_object,
         )
-        .map_err(|_| Error::NotFound(format!("file {id}")))
+        .map_err(|_| Error::NotFound(format!("file {id}")))?;
+        drop(c);
+        file.second_copy_status=self.file_second_copy_status(&file.id,&file.hash,file.size)?;
+        Ok(file)
     }
 
     /// Absolute path on disk for content serving; jailed to the library.
@@ -149,6 +155,7 @@ fn file_object(r: &rusqlite::Row<'_>) -> std::result::Result<FileObject, rusqlit
         modified_at: r.get(7)?,
         path,
         last_verified_at: r.get(9)?,
+        second_copy_status: String::new(),
     })
 }
 

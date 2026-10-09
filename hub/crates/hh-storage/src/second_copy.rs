@@ -1,7 +1,7 @@
 //! Incremental verified external copies, independently retained after deletion.
 use hh_core::{Error,Result};
 use hh_core::time::now_ms;
-use rusqlite::params;
+use rusqlite::{params,OptionalExtension};
 use crate::{db_e,StorageService};
 
 impl StorageService {
@@ -64,10 +64,38 @@ impl StorageService {
         let configured=self.db.get_setting("second_copy.root")?.filter(|v|!v.is_empty()).map(std::path::PathBuf::from).or_else(||self.cfg.second_copy_root.clone());
         let connected=configured.as_deref().filter(|path|path.is_dir()).and_then(|path|std::fs::read_to_string(path.join(".homehub-drive-id")).ok()).map(|id|id.trim().to_owned()).filter(|id|id.parse::<ulid::Ulid>().is_ok());
         let c=self.db.lock()?;
-        let total:i64=c.query_row("SELECT COUNT(*) FROM files WHERE deleted_at IS NULL",[],|r|r.get(0)).map_err(db_e)?;
-        let covered:i64=if let Some(id)=&connected {c.query_row("SELECT COUNT(*) FROM files f WHERE f.deleted_at IS NULL AND EXISTS(SELECT 1 FROM second_copy_files s JOIN storage_roots r ON r.id=s.target_root_id WHERE s.file_id=f.id AND s.hash=f.hash AND s.size=f.size AND r.is_active=1 AND r.id=?1)",params![id],|r|r.get(0)).map_err(db_e)?}else{0};
-        let fresh:i64=if let Some(id)=&connected {c.query_row("SELECT COUNT(*) FROM files f WHERE f.deleted_at IS NULL AND EXISTS(SELECT 1 FROM second_copy_files s JOIN storage_roots r ON r.id=s.target_root_id WHERE s.file_id=f.id AND s.hash=f.hash AND s.size=f.size AND s.verified_at>=?2 AND r.is_active=1 AND r.id=?1)",params![id,now_ms()-24*60*60*1000],|r|r.get(0)).map_err(db_e)?}else{0};
-        Ok(serde_json::json!({"total_files":total,"covered_files":covered,"drive_connected":connected.is_some(),"all_protected":total>0&&total==covered,"freshly_verified":total>0&&total==fresh}))
+        let files:Vec<(String,String,u64)>=c.prepare("SELECT id,hash,size FROM files WHERE deleted_at IS NULL").map_err(db_e)?
+            .query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get::<_,i64>(2)? as u64))).map_err(db_e)?
+            .collect::<std::result::Result<_,_>>().map_err(db_e)?;
+        let latest_status:Option<String>=if let Some(id)=&connected {c.query_row("SELECT status FROM second_copy_runs WHERE target_root_id=?1 ORDER BY started_at DESC LIMIT 1",params![id],|r|r.get(0)).optional().map_err(db_e)?}else{None};
+        drop(c);
+        let mut covered=0usize;let mut fresh=0usize;
+        if let (Some(root),Some(id))=(configured.as_deref(),connected.as_deref()) {
+            for (file_id,hash,size) in &files {
+                if let Some(verified_at)=self.verified_copy_at(root,id,file_id,hash,*size)? {
+                    covered+=1;
+                    if verified_at>=now_ms()-24*60*60*1000 {fresh+=1;}
+                }
+            }
+        }
+        let complete=latest_status.as_deref()==Some("ok") && !files.is_empty() && files.len()==covered;
+        Ok(serde_json::json!({"total_files":files.len(),"covered_files":covered,"drive_connected":connected.is_some(),"all_protected":complete,"freshly_verified":complete&&files.len()==fresh}))
+    }
+
+    pub fn file_second_copy_status(&self,file_id:&str,hash:&str,size:u64)->Result<String>{
+        let configured=self.db.get_setting("second_copy.root")?.filter(|v|!v.is_empty()).map(std::path::PathBuf::from).or_else(||self.cfg.second_copy_root.clone());
+        let Some(root)=configured else {return Ok("needs_copy".into())};
+        let id=std::fs::read_to_string(root.join(".homehub-drive-id")).ok().map(|v|v.trim().to_owned()).filter(|v|v.parse::<ulid::Ulid>().is_ok());
+        let Some(id)=id else {return Ok("disconnected".into())};
+        Ok(if self.verified_copy_at(&root,&id,file_id,hash,size)?.is_some(){"verified"}else{"needs_copy"}.into())
+    }
+
+    fn verified_copy_at(&self,root:&std::path::Path,target_id:&str,file_id:&str,hash:&str,size:u64)->Result<Option<i64>>{
+        let row:Option<(String,i64)>={let c=self.db.lock()?;
+            c.query_row("SELECT s.rel_path,s.verified_at FROM second_copy_files s JOIN storage_roots r ON r.id=s.target_root_id WHERE s.file_id=?1 AND s.target_root_id=?2 AND s.hash=?3 AND s.size=?4 AND r.is_active=1",params![file_id,target_id,hash,size as i64],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_e)?};
+        let Some((rel,verified_at))=row else {return Ok(None)};
+        let path=match hh_core::paths::jail_join(root,&rel){Ok(path)=>path,Err(_)=>return Ok(None)};
+        Ok(path.metadata().ok().filter(|m|m.is_file()&&m.len()==size).map(|_|verified_at))
     }
 }
 

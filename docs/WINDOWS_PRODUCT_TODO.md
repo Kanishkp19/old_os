@@ -113,6 +113,10 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - Second-copy repair and coverage slice `7ba6648` was pushed on 2026-10-09.
 - Browser-history clearing slice `ec660bd` and private tab-session restoration slice `ce7cc9c` were pushed on 2026-10-09.
 - The approved-plan task inventory was expanded and pushed in `31d5fde` on 2026-10-09.
+- Safe browser address-bar search `e08f1f6` was pushed on 2026-10-09; the browser item remains partial until Windows/WebView2 validation.
+- Similar-photo singleton fix `d9fe037` and phase-ledger split `cb54583` were pushed on 2026-10-09; Phase 3 remains partial.
+- Config compatibility fixes `e1f67d7` and `b6a7af6` were pushed on 2026-10-09; Phase 0 remains partial pending the full build and contract gate.
+- Android pairing server-purpose fix `08b591d` and handoff update `98896c1` were pushed on 2026-10-09; pairing and Phase 1 remain partial pending broader failure tests.
 - Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.

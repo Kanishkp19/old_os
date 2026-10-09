@@ -166,6 +166,7 @@ pub(crate) fn verified_replace(src:&std::path::Path,dst:&std::path::Path,expecte
 /// Replace only with a fully verified same-volume temporary file.
 pub(crate) fn atomic_replace(src:&std::path::Path,dst:&std::path::Path)->Result<()> {
     #[cfg(not(windows))] {std::fs::rename(src,dst)?;}
+    #[cfg(unix)] if let Some(parent)=dst.parent(){std::fs::File::open(parent)?.sync_all()?;}
     #[cfg(windows)] {
         use std::os::windows::ffi::OsStrExt;
         #[link(name="kernel32")] extern "system" {fn ReplaceFileW(replaced:*const u16,replacement:*const u16,backup:*const u16,flags:u32,exclude:*mut std::ffi::c_void,reserved:*mut std::ffi::c_void)->i32;}

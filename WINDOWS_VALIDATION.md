@@ -21,3 +21,4 @@
 - UNVERIFIED: While Android's deletion dialog is open, try trashing, purging and moving the eligible Windows Hub copy; interrupt Android after the system result, then confirm the durable receipt controls local-freed bookkeeping.
 - UNVERIFIED: On Windows, inspect supported and unsupported physical disks, deny Storage Management access and stall its PowerShell provider; confirm health becomes Unknown without hanging or claiming a healthy drive.
 - UNVERIFIED: On Windows, fill and remove library/second-copy drives, trigger a health warning and corrupt a stored file; confirm distinct alerts appear once, measured conditions clear on recovery and integrity history stays visible.
+- UNVERIFIED: On Windows, run a scheduled bounded scrub with concurrent uploads, corrupt and remove library files, then interrupt repair before and after atomic replacement; confirm original/verified copies survive and later scrub batches rotate.

@@ -100,12 +100,21 @@ impl StorageService {
     fn finish_job(&self,id:&str,result:Result<Value>){let update=(||->Result<()>{let c=self.db.lock()?;let (status,value,error)=match result{Ok(v)=>("completed",Some(v.to_string()),None),Err(e)=>(if c.query_row("SELECT cancel_requested FROM jobs WHERE id=?1",params![id],|r|r.get::<_,i64>(0)).map_err(db_e)?!=0{"cancelled"}else{"failed"},None,Some(e.to_string()))};c.execute("UPDATE jobs SET status=?2,result=?3,error=?4,updated_at=?5 WHERE id=?1",params![id,status,value,error,now_ms()]).map_err(db_e)?;Ok(())})();if let Err(e)=update{tracing::error!(error=%e,"could not persist job outcome");}}
 
     pub fn start_maintenance(&self,kind:&str)->Result<Value> {
+        self.start_maintenance_limited(kind,1_000_000)
+    }
+    /// Nightly pass: at most 2% of live files, bounded so large libraries stay responsive.
+    pub fn start_scheduled_scrub(&self)->Result<Value> {
+        let total:i64={let c=self.db.lock()?;c.query_row("SELECT COUNT(*) FROM files WHERE deleted_at IS NULL",[],|r|r.get(0)).map_err(db_e)?};
+        let max_files=((total+49)/50).clamp(1,1000) as u32;
+        self.start_maintenance_limited("scrub",max_files)
+    }
+    fn start_maintenance_limited(&self,kind:&str,max_files:u32)->Result<Value> {
         if !["scrub","second_copy","duplicates"].contains(&kind){return Err(Error::BadRequest("maintenance kind".into()));}
-        let id=self.create_job(kind,json!({}))?;let service=self.clone();let job_id=id.clone();let kind=kind.to_string();
+        let id=self.create_job(kind,json!({"max_files":max_files}))?;let service=self.clone();let job_id=id.clone();let kind=kind.to_string();
         std::thread::spawn(move||{let result=(||->Result<Value>{
             service.job_progress(&job_id,"running",0,0,None)?;
             match kind.as_str(){
-                "scrub"=>{let(checked,failed)=service.scrub_with_job(1_000_000,Some(&job_id))?;Ok(json!({"checked":checked,"failed":failed}))},
+                "scrub"=>{let(checked,failed)=service.scrub_with_job(max_files,Some(&job_id))?;Ok(json!({"checked":checked,"failed":failed}))},
                 "second_copy"=>{let(copied,failed,run_id)=service.second_copy_with_job(Some(&job_id))?;Ok(json!({"copied":copied,"failed":failed,"run_id":run_id}))},
                 _=>{if service.cancelled(&job_id)?{return Err(Error::Conflict("cancelled".into()));}let exact=service.scan_duplicates()?;let similar=service.scan_similar()?;Ok(json!({"exact_groups":exact,"similar_groups":similar,"automatic_deletion":false}))}
             }

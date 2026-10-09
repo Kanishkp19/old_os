@@ -243,7 +243,7 @@ fn spawn_workers(state: AppState) {
                 let hours=s.db.get_setting("scrub.interval_hours").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(24).clamp(1,720);
                 let now=hh_core::time::now_ms();let last=s.db.get_setting("scrub.last_scheduled").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(0);
                 if now-last>=hours*3600*1000&&s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false){
-                    let storage=s.storage.clone();if matches!(tokio::task::spawn_blocking(move||storage.start_maintenance("scrub")).await,Ok(Ok(_))){let _=s.db.set_setting("scrub.last_scheduled",&now.to_string());}
+                    let storage=s.storage.clone();if matches!(tokio::task::spawn_blocking(move||storage.start_scheduled_scrub()).await,Ok(Ok(_))){let _=s.db.set_setting("scrub.last_scheduled",&now.to_string());}
                 }
             }
         });

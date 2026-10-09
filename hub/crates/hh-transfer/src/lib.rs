@@ -34,6 +34,12 @@ impl TransferEngine {
         Self { db, cfg, mutations: std::sync::Arc::new(std::sync::Mutex::new(())) }
     }
 
+    /// Wait for any in-flight chunk or finalization before acknowledging pause.
+    pub fn pause_barrier(&self) -> Result<()> {
+        let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;
+        Ok(())
+    }
+
     /// Create or resume an upload session (API_SPEC §5 `POST /transfers`).
     pub fn create(&self, device_id: &str, req: &CreateTransferRequest) -> Result<CreateTransferResponse> {
         let _guard = self.mutations.lock().map_err(|_| Error::Internal("transfer mutex poisoned".into()))?;

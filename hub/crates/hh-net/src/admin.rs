@@ -96,7 +96,7 @@ async fn save_settings(State(st): State<DashboardState>, Json(req): Json<Setting
             st.app.db.set_setting("second_copy.root",&target.to_string_lossy())?;
         } else { st.app.db.set_setting("second_copy.root","")?; }
     }
-    if let Some(value) = req.pause_sharing { set_pause(&st,value)?; }
+    if let Some(value) = req.pause_sharing { set_pause(&st,value).await?; }
     if let Some(value) = req.remote_enabled { st.app.db.set_setting("remote.enabled",if value {"true"} else {"false"})?; }
     if let Some(value) = req.setup_complete { st.app.db.set_setting("setup.complete",if value {"true"} else {"false"})?; }
     for (key,value) in [("screen.enabled",req.screen_enabled),("update.enabled",req.update_enabled)] {if let Some(v)=value{st.app.db.set_setting(key,if v{"true"}else{"false"})?;}}
@@ -107,20 +107,32 @@ async fn save_settings(State(st): State<DashboardState>, Json(req): Json<Setting
     st.app.db.audit(None,"settings_updated",None,None)?;
     settings(State(st)).await
 }
-fn set_pause(st:&DashboardState,value:bool)->Result<()> {
+async fn set_pause(st:&DashboardState,value:bool)->Result<()> {
     if !value {let c=st.app.db.lock()?;let changing:i64=c.query_row("SELECT COUNT(*) FROM jobs WHERE kind='library_move' AND status IN ('queued','running')",[],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))?;let path:Option<String>=c.query_row("SELECT path FROM storage_roots WHERE kind='library' AND is_active=1 LIMIT 1",[],|r|r.get(0)).ok();if changing>0||path.is_some_and(|p|std::path::PathBuf::from(p)!=st.app.cfg.library_dir()){return Err(Error::Conflict("restart Home Hub after finishing the library move".into()));}}
     st.app.db.set_setting("sharing.paused",if value {"true"} else {"false"})?;
     if value {
         st.app.pairing.close_window();
-        for session in st.app.stream.active_sessions() { st.app.stream.stop_session(&session.id)?; }
-        if let Some(helper) = &st.app.helper { let _ = helper.screen_stop();let _=helper.release_input(); }
-        st.app.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.clear();
+        let app = st.app.clone();
+        tokio::task::spawn_blocking(move || {
+            app.transfers.pause_barrier()?;
+            for session in app.stream.active_sessions() {
+                if let Err(error) = app.stream.stop_session(&session.id) {
+                    tracing::warn!(session_id = %session.id, %error, "screen stop during pause failed");
+                }
+            }
+            if let Some(helper) = &app.helper {
+                if let Err(error) = helper.screen_stop() { tracing::warn!(%error, "helper screen stop during pause failed"); }
+                if let Err(error) = helper.release_input() { tracing::warn!(%error, "input release during pause failed"); }
+            }
+            app.screen_owners.lock().map_err(|_|Error::Internal("screen mutex poisoned".into()))?.clear();
+            Ok::<(), Error>(())
+        }).await.map_err(|e|Error::Internal(e.to_string()))??;
     }
     st.app.events.emit("sharing.changed",json!({"paused":value}));
     st.app.db.audit(None,"sharing_pause",Some(if value {"true"} else {"false"}),None)
 }
 #[derive(Deserialize)] struct PauseReq { paused:bool }
-async fn pause(State(st):State<DashboardState>,Json(req):Json<PauseReq>)->AdminResult<StatusCode>{set_pause(&st,req.paused)?;Ok(StatusCode::NO_CONTENT)}
+async fn pause(State(st):State<DashboardState>,Json(req):Json<PauseReq>)->AdminResult<StatusCode>{set_pause(&st,req.paused).await?;Ok(StatusCode::NO_CONTENT)}
 async fn pair_pending(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!({"pending":if st.app.pairing.is_open(){st.app.pairing.pending()?}else{None}})))}
 #[derive(Deserialize)] struct PairConfirm {request_id:String,allow:bool}
 async fn pair_confirm(State(st):State<DashboardState>,Json(req):Json<PairConfirm>)->AdminResult<StatusCode>{st.app.pairing.confirm(&req.request_id,req.allow)?;Ok(StatusCode::NO_CONTENT)}
@@ -171,7 +183,7 @@ async fn job(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult
 async fn job_cancel(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{st.app.storage.cancel_job(&id)?;Ok(StatusCode::NO_CONTENT)}
 #[derive(Deserialize)]struct PathReq{path:String}
 async fn library_move(State(st):State<DashboardState>,Json(req):Json<PathReq>)->AdminResult<Json<Value>>{
-    set_pause(&st,true)?;
+    set_pause(&st,true).await?;
     if !st.app.db.list_transfers(None,Some("open"))?.is_empty()||!st.app.db.list_transfers(None,Some("verifying"))?.is_empty(){return Err(Error::Conflict("finish or cancel transfers before moving library".into()).into());}
     Ok(Json(st.app.storage.start_library_move(&req.path)?))
 }

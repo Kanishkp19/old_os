@@ -25,6 +25,6 @@ Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partia
     - Done test `staged_renewal_keeps_old_identity_until_activation`: the old cert remains usable before activation; activation revokes it and enables the new cert.
 - [~] Make chunk writes, verification, rename, database commit and response retries durable and synchronized. Code complete, untested in BUILD; Windows move durability remains unverified.
 - [~] Revalidate interrupted chunk state and make completion idempotent. Code complete, untested in BUILD; crash recovery validation remains.
-- [~] Handle changed sources, empty files, collisions, short writes, disk full and bounded concurrency.
+- [~] Handle changed sources, empty files, collisions, short writes, disk full and bounded concurrency. Code complete, untested in BUILD; Windows storage failure validation remains.
 - [~] Stream large downloads with Range support.
 - [~] Pause new sharing, safely stop or pause active work, and keep owner administration available.

@@ -50,7 +50,8 @@ impl TransferEngine {
         self.check_activity(device_id)?;
         let name = paths::sanitize_component(&req.name)?;
         let chunk_size = req.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE).clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
-        let chunk_count = req.size.div_ceil(chunk_size).max(1);
+        // An empty file has no chunks; it can go straight to whole-file verification.
+        let chunk_count = req.size.div_ceil(chunk_size);
 
         // Idempotency: same client_item_id + size → resume existing session (§6.3).
         if let Some(item) = &req.client_item_id {
@@ -101,12 +102,15 @@ impl TransferEngine {
 
         let transfer_id = ulid::Ulid::new().to_string();
         let tmp_path = self.cfg.tmp_dir().join(format!("{transfer_id}.part"));
-        std::fs::create_dir_all(self.cfg.tmp_dir())?;
+        std::fs::create_dir_all(self.cfg.tmp_dir()).map_err(storage_io)?;
 
         // Preallocate the .part file (TRD §6.1).
-        let f = OpenOptions::new().write(true).create_new(true).open(&tmp_path)?;
-        f.set_len(req.size)?;
-        f.sync_all()?;
+        let f = OpenOptions::new().write(true).create_new(true).open(&tmp_path).map_err(storage_io)?;
+        if let Err(error) = f.set_len(req.size).and_then(|_| f.sync_all()) {
+            drop(f);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(storage_io(error));
+        }
 
         if let Err(error) = self.db.insert_transfer(
             &transfer_id,
@@ -168,9 +172,9 @@ impl TransferEngine {
         }
 
         let tmp = t.tmp_path.clone().ok_or_else(|| Error::Internal("transfer has no tmp path".into()))?;
-        write_at(Path::new(&tmp), bytes, idx * t.chunk_size)?;
+        write_at(Path::new(&tmp), bytes, idx * t.chunk_size).map_err(storage_error)?;
         // SQLite must never advertise bytes that were not flushed to disk.
-        File::options().write(true).open(&tmp)?.sync_data()?;
+        File::options().write(true).open(&tmp)?.sync_data().map_err(storage_io)?;
         self.db.record_chunk(transfer_id, idx, &actual, bytes.len() as u64)?;
         Ok(())
     }
@@ -217,7 +221,7 @@ impl TransferEngine {
             Some(j) => j,
             None => {
                 let file = OpenOptions::new().read(true).write(true).open(&tmp)?;
-                file.sync_all()?;
+                file.sync_all().map_err(storage_io)?;
                 let computed = hash_file(&file)?;
                 if !computed.eq_ignore_ascii_case(root_hash) {
                     self.db.update_transfer_status(transfer_id,"open",Some("ROOT_HASH_MISMATCH"))?;
@@ -229,7 +233,7 @@ impl TransferEngine {
                     None => paths::category_dir(&category,None),
                 };
                 let dir = paths::jail_join(&self.cfg.library_dir(),&dir_rel)?;
-                std::fs::create_dir_all(&dir)?;
+                std::fs::create_dir_all(&dir).map_err(storage_io)?;
                 let name = paths::dedupe_name(&dir,&t.name);
                 let rel_path = format!("{dir_rel}/{name}");
                 let file_id = ulid::Ulid::new().to_string();
@@ -246,10 +250,10 @@ impl TransferEngine {
         let dest = paths::jail_join(&self.cfg.library_dir(),&rel_path)?;
         if tmp.exists() {
             if dest.exists() { return Err(Error::Conflict("finalization destination exists".into())); }
-            #[cfg(windows)] rename_write_through(&tmp, &dest)?;
-            #[cfg(not(windows))] {std::fs::hard_link(&tmp,&dest)?;std::fs::remove_file(&tmp)?;}
+            #[cfg(windows)] rename_write_through(&tmp, &dest).map_err(storage_error)?;
+            #[cfg(not(windows))] {std::fs::hard_link(&tmp,&dest).map_err(storage_io)?;std::fs::remove_file(&tmp)?;}
             #[cfg(unix)]
-            if let Some(parent) = dest.parent() { File::open(parent)?.sync_all()?; }
+            if let Some(parent) = dest.parent() { File::open(parent)?.sync_all().map_err(storage_io)?; }
         }
         let file = File::open(&dest)?;
         if file.metadata()?.len() != t.size || !hash_file(&file)?.eq_ignore_ascii_case(&computed) { return Err(Error::RootHashMismatch); }
@@ -439,6 +443,18 @@ impl TransferEngine {
 fn validate_hash(hash: &str) -> Result<()> {
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(Error::BadRequest("expected 64 hexadecimal hash characters".into())); }
     Ok(())
+}
+
+fn storage_io(error: std::io::Error) -> Error {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(28) { return Error::StorageFull; }
+    #[cfg(windows)]
+    if error.raw_os_error() == Some(112) { return Error::StorageFull; }
+    Error::Io(error)
+}
+
+fn storage_error(error: Error) -> Error {
+    match error { Error::Io(io) => storage_io(io), other => other }
 }
 
 fn chunk_len(file_size: u64, chunk_size: u64, idx: u64) -> u64 {

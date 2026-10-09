@@ -100,6 +100,7 @@ impl Error {
             self,
             Error::HashMismatch { .. }
                 | Error::RateLimited
+                | Error::StorageFull
                 | Error::StorageUnavailable(_)
                 | Error::Io(_)
         )

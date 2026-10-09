@@ -5,3 +5,4 @@
 - UNVERIFIED: Renew a near-expiry Android device certificate against Windows, lose the renewal response, retry with the old identity, then verify activation revokes only the old certificate.
 - UNVERIFIED: Interrupt Windows transfer finalization before and after the write-through move; restart and confirm exactly one verified library file and a committed database row.
 - UNVERIFIED: Crash during chunk writes and during a retryable finalization error on Windows; restart, confirm corrupt chunk bits are removed and a pending finalization survives cleanup for retry.
+- UNVERIFIED: Upload an empty file and a changed source on Windows, force disk full and short writes, then confirm no partial file appears in the library and clients receive retryable storage errors.

@@ -206,7 +206,7 @@ async fn upload_with_identity(hub: &str, path: &Path, identity_path: &Path) -> R
     }
     let transfer_id = created["transfer_id"].as_str().ok_or_else(|| anyhow!("no transfer_id"))?;
     let chunk_count = created["chunk_count"].as_u64().unwrap_or(0) as usize;
-    let expected_chunks = size.div_ceil(chunk_size as u64).max(1) as usize;
+    let expected_chunks = size.div_ceil(chunk_size as u64) as usize;
     if chunk_count != expected_chunks {
         return Err(anyhow!("unexpected transfer chunk count"));
     }

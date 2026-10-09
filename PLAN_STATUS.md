@@ -1,9 +1,9 @@
 # Windows Home Hub session handoff
-Current slice: Phase 1 pairing safety; QR-pinned Android trust now rejects client-only certificates.
-Done: `d9fe037` similar photos; `e1f67d7`, `b6a7af6` config; `08b591d` pairing; `cb54583`, `98896c1` ledgers pushed.
-Verified: Mac Rust workspace baseline, 14 hh-core tests, desktop check, Android debug unit suite.
-Next 1: Audit Phase 1 pairing expiry, attempt limits and consent with failure tests.
+Current slice: Phase 1 pairing safety; local QR, replay, consent, expiry, attempt, renewal and revoke tests pass.
+Done: `872c7a8` ledger reconciliation; `4f74add` API contract; `ba20b57` pairing safety pushed.
+Verified: Mac Rust workspace check/tests, Tauri tests/check, frontend check/test/build, Android debug tests/APK; pairing 12/5/6 crate tests.
+Next 1: Exercise live rogue-Hub token non-disclosure and active API/event/remote/screen cutoff on Windows and devices.
 Next 2: Audit transfer finalize/resume and Range behavior with fault tests.
 Next 3: Continue Phase 3 storage/import safety slices.
-Blockers: Windows/WebView2/installer/hardware validation, full Xcode, signing, soak and pilot need their environments or elapsed time.
-Last pushed commit: 98896c1; last verified source commit: 08b591d.
+Blockers: Windows/WebView2/installer/hardware validation, full Xcode, rustfmt/clippy, signing, soak and pilot require unavailable environments or tooling.
+Last verified implementation commit: ba20b57 (pushed to origin/implementation/windows-home-hub).

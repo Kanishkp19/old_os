@@ -18,3 +18,4 @@
 - UNVERIFIED: Browse Windows gallery months, inspect EXIF details, zoom and share full photos; on Android, play a verified video, zoom a verified photo and share an original, including an unsupported codec fallback.
 - UNVERIFIED: Upload HEIC/RAW and video originals to Windows, interrupt thumbnail writes, then confirm originals remain byte-identical and Android/Windows show honest unavailable previews while disk errors leave thumbnail work retryable.
 - UNVERIFIED: During Android cleanup review, change a selected local photo or remove/corrupt its Windows Hub copy; confirm fresh lease validation blocks the Android system deletion dialog.
+- UNVERIFIED: While Android's deletion dialog is open, try trashing, purging and moving the eligible Windows Hub copy; interrupt Android after the system result, then confirm the durable receipt controls local-freed bookkeeping.

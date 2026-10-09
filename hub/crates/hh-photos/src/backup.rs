@@ -250,8 +250,13 @@ impl PhotoService {
         if owner!=device_id {return Err(Error::ForbiddenScope("cleanup lease".into()));}
         if state=="completed" {return Ok(());}
         for client_id in freed {
-            let hash:String=tx.query_row("SELECT hash FROM cleanup_lease_items WHERE lease_id=?1 AND client_item_id=?2",params![id,client_id],|r|r.get(0)).map_err(|_|Error::BadRequest("item not in cleanup lease".into()))?;
-            tx.execute("UPDATE backup_items SET local_freed_at=?4 WHERE source_id=?1 AND client_item_id=?2 AND hash=?3 AND status='verified'",params![source,client_id,hash,now_ms()]).map_err(db_e)?;
+            let (file_id,hash,size):(String,String,i64)=tx.query_row("SELECT file_id,hash,size FROM cleanup_lease_items WHERE lease_id=?1 AND client_item_id=?2",params![id,client_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|Error::BadRequest("item not in cleanup lease".into()))?;
+            let backup_id:Option<String>=tx.query_row("SELECT id FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND file_id=?3 AND lower(hash)=lower(?4) AND status='verified'",params![source,client_id,file_id,hash],|r|r.get(0)).optional().map_err(db_e)?;
+            if let Some(backup_id)=backup_id {
+                if verify_file(&tx,&file_id,&hash,Some(size as u64)).is_ok() {
+                    tx.execute("UPDATE backup_items SET local_freed_at=?2 WHERE id=?1",params![backup_id,now_ms()]).map_err(db_e)?;
+                } else {invalidate_item(&tx,&backup_id)?;}
+            }
         }
         tx.execute("UPDATE cleanup_leases SET state='completed' WHERE id=?1",params![id]).map_err(db_e)?;
         tx.commit().map_err(db_e)?;

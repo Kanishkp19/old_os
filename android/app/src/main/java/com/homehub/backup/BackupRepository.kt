@@ -196,7 +196,8 @@ class BackupRepository @Inject constructor(
         }
         val persisted = JSONObject().put("lease_id", lease.getString("lease_id"))
             .put("client_review_id", review).put("hub_id", requireNotNull(trust.load()).hubId).put("items", mappings)
-        require(prefs.edit().putString("cleanup", persisted.toString()).remove("cleanup_review_id").remove("cleanup_request").commit())
+        require(prefs.edit().putString("cleanup", persisted.toString()).remove("cleanup_review_id")
+            .remove("cleanup_request").remove("cleanup_result").commit())
         refresh()
         try {
             // Recheck immediately before showing the system dialog. No provider
@@ -244,6 +245,14 @@ class BackupRepository @Inject constructor(
         }
         finishCleanup(true)
     }
+    /** Persist the Android result before network bookkeeping so a crash cannot invent success. */
+    fun recordCleanupSystemResult(approved: Boolean) {
+        val cleanup = JSONObject(requireNotNull(prefs.getString("cleanup", null)))
+        val receipt = JSONObject().put("lease_id", cleanup.getString("lease_id")).put("approved", approved)
+        require(prefs.edit().putString("cleanup_result", receipt.toString()).commit()) {
+            "Unable to save Android deletion result"
+        }
+    }
     suspend fun refreshRemoteReviews() {
         if (!ownSource()) return
         val source = requireNotNull(prefs.getString("source_id", null))
@@ -267,13 +276,17 @@ class BackupRepository @Inject constructor(
         require(cleanup.getString("hub_id") == requireNotNull(trust.load()).hubId)
         val mappings = cleanup.getJSONArray("items")
         val freed = JSONArray()
-        if (confirmed && !MediaAccess.partial(context) && MediaAccess.granted(context)) for (i in 0 until mappings.length()) {
+        val receipt = prefs.getString("cleanup_result", null)?.let(::JSONObject)
+        val systemConfirmed = confirmed && receipt?.optString("lease_id") == cleanup.getString("lease_id") &&
+            receipt?.optBoolean("approved") == true
+        if (systemConfirmed && !MediaAccess.partial(context) && MediaAccess.granted(context)) for (i in 0 until mappings.length()) {
             val row = mappings.getJSONObject(i)
             val missing = runCatching { context.contentResolver.query(Uri.parse(row.getString("uri")),
                 arrayOf(MediaStore.MediaColumns._ID), null, null, null)?.use { !it.moveToFirst() } == true }.getOrDefault(false)
             if (missing) freed.put(row.getString("client_item_id"))
         }
         hub.post("/v1/backup/cleanup-leases/${cleanup.getString("lease_id")}/complete", JSONObject().put("freed_client_item_ids", freed))
-        require(prefs.edit().remove("cleanup").remove("cleanup_review_id").remove("cleanup_request").commit()); refresh()
+        require(prefs.edit().remove("cleanup").remove("cleanup_review_id").remove("cleanup_request")
+            .remove("cleanup_result").commit()); refresh()
     }
 }

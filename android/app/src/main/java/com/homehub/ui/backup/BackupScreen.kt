@@ -58,7 +58,10 @@ fun BackupScreen(settingsOnly: Boolean = false, vm: BackupViewModel = hiltViewMo
         else vm.error.value = context.getString(R.string.backup_permission_required)
     }
     val systemDelete = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        vm.action { vm.backup.finishCleanup(result.resultCode == Activity.RESULT_OK) }
+        try {
+            vm.backup.recordCleanupSystemResult(result.resultCode == Activity.RESULT_OK)
+            vm.action { vm.backup.finishCleanup(true) }
+        } catch (e: Exception) { vm.error.value = com.homehub.ui.UserErrors.message(context, e) }
         reviewedUris = emptyList()
     }
     LaunchedEffect(Unit) { vm.backup.refresh(); if (vm.backup.settings.value.approved) vm.action { vm.backup.refreshRemoteReviews() } }

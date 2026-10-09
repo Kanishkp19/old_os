@@ -10,11 +10,19 @@ impl StorageService {
     pub fn scan_import(&self,paths:&[String])->Result<Value> {
         let files=discover(paths)?;
         let mut bytes=0u64;
-        for p in &files {bytes=bytes.saturating_add(p.metadata()?.len());}
-        Ok(json!({"files":files.len(),"bytes":bytes,"default_choice":"later","originals_preserved":true}))
+        let mut categories:std::collections::BTreeMap<String,(u64,u64)>=std::collections::BTreeMap::new();
+        for p in &files {
+            let size=p.metadata()?.len();bytes=bytes.saturating_add(size);
+            let name=p.file_name().map(|v|v.to_string_lossy()).unwrap_or_default();
+            let category=hh_core::paths::category_for_mime(Some(mime_for(&name))).to_string();
+            let entry=categories.entry(category).or_default();entry.0+=1;entry.1=entry.1.saturating_add(size);
+        }
+        let categories:std::collections::BTreeMap<_,_>=categories.into_iter().map(|(name,(files,bytes))|(name,json!({"files":files,"bytes":bytes}))).collect();
+        Ok(json!({"files":files.len(),"bytes":bytes,"categories":categories,"default_choice":"later","originals_preserved":true}))
     }
 
     pub fn start_import(&self,paths:Vec<String>,mode:&str)->Result<Value> {
+        if mode=="later" {return Ok(json!({"choice":"later","job":null}));}
         if mode!="copy" && mode!="keep" {return Err(Error::BadRequest("choose copy, keep or later".into()));}
         let id=self.create_job("import",json!({"paths":paths,"mode":mode}))?;
         let service=self.clone();let job_id=id.clone();let mode=mode.to_string();

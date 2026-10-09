@@ -177,7 +177,7 @@ async fn duplicate_resolve(State(st):State<DashboardState>,Path(id):Path<String>
 #[derive(Deserialize)]struct ImportReq{paths:Vec<String>,mode:Option<String>}
 fn validate_import(req:&ImportReq)->Result<()>{if req.paths.is_empty()||req.paths.len()>32{return Err(Error::BadRequest("choose 1 to 32 folders".into()));}Ok(())}
 async fn import_scan(State(st):State<DashboardState>,Json(req):Json<ImportReq>)->AdminResult<Json<Value>>{validate_import(&req)?;let svc=st.app.storage.clone();Ok(Json(tokio::task::spawn_blocking(move||svc.scan_import(&req.paths)).await.map_err(|e|Error::Internal(e.to_string()))??))}
-async fn import_start(State(st):State<DashboardState>,Json(req):Json<ImportReq>)->AdminResult<Json<Value>>{validate_import(&req)?;Ok(Json(st.app.storage.start_import(req.paths,req.mode.as_deref().unwrap_or("copy"))?))}
+async fn import_start(State(st):State<DashboardState>,Json(req):Json<ImportReq>)->AdminResult<Json<Value>>{validate_import(&req)?;Ok(Json(st.app.storage.start_import(req.paths,req.mode.as_deref().unwrap_or("later"))?))}
 async fn jobs(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(st.app.storage.list_jobs()?))}
 async fn job(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<Json<Value>>{Ok(Json(st.app.storage.job(&id)?))}
 async fn job_cancel(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResult<StatusCode>{st.app.storage.cancel_job(&id)?;Ok(StatusCode::NO_CONTENT)}

@@ -14,3 +14,4 @@
 - UNVERIFIED: Remove or resize a managed file and inspect Windows Storage; confirm visible category totals reflect disk metadata, missing files are counted, and trash reclaimable bytes reflect existing files only.
 - UNVERIFIED: On an Android device paired with a Windows Hub, add and edit MediaStore photos across two scans, interrupt one scan before cursor commit, then confirm the Room queue resumes without losing either item.
 - UNVERIFIED: Revoke and restore Android photo permission during scheduled backup to a Windows Hub; confirm the queue survives, foreground progress resumes, and the permission warning clears after success.
+- UNVERIFIED: Change a queued Android photo's size, hash or mtime during upload to a Windows Hub; confirm it requeues and only the new durable copy verifies, then remove, trash and corrupt Hub copies and confirm each becomes pending.

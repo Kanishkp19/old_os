@@ -137,7 +137,7 @@ impl PhotoService {
                  hash=excluded.hash,status=excluded.status,verified_at=excluded.verified_at,
                  expected_size=excluded.expected_size,
                  transfer_id=CASE WHEN backup_items.hash=excluded.hash AND backup_items.file_id=excluded.file_id THEN backup_items.transfer_id ELSE NULL END,
-                 local_freed_at=CASE WHEN backup_items.hash=excluded.hash THEN backup_items.local_freed_at ELSE NULL END",
+                 local_freed_at=CASE WHEN excluded.status='verified' AND backup_items.hash=excluded.hash THEN backup_items.local_freed_at ELSE NULL END",
                 params![ulid::Ulid::new().to_string(),source_id,item.client_item_id,found,item.hash,status,
                     if status=="verified" {Some(now_ms())} else {None},item.size as i64]).map_err(db_e)?;
             if status == "verified" { already += 1; } else { needed.push(item.client_item_id.clone()); }
@@ -168,7 +168,10 @@ impl PhotoService {
                 params![transfer_id,device_id,source_id,client_item_id,file_id,expected_hash],|r|r.get(0)).map_err(db_e)?;
             if finalized!=1 {return Err(Error::Conflict("backup transfer has not finalized".into()));}
         }
-        verify_file(&c,file_id,expected_hash,expected_size.map(|n|n as u64))?;
+        if let Err(e)=verify_file(&c,file_id,expected_hash,expected_size.map(|n|n as u64)) {
+            invalidate_item(&c,&id)?;
+            return Err(e);
+        }
         c.execute("UPDATE backup_items SET file_id=?2,hash=?3,status='verified',verified_at=?4,transfer_id=?5
             WHERE id=?1",params![id,file_id,expected_hash,now_ms(),transfer_id]).map_err(db_e)?;
         Ok(id)
@@ -177,9 +180,13 @@ impl PhotoService {
     /// Legacy bookkeeping remains safe but does not grant deletion permission.
     pub fn confirm_local_freed(&self, source_id:&str, client_item_id:&str)->Result<()> {
         let c=self.db.lock()?;
-        let row:(String,String)=c.query_row("SELECT file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified'",
-            params![source_id,client_item_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_e)?;
-        verify_file(&c,&row.0,&row.1,None)?;
+        let row:(String,Option<String>,Option<String>)=c.query_row("SELECT id,file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified'",
+            params![source_id,client_item_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_e)?;
+        let valid=match (&row.1,&row.2) {
+            (Some(file_id),Some(hash))=>verify_file(&c,file_id,hash,None),
+            _=>Err(Error::Conflict("backup copy is unavailable".into())),
+        };
+        if let Err(e)=valid {invalidate_item(&c,&row.0)?;return Err(e);}
         c.execute("UPDATE backup_items SET local_freed_at=?3 WHERE source_id=?1 AND client_item_id=?2",
             params![source_id,client_item_id,now_ms()]).map_err(db_e)?;
         Ok(())
@@ -204,13 +211,18 @@ impl PhotoService {
         tx.execute("INSERT INTO cleanup_leases(id,source_id,device_id,created_at,client_review_id) VALUES(?1,?2,?3,?4,?5)",params![lease_id,source_id,device_id,now_ms(),review]).map_err(db_e)?;
         let mut items=Vec::new();
         for client_id in ids {
-            let row: Option<(String,String)> = tx.query_row("SELECT file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified' AND local_freed_at IS NULL",
-                params![source_id,client_id],|r|Ok((r.get(0)?,r.get(1)?))).ok();
-            if let Some((file_id,hash))=row {
-                if let Ok(size)=verify_file(&tx,&file_id,&hash,None) {
-                    tx.execute("INSERT OR IGNORE INTO cleanup_lease_items(lease_id,file_id,client_item_id,hash,size) VALUES(?1,?2,?3,?4,?5)",params![lease_id,file_id,client_id,hash,size as i64]).map_err(db_e)?;
-                    items.push(CleanupItem {client_item_id:client_id.clone(),file_id,hash,size});
+            let row: Option<(String,Option<String>,Option<String>)> = tx.query_row("SELECT id,file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified' AND local_freed_at IS NULL",
+                params![source_id,client_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_e)?;
+            if let Some((backup_id,Some(file_id),Some(hash)))=&row {
+                match verify_file(&tx,&file_id,&hash,None) {
+                    Ok(size)=>{
+                        tx.execute("INSERT OR IGNORE INTO cleanup_lease_items(lease_id,file_id,client_item_id,hash,size) VALUES(?1,?2,?3,?4,?5)",params![lease_id,file_id,client_id,hash,size as i64]).map_err(db_e)?;
+                        items.push(CleanupItem {client_item_id:client_id.clone(),file_id:file_id.clone(),hash:hash.clone(),size});
+                    }
+                    Err(_)=>invalidate_item(&tx,&backup_id)?,
                 }
+            } else if let Some((backup_id,_,_))=row {
+                invalidate_item(&tx,&backup_id)?;
             }
         }
         tx.commit().map_err(db_e)?;
@@ -242,6 +254,7 @@ impl PhotoService {
 
     pub fn summary(&self, source_id: &str) -> Result<BackupSummary> {
         let c = self.db.lock()?;
+        recheck_verified(&c,source_id)?;
         let mut st = c
             .prepare("SELECT status, COUNT(*), COALESCE(SUM(CASE WHEN b.local_freed_at IS NULL THEN f.size ELSE 0 END),0)
                       FROM backup_items b LEFT JOIN files f ON f.id = b.file_id
@@ -282,6 +295,28 @@ fn read_cleanup_lease(c:&rusqlite::Connection,id:&str)->Result<CleanupLease> {
     let items=st.query_map(params![id],|r|Ok(CleanupItem{client_item_id:r.get(0)?,file_id:r.get(1)?,hash:r.get(2)?,size:r.get::<_,i64>(3)? as u64})).map_err(db_e)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
     let review=c.query_row("SELECT client_review_id FROM cleanup_leases WHERE id=?1",params![id],|r|r.get::<_,Option<String>>(0)).map_err(db_e)?;
     Ok(CleanupLease{lease_id:id.to_owned(),items,client_review_id:review})
+}
+
+fn invalidate_item(c:&rusqlite::Connection,id:&str)->Result<()> {
+    c.execute("UPDATE backup_items SET status='pending',file_id=NULL,transfer_id=NULL,verified_at=NULL,local_freed_at=NULL WHERE id=?1",[id]).map_err(db_e)?;
+    Ok(())
+}
+
+fn recheck_verified(c:&rusqlite::Connection,source_id:&str)->Result<()> {
+    let rows:Vec<(String,Option<String>,Option<String>,Option<i64>)>={
+        let mut st=c.prepare("SELECT id,file_id,hash,expected_size FROM backup_items WHERE source_id=?1 AND status='verified'").map_err(db_e)?;
+        let rows=st.query_map([source_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_e)?
+            .collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
+        rows
+    };
+    for (id,file_id,hash,size) in rows {
+        let valid=match (file_id,hash) {
+            (Some(file_id),Some(hash))=>verify_file(c,&file_id,&hash,size.map(|n|n as u64)).is_ok(),
+            _=>false,
+        };
+        if !valid {invalidate_item(c,&id)?;}
+    }
+    Ok(())
 }
 
 fn verify_file(c:&rusqlite::Connection,id:&str,hash:&str,size:Option<u64>)->Result<u64> {

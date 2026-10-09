@@ -790,7 +790,9 @@ async fn backup_summary(
 ) -> ApiResult<Json<hh_photos::backup::BackupSummary>> {
     let peer = ident(ext)?;
     require_scope(&peer, "photos")?;
-    Ok(Json(s.photos.summary(&id)?))
+    let photos=s.photos.clone();
+    Ok(Json(tokio::task::spawn_blocking(move ||photos.summary(&id))
+        .await.map_err(|e|Error::Internal(e.to_string()))??))
 }
 
 /// The caller's own backup sources (free-storage flow, W1.3).

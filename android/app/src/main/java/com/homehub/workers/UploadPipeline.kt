@@ -75,6 +75,23 @@ class UploadPipeline @Inject constructor(
             if (item.state == QueueItem.CANCELLED) throw CancellationException("Transfer cancelled")
             onProgress(item)
         }
+        suspend fun requeueChangedSource(uri: Uri) {
+            item.transferId?.let { runCatching { hub.delete("/v1/transfers/$it") } }
+            val meta = SourceReader.meta(context, uri)
+            val (hash, size) = SourceReader.hash(context, uri)
+            val refreshed = meta.copy(size = size)
+            val clientId = SourceReader.identity(uri, refreshed)
+            if (item.kind == "backup") {
+                val source = requireNotNull(item.backupSourceId)
+                hub.post("/v1/backup/sources/$source/diff", org.json.JSONArray().put(JSONObject()
+                    .put("client_item_id", clientId).put("size", size)
+                    .put("taken_at", item.takenAt).put("hash", hash)))
+            }
+            queueDao.refreshSource(item.id, size, meta.modified, clientId, hash, null, 0)
+            item = queueDao.get(item.id)?.takeIf { it.state != QueueItem.CANCELLED }
+                ?: throw CancellationException("Transfer cancelled")
+            set(QueueItem.QUEUED, transferId = null, rootHash = hash, attempts = 0)
+        }
 
         try {
             set(QueueItem.CONNECTING)
@@ -86,20 +103,8 @@ class UploadPipeline @Inject constructor(
             if ((item.rootHash != null && item.rootHash != hash) ||
                 (item.size >= 0 && item.size != actualSize) ||
                 (item.sourceMtime != null && meta.modified != item.sourceMtime)) {
-                item.transferId?.let { runCatching { hub.delete("/v1/transfers/$it") } }
-                // Changing generations cannot resume chunks from the previous source.
-                val refreshed = meta.copy(size = actualSize)
-                item = item.copy(size = actualSize, sourceMtime = meta.modified,
-                    clientItemId = SourceReader.identity(uri, refreshed), rootHash = hash,
-                    transferId = null, state = QueueItem.CONNECTING, bytesSent = 0)
-                queueDao.refreshSource(item.id, item.size, item.sourceMtime, item.clientItemId, item.rootHash, item.transferId, item.bytesSent)
-                item = queueDao.get(item.id)?.takeIf { it.state != QueueItem.CANCELLED } ?: throw CancellationException("Transfer cancelled")
-                if (item.kind == "backup") {
-                    val source = requireNotNull(item.backupSourceId)
-                    hub.post("/v1/backup/sources/$source/diff", org.json.JSONArray().put(JSONObject()
-                        .put("client_item_id", item.clientItemId).put("size", actualSize)
-                        .put("taken_at", item.takenAt).put("hash", hash)))
-                }
+                requeueChangedSource(uri)
+                return
             } else if (item.rootHash == null || item.size < 0) {
                 item = item.copy(rootHash = hash, size = actualSize)
                 queueDao.refreshSource(item.id, item.size, item.sourceMtime, item.clientItemId, item.rootHash, item.transferId, item.bytesSent)
@@ -142,8 +147,12 @@ class UploadPipeline @Inject constructor(
 
             set(QueueItem.VERIFYING)
             val current = SourceReader.hash(context, uri)
-            if (current.first != item.rootHash || current.second != item.size)
-                throw PermException(context.getString(com.homehub.R.string.error_source_changed))
+            val finalMeta = SourceReader.meta(context, uri)
+            if (current.first != item.rootHash || current.second != item.size ||
+                (item.sourceMtime != null && finalMeta.modified != item.sourceMtime)) {
+                requeueChangedSource(uri)
+                return
+            }
             val completed = hub.complete(transferId, item.rootHash!!)
             require(completed.optBoolean("verified") && completed.getString("hash") == item.rootHash
                 && completed.getLong("size") == item.size) { "Home has not verified this copy" }
@@ -156,6 +165,18 @@ class UploadPipeline @Inject constructor(
             throw e
         } catch (e: java.io.FileNotFoundException) {
             set(QueueItem.FAILED_PERM, error = context.getString(com.homehub.R.string.error_missing))
+        } catch (e: SourceChangedException) {
+            try { requeueChangedSource(Uri.parse(item.sourceUri)) }
+            catch (missing: java.io.FileNotFoundException) {
+                set(QueueItem.FAILED_PERM, transferId = null, error = context.getString(com.homehub.R.string.error_missing))
+            } catch (denied: SecurityException) {
+                set(QueueItem.FAILED_PERM, transferId = null, error = context.getString(com.homehub.R.string.error_access))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (retry: Exception) {
+                set(QueueItem.FAILED_RETRY, transferId = null, nextAttemptAt = now() + 60_000,
+                    error = com.homehub.ui.UserErrors.message(context, retry))
+            }
         } catch (e: SecurityException) {
             set(QueueItem.FAILED_PERM, error = context.getString(com.homehub.R.string.error_access))
         } catch (e: PermException) {
@@ -186,7 +207,7 @@ class UploadPipeline @Inject constructor(
                 var filled = 0
                 while (filled < expected) {
                     val n = input.read(buffer, filled, expected - filled)
-                    if (n < 0) throw PermException(context.getString(com.homehub.R.string.error_source_changed))
+                    if (n < 0) throw SourceChangedException()
                     filled += n
                 }
                 if (!isCovered(idx, have)) {
@@ -201,7 +222,7 @@ class UploadPipeline @Inject constructor(
                 queueDao.setBytes(item.id, bytes, System.currentTimeMillis())
                 onProgress(item.copy(bytesSent = bytes, state = QueueItem.UPLOADING))
             }
-            if (input.read() != -1) throw PermException(context.getString(com.homehub.R.string.error_source_changed))
+            if (input.read() != -1) throw SourceChangedException()
         }
     }
 
@@ -217,4 +238,5 @@ class UploadPipeline @Inject constructor(
     }
 
     private class PermException(msg: String) : Exception(msg)
+    private class SourceChangedException : Exception()
 }

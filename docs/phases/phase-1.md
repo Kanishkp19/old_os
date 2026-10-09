@@ -20,10 +20,10 @@ Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partia
 - [~] Apply scope, status and ownership checks and revoke active API/event/remote/screen sessions promptly. Code complete, untested in BUILD; live cutoff validation remains.
   - [x] Revocation regression slice: SQLite rejects current and staged identities after device removal; live API/SSE/remote session cutoff remains in validation.
     - Done test `revoked_device_rejects_current_and_pending_serials`: revocation blocks both current and staged renewal identities.
-- [~] Persist certificate renewal and handle old certificates correctly.
+- [~] Persist certificate renewal and handle old certificates correctly. Code complete, untested in BUILD; real client retry validation remains.
   - [x] Renewal regression slice: SQLite keeps the old identity until new-certificate activation, then revokes it; real client retry remains in validation.
     - Done test `staged_renewal_keeps_old_identity_until_activation`: the old cert remains usable before activation; activation revokes it and enables the new cert.
-- [~] Make chunk writes, verification, rename, database commit and response retries durable and synchronized.
+- [~] Make chunk writes, verification, rename, database commit and response retries durable and synchronized. Code complete, untested in BUILD; Windows move durability remains unverified.
 - [~] Revalidate interrupted chunk state and make completion idempotent.
 - [~] Handle changed sources, empty files, collisions, short writes, disk full and bounded concurrency.
 - [~] Stream large downloads with Range support.

@@ -246,9 +246,10 @@ impl TransferEngine {
         let dest = paths::jail_join(&self.cfg.library_dir(),&rel_path)?;
         if tmp.exists() {
             if dest.exists() { return Err(Error::Conflict("finalization destination exists".into())); }
-            #[cfg(windows)] std::fs::rename(&tmp,&dest)?;
+            #[cfg(windows)] rename_write_through(&tmp, &dest)?;
             #[cfg(not(windows))] {std::fs::hard_link(&tmp,&dest)?;std::fs::remove_file(&tmp)?;}
-            if let Some(parent) = dest.parent() { if let Ok(f) = File::open(parent) { let _ = f.sync_all(); } }
+            #[cfg(unix)]
+            if let Some(parent) = dest.parent() { File::open(parent)?.sync_all()?; }
         }
         let file = File::open(&dest)?;
         if file.metadata()?.len() != t.size || !hash_file(&file)?.eq_ignore_ascii_case(&computed) { return Err(Error::RootHashMismatch); }
@@ -455,6 +456,22 @@ fn write_at(path: &Path, bytes: &[u8], offset: u64) -> Result<()> {
     use std::os::unix::fs::FileExt;
     let f = OpenOptions::new().write(true).open(path)?;
     f.write_all_at(bytes, offset)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn rename_write_through(from: &Path, to: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+    }
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    // No REPLACE_EXISTING: a colliding library file must never be overwritten.
+    let moved = unsafe { MoveFileExW(from_wide.as_ptr(), to_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if moved == 0 { return Err(std::io::Error::last_os_error().into()); }
     Ok(())
 }
 

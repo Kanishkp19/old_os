@@ -17,6 +17,9 @@ class PinnedCaTrustManager(private val ca: X509Certificate) : X509TrustManager {
         chain[0].verify(ca.publicKey)
         if (chain[0].issuerX500Principal != ca.subjectX500Principal)
             throw CertificateException("Home certificate issuer mismatch")
+        val purposes = chain[0].extendedKeyUsage
+        if (purposes != null && "1.3.6.1.5.5.7.3.1" !in purposes)
+            throw CertificateException("Home certificate is not valid for server use")
     }
     override fun getAcceptedIssuers() = arrayOf(ca)
     companion object {

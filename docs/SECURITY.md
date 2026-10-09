@@ -66,7 +66,7 @@ Out of scope (v1): nation-state attackers, compromised Windows kernel, malicious
 
 - Window opens only when user clicks **Pair a device** (tray/dashboard). Closes after success or 5 minutes.
 - Token 128-bit random; stored hashed; burned on use.
-- CA fingerprint in QR defeats LAN MITM (client verifies chain before sending token).
+- CA fingerprint in QR defeats LAN MITM (client verifies chain and server-certificate purpose before sending token).
 - Manual code mode (6-digit, 2-min TTL) **requires** explicit on-Hub confirmation prompt because digits are low-entropy; max 3 attempts.
 - All pairing events recorded in `audit_log`.
 

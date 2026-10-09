@@ -112,15 +112,41 @@ impl Config {
         Ok(())
     }
 
-    pub fn load_or_create(path:&std::path::Path, defaults:Self)->Result<Self>{
-        match std::fs::read_to_string(path){
-            Ok(text)=>serde_json::from_str(&text).map_err(|e|Error::Internal(format!("config parse: {e}"))),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{defaults.save(path)?;Ok(defaults)},
-            Err(e)=>Err(e.into()),
+    pub fn load_or_create(path: &std::path::Path, defaults: Self) -> Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let mut saved: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| Error::Internal(format!("config parse: {e}")))?;
+                let default_values = serde_json::to_value(defaults)
+                    .map_err(|e| Error::Internal(format!("config defaults: {e}")))?;
+                fill_missing(&mut saved, default_values);
+                serde_json::from_value(saved)
+                    .map_err(|e| Error::Internal(format!("config parse: {e}")))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                defaults.save(path)?;
+                Ok(defaults)
+            }
+            Err(e) => Err(e.into()),
         }
     }
     pub fn load_or_default(path: &std::path::Path) -> Result<Self> { Self::load_or_create(path,Self::default()) }
 
+}
+
+fn fill_missing(saved: &mut serde_json::Value, defaults: serde_json::Value) {
+    if let (serde_json::Value::Object(saved), serde_json::Value::Object(defaults)) =
+        (saved, defaults)
+    {
+        for (key, value) in defaults {
+            match saved.entry(key) {
+                serde_json::map::Entry::Vacant(entry) => {
+                    entry.insert(value);
+                }
+                serde_json::map::Entry::Occupied(mut entry) => fill_missing(entry.get_mut(), value),
+            }
+        }
+    }
 }
 
 pub fn atomic_replace(source:&std::path::Path,destination:&std::path::Path)->Result<()> {
@@ -174,6 +200,41 @@ fn default_hub_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::Config;
+
+    #[test]
+    fn load_or_create_honors_supplied_defaults() {
+        let dir = std::env::temp_dir().join(format!("hh-config-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"hub_name":"Existing Hub"}"#).expect("write old config");
+        let mut defaults = Config::default();
+        defaults.data_dir = dir.join("selected-data");
+        defaults.library_root = dir.join("selected-library");
+        defaults.log_dir = dir.join("selected-logs");
+
+        let result = Config::load_or_create(&path, defaults.clone());
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
+        let loaded = result.expect("load old config");
+        assert_eq!(loaded.hub_name, "Existing Hub");
+        assert_eq!(loaded.data_dir, defaults.data_dir);
+        assert_eq!(loaded.library_root, defaults.library_root);
+        assert_eq!(loaded.log_dir, defaults.log_dir);
+    }
+
+    #[test]
+    fn invalid_config_does_not_overwrite() {
+        let dir = std::env::temp_dir().join(format!("hh-config-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let path = dir.join("config.json");
+        let original = b"{invalid json";
+        std::fs::write(&path, original).expect("write invalid config");
+
+        let result = Config::load_or_create(&path, Config::default());
+        let retained = std::fs::read(&path).expect("read invalid config");
+        std::fs::remove_dir_all(&dir).expect("remove test directory");
+        assert!(result.is_err());
+        assert_eq!(retained, original);
+    }
 
     #[test]
     fn partial_feature_flags_keep_safe_defaults() {

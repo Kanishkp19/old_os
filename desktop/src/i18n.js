@@ -1,6 +1,9 @@
 export const routes = ['Home','Photos','Files','Transfers','Storage','Remote','Browser','YouTube','Music','Notes','Calculator','Devices','Hardware','Settings'];
 export const icons = ['⌂','▧','▤','⇄','◴','⌘','◎','▶','♫','✎','+','▣','⚙','☷'];
 const hi = {
+  'Similar photos':'मिलती-जुलती तस्वीरें',
+  'Scan for similar photos':'मिलती-जुलती तस्वीरें खोजें',
+  'These are suggestions only. No photos are removed automatically.':'ये केवल सुझाव हैं। कोई तस्वीर अपने आप नहीं हटाई जाती।',
   'Address or search':'पता या खोज',
   'Searches open DuckDuckGo in a separate website window.':'खोज DuckDuckGo की अलग वेबसाइट विंडो में खुलती है।',
   'Restore previous tabs':'पिछले टैब फिर खोलें',

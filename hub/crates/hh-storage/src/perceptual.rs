@@ -62,6 +62,13 @@ pub struct SimilarGroup {
     pub phash: String,
     pub reclaimable_bytes: u64,
     pub file_ids: Vec<String>,
+    pub files: Vec<SimilarFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SimilarFile {
+    pub id: String,
+    pub name: String,
 }
 
 impl StorageService {
@@ -146,18 +153,20 @@ impl StorageService {
                     phash: r.get(1)?,
                     reclaimable_bytes: r.get::<_, i64>(2)? as u64,
                     file_ids: vec![],
+                    files: vec![],
                 })
             })
             .map_err(db_e)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_e)?;
         for g in &mut groups {
-            let mut st = c.prepare("SELECT file_id FROM duplicate_members WHERE group_id=?1").map_err(db_e)?;
-            g.file_ids = st
-                .query_map(params![g.id], |r| r.get(0))
+            let mut st = c.prepare("SELECT f.id,f.name FROM duplicate_members m JOIN files f ON f.id=m.file_id WHERE m.group_id=?1 AND f.deleted_at IS NULL").map_err(db_e)?;
+            g.files = st
+                .query_map(params![g.id], |r| Ok(SimilarFile{id:r.get(0)?,name:r.get(1)?}))
                 .map_err(db_e)?
-                .collect::<std::result::Result<Vec<String>, _>>()
+                .collect::<std::result::Result<Vec<SimilarFile>, _>>()
                 .map_err(db_e)?;
+            g.file_ids=g.files.iter().map(|f|f.id.clone()).collect();
         }
         Ok(groups)
     }

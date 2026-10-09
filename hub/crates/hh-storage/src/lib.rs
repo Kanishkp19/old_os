@@ -44,6 +44,8 @@ pub struct LibrarySummary {
     pub free_bytes: u64,
     pub total_bytes: u64,
     pub copies: u8, // 1 = library only, 2 = second copy configured
+    pub reclaimable_trash_bytes: u64,
+    pub missing_files: u64,
 }
 
 impl StorageService {
@@ -52,32 +54,42 @@ impl StorageService {
     }
 
     pub fn library_summary(&self) -> Result<LibrarySummary> {
-        let c = self.db.lock()?;
-        let mut st = c
-            .prepare(
-                "SELECT category, COUNT(*), COALESCE(SUM(size),0) FROM files
-                 WHERE deleted_at IS NULL GROUP BY category",
-            )
-            .map_err(|e| hh_core::Error::Db(e.to_string()))?;
-        let categories = st
-            .query_map([], |r| {
-                Ok(CategorySummary {
-                    category: r.get(0)?,
-                    count: r.get::<_, i64>(1)? as u64,
-                    bytes: r.get::<_, i64>(2)? as u64,
-                })
-            })
-            .map_err(|e| hh_core::Error::Db(e.to_string()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| hh_core::Error::Db(e.to_string()))?;
-        drop(st);
-        drop(c);
+        let rows:Vec<(String,String,String,bool,bool)>={
+            let c=self.db.lock()?;
+            let mut st=c.prepare("SELECT f.category,r.path,f.rel_path,f.deleted_at IS NOT NULL,f.source_mode='keep_in_place' FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE r.is_active=1")
+                .map_err(|e|hh_core::Error::Db(e.to_string()))?;
+            let rows=st.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))
+                .map_err(|e|hh_core::Error::Db(e.to_string()))?
+                .collect::<std::result::Result<_,_>>().map_err(|e|hh_core::Error::Db(e.to_string()))?;
+            rows
+        };
+        let mut totals:std::collections::BTreeMap<String,(u64,u64)>=std::collections::BTreeMap::new();
+        let mut reclaimable_trash_bytes=0u64;let mut missing_files=0u64;
+        for (category,root,rel,deleted,external) in rows {
+            let path=match hh_core::paths::jail_join(std::path::Path::new(&root),&rel) {
+                Ok(path)=>path,
+                Err(hh_core::Error::Io(e)) if e.kind()==std::io::ErrorKind::NotFound=>{missing_files+=1;continue;},
+                Err(error)=>return Err(error),
+            };
+            let size=match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_file()=>meta.len(),
+                Ok(_)=>{missing_files+=1;continue;},
+                Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{missing_files+=1;continue;},
+                Err(e)=>return Err(e.into()),
+            };
+            if deleted {
+                if !external {reclaimable_trash_bytes=reclaimable_trash_bytes.saturating_add(size);}
+            } else {
+                let entry=totals.entry(category).or_default();entry.0+=1;entry.1=entry.1.saturating_add(size);
+            }
+        }
+        let categories=totals.into_iter().map(|(category,(count,bytes))|CategorySummary{category,count,bytes}).collect();
 
         let free = fs2::free_space(&self.cfg.library_root).unwrap_or(0);
         let total = fs2::total_space(&self.cfg.library_root).unwrap_or(0);
         let coverage=self.copy_coverage()?;
         let copies=if coverage["all_protected"].as_bool()==Some(true){2}else{1};
-        Ok(LibrarySummary { categories, free_bytes: free, total_bytes: total, copies })
+        Ok(LibrarySummary { categories, free_bytes: free, total_bytes: total, copies, reclaimable_trash_bytes, missing_files })
     }
 
     /// Free-space alert thresholds (TRD §7.4): warn 15%, critical 5%.

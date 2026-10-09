@@ -9,4 +9,4 @@ Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partia
 - [~] Move libraries with space checks, progress, verification and interruption recovery. Code complete, untested in BUILD; Windows switch and recovery remain unverified.
 - [~] Review exact duplicates before cleanup to trash. Code complete, untested in BUILD; current bytes are rehashed before an atomic trash decision.
 - [~] Suggest similar photos without automatic deletion. Code complete, untested in BUILD; owner UI shows read-only groups.
-- [~] Derive storage totals and reclaimable space from actual file state.
+- [~] Derive storage totals and reclaimable space from actual file state. Code complete, untested in BUILD; missing files are reported separately.

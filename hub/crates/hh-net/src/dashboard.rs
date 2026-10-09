@@ -125,7 +125,8 @@ async fn css() -> impl IntoResponse {
 async fn overview(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
     let (hub_id, name) = st.app.db.hub_identity().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let sum = st.app.storage.library_summary().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let storage=st.app.storage.clone();
+    let sum=tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let devices = st.app.db.list_devices().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let active = st.app.db.list_transfers(None, Some("open")).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
@@ -192,13 +193,16 @@ async fn pair_qr(State(st): State<DashboardState>, headers: HeaderMap, Query(_q)
 
 async fn storage(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let sum = st.app.storage.library_summary().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let storage=st.app.storage.clone();
+    let sum=tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let health = st.app.storage.health_summary().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
         "categories": sum.categories,
         "free_bytes": sum.free_bytes,
         "total_bytes": sum.total_bytes,
         "copies": sum.copies,
+        "reclaimable_trash_bytes": sum.reclaimable_trash_bytes,
+        "missing_files": sum.missing_files,
         "disks": health,
     })))
 }

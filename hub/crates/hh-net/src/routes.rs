@@ -250,7 +250,8 @@ async fn ping(Query(q): Query<PingQ>) -> Response {
 }
 
 async fn get_status(State(s): State<AppState>) -> ApiResult<Json<HubStatus>> {
-    let sum = s.storage.library_summary()?;
+    let storage=s.storage.clone();
+    let sum=tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|e|Error::Internal(e.to_string()))??;
     let active = s.db.list_transfers(None, Some("open"))?.len() as u32;
     let health = s
         .storage
@@ -673,7 +674,8 @@ async fn library_summary(
 ) -> ApiResult<Json<hh_storage::LibrarySummary>> {
     let peer = ident(ext)?;
     require_scope(&peer, "files")?;
-    Ok(Json(s.storage.library_summary()?))
+    let storage=s.storage.clone();
+    Ok(Json(tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|e|Error::Internal(e.to_string()))??))
 }
 
 // ---- photos & backup ----

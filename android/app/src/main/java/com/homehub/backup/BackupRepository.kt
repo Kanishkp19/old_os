@@ -194,7 +194,8 @@ class BackupRepository @Inject constructor(
             if (item.hash != row.getString("hash") || item.size != row.getLong("size")) continue
             mappings.put(JSONObject(row.toString()).put("uri", item.uri.toString()))
         }
-        val persisted = JSONObject().put("lease_id", lease.getString("lease_id")).put("hub_id", requireNotNull(trust.load()).hubId).put("items", mappings)
+        val persisted = JSONObject().put("lease_id", lease.getString("lease_id"))
+            .put("client_review_id", review).put("hub_id", requireNotNull(trust.load()).hubId).put("items", mappings)
         require(prefs.edit().putString("cleanup", persisted.toString()).remove("cleanup_review_id").remove("cleanup_request").commit())
         refresh()
         try {
@@ -208,8 +209,28 @@ class BackupRepository @Inject constructor(
         val cleanup = JSONObject(requireNotNull(prefs.getString("cleanup", null)))
         require(cleanup.getString("hub_id") == requireNotNull(trust.load()).hubId)
         val mappings = cleanup.getJSONArray("items")
+        if (mappings.length() == 0) return@withContext emptyList()
+        val source = requireNotNull(prefs.getString("source_id", null))
+        val leaseId = cleanup.getString("lease_id")
+        val review = cleanup.optString("client_review_id").takeIf { it.isNotBlank() && it != "null" }
+            ?: hub.get("/v1/backup/sources/$source/cleanup").getJSONArray("items").let { leases ->
+                (0 until leases.length()).map(leases::getJSONObject)
+                    .firstOrNull { it.optString("lease_id") == leaseId }?.optString("client_review_id")
+            }
+        require(!review.isNullOrBlank()) { "Storage review is no longer active" }
+        val ids = JSONArray((0 until mappings.length()).map { mappings.getJSONObject(it).getString("client_item_id") })
+        val fresh = hub.post("/v1/backup/sources/$source/cleanup-lease", JSONObject()
+            .put("client_item_ids", ids).put("client_review_id", review))
+        require(fresh.getString("lease_id") == leaseId) { "Storage review changed" }
+        val verified = fresh.getJSONArray("items")
         for (i in 0 until mappings.length()) {
             val row = mappings.getJSONObject(i)
+            val remote = (0 until verified.length()).map(verified::getJSONObject)
+                .firstOrNull { it.getString("client_item_id") == row.getString("client_item_id") }
+            require(remote != null && remote.getString("file_id") == row.getString("file_id") &&
+                remote.getString("hash") == row.getString("hash") && remote.getLong("size") == row.getLong("size")) {
+                "A Home copy is no longer eligible for removal"
+            }
             val pair = SourceReader.hash(context, Uri.parse(row.getString("uri")))
             require(pair.first == row.getString("hash") && pair.second == row.getLong("size"))
         }

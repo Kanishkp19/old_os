@@ -206,7 +206,13 @@ impl PhotoService {
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
         if let Some(review)=review {
             let existing:Option<(String,String)>=tx.query_row("SELECT id,state FROM cleanup_leases WHERE source_id=?1 AND device_id=?2 AND client_review_id=?3",params![source_id,device_id,review],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_e)?;
-            if let Some((id,state))=existing {if state!="active" {return Err(Error::Conflict("cleanup review completed".into()));}return read_cleanup_lease(&tx,&id);}
+            if let Some((id,state))=existing {
+                if state!="active" {return Err(Error::Conflict("cleanup review completed".into()));}
+                revalidate_cleanup_lease(&tx,&id)?;
+                let lease=read_cleanup_lease(&tx,&id)?;
+                tx.commit().map_err(db_e)?;
+                return Ok(lease);
+            }
         }
         tx.execute("INSERT INTO cleanup_leases(id,source_id,device_id,created_at,client_review_id) VALUES(?1,?2,?3,?4,?5)",params![lease_id,source_id,device_id,now_ms(),review]).map_err(db_e)?;
         let mut items=Vec::new();
@@ -295,6 +301,21 @@ fn read_cleanup_lease(c:&rusqlite::Connection,id:&str)->Result<CleanupLease> {
     let items=st.query_map(params![id],|r|Ok(CleanupItem{client_item_id:r.get(0)?,file_id:r.get(1)?,hash:r.get(2)?,size:r.get::<_,i64>(3)? as u64})).map_err(db_e)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
     let review=c.query_row("SELECT client_review_id FROM cleanup_leases WHERE id=?1",params![id],|r|r.get::<_,Option<String>>(0)).map_err(db_e)?;
     Ok(CleanupLease{lease_id:id.to_owned(),items,client_review_id:review})
+}
+
+fn revalidate_cleanup_lease(c:&rusqlite::Connection,id:&str)->Result<()> {
+    let source:String=c.query_row("SELECT source_id FROM cleanup_leases WHERE id=?1",[id],|r|r.get(0)).map_err(db_e)?;
+    let items=read_cleanup_lease(c,id)?.items;
+    for item in items {
+        let current:Option<String>=c.query_row("SELECT id FROM backup_items WHERE source_id=?1 AND client_item_id=?2
+            AND file_id=?3 AND lower(hash)=lower(?4) AND status='verified' AND local_freed_at IS NULL",
+            params![source,item.client_item_id,item.file_id,item.hash],|r|r.get(0)).optional().map_err(db_e)?;
+        if current.is_none() || verify_file(c,&item.file_id,&item.hash,Some(item.size)).is_err() {
+            c.execute("DELETE FROM cleanup_lease_items WHERE lease_id=?1 AND client_item_id=?2",params![id,item.client_item_id]).map_err(db_e)?;
+            if let Some(backup_id)=current {invalidate_item(c,&backup_id)?;}
+        }
+    }
+    Ok(())
 }
 
 fn invalidate_item(c:&rusqlite::Connection,id:&str)->Result<()> {

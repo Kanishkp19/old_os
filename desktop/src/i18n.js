@@ -1,6 +1,9 @@
 export const routes = ['Home','Photos','Files','Transfers','Storage','Remote','Browser','YouTube','Music','Notes','Calculator','Devices','Hardware','Settings'];
 export const icons = ['⌂','▧','▤','⇄','◴','⌘','◎','▶','♫','✎','+','▣','⚙','☷'];
 const hi = {
+  'Fullscreen':'पूर्ण स्क्रीन','Up next':'अगले गीत','Queue is empty':'कतार खाली है','Add to queue':'कतार में जोड़ें','This track could not be played.':'यह गीत नहीं चल सका।','Clear history':'इतिहास मिटाएँ',
+  'Website requested':'वेबसाइट ने अनुरोध किया','Grant permission and retry the website action.':'अनुमति दें और वेबसाइट में फिर कोशिश करें।','Private playlists are available in the installed Windows app.':'निजी प्लेलिस्ट इंस्टॉल किए हुए Windows ऐप में उपलब्ध हैं।',
+  'YouTube opens in a separate private website session. If playback or sign-in is unsupported by WebView2, use your installed browser.':'YouTube अलग निजी विंडो में खुलता है। यदि WebView2 पर वीडियो या साइन-इन काम न करे, तो इंस्टॉल किया हुआ ब्राउज़र इस्तेमाल करें।',
   'Similar photos':'मिलती-जुलती तस्वीरें',
   'Scan for similar photos':'मिलती-जुलती तस्वीरें खोजें',
   'These are suggestions only. No photos are removed automatically.':'ये केवल सुझाव हैं। कोई तस्वीर अपने आप नहीं हटाई जाती।',

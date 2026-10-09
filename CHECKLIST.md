@@ -10,5 +10,5 @@ Source details: `docs/phases/phase-N.md`; validation: `docs/WINDOWS_VALIDATION.m
 - Phase 5 — Protection and hardware: BUILD source complete, untested; no phase acceptance recorded.
 - Phase 6 — Remote and screens: in progress; no phase acceptance or completed-phase push recorded.
 - Phase 7 — Companions: in progress; no phase acceptance or completed-phase push recorded.
-- Phase 8 — Everyday apps: in progress; no phase acceptance or completed-phase push recorded.
+- Phase 8 — Everyday apps: BUILD source complete, untested; no phase acceptance recorded.
 - Phase 9 — Installation and operations: in progress; no phase acceptance or completed-phase push recorded.

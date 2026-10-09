@@ -60,6 +60,10 @@ impl StorageService {
 
     pub fn restore_file(&self, id: &str) -> Result<()> {
         let mut c = self.db.lock()?;
+        let trashed: i64 = c.query_row("SELECT COUNT(*) FROM trash WHERE file_id=?1", params![id], |r| r.get(0)).map_err(db_e)?;
+        if trashed != 1 { return Err(hh_core::Error::NotFound(format!("trashed file {id}"))); }
+        let path = crate::library::disk_path(&c, id, true)?;
+        if !path.is_file() { return Err(hh_core::Error::StorageUnavailable("trashed file is missing; restore cannot continue".into())); }
         let tx = c.transaction().map_err(db_e)?;
         tx.execute("UPDATE files SET deleted_at=NULL WHERE id=?1", params![id])
             .map_err(db_e)?;
@@ -96,23 +100,32 @@ impl StorageService {
 
     /// Retention GC: purge trash entries past purge_after (BACKEND_SCHEMA §11).
     pub fn purge_expired_trash(&self) -> Result<u32> {
-        let expired: Vec<String> = {
+        let expired: Vec<(String, String)> = {
             let c = self.db.lock()?;
             let mut st = c
-                .prepare("SELECT file_id FROM trash WHERE purge_after < ?1")
+                .prepare("SELECT t.file_id, f.name FROM trash t JOIN files f ON f.id=t.file_id WHERE t.purge_after < ?1")
                 .map_err(db_e)?;
             let rows = st
-                .query_map(params![now_ms()], |r| r.get(0))
+                .query_map(params![now_ms()], |r| Ok((r.get(0)?, r.get(1)?)))
                 .map_err(db_e)?
-                .collect::<std::result::Result<Vec<String>, _>>()
+                .collect::<std::result::Result<Vec<(String, String)>, _>>()
                 .map_err(db_e)?;
             rows
         };
         let mut n = 0;
-        for id in expired {
+        for (id, name) in expired {
+            let message = format!("Could not permanently remove {name} ({id}). It remains in Trash and Home Hub will retry.");
             match self.purge_file(&id) {
-                Ok(())=>n+=1,
-                Err(e)=>tracing::warn!(file_id=%id,error=%e,"trash purge retained for retry"),
+                Ok(())=>{
+                    n+=1;
+                    let c=self.db.lock()?;
+                    c.execute("UPDATE alerts SET resolved_at=?2 WHERE code='TRASH_PURGE_FAILED' AND message=?1 AND resolved_at IS NULL",params![message,now_ms()]).map_err(db_e)?;
+                },
+                Err(e)=>{
+                    tracing::warn!(file_id=%id,error=%e,"trash purge retained for retry");
+                    let active: i64 = {let c=self.db.lock()?;c.query_row("SELECT COUNT(*) FROM alerts WHERE code='TRASH_PURGE_FAILED' AND message=?1 AND resolved_at IS NULL",params![message],|r|r.get(0)).map_err(db_e)?};
+                    if active==0 {self.db.create_alert("warning","TRASH_PURGE_FAILED",&message)?;}
+                },
             }
         }
         Ok(n)

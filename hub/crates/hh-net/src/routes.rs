@@ -408,7 +408,7 @@ async fn create_transfer(
     let input = req.clone();
     let mut resp = tokio::task::spawn_blocking(move ||engine.create(&device_id,&input)).await.map_err(|e|Error::Internal(e.to_string()))??;
     if let (Some(source),Some(item),Some(file_id),Some(hash)) = (&req.backup_source_id,&req.client_item_id,&resp.existing_file_id,&req.root_hash) {
-        resp.backup_item_id = Some(s.photos.mark_transfer_verified(source,&id.device_id,item,file_id,hash)?);
+        resp.backup_item_id = Some(s.photos.mark_transfer_verified(source,&id.device_id,item,file_id,hash,None)?);
     }
     if let (Some(target),Some(file))=(&req.target_device_id,&resp.existing_file_id) {crate::relay::stage_file(&s,file,&id.device_id,target,None)?;}
     let code = if resp.have.count() > 0 { StatusCode::OK } else { StatusCode::CREATED };
@@ -477,6 +477,8 @@ async fn complete_transfer(
 ) -> ApiResult<Json<CompleteResponse>> {
     let peer = ident(ext)?;
     require_scope(&peer, "transfer")?;
+    let owner:String={let c=s.db.lock()?;c.query_row("SELECT device_id FROM transfers WHERE id=?1",[&id],|r|r.get(0)).map_err(|_|Error::TransferGone)?};
+    if owner!=peer.device_id {return Err(Error::ForbiddenScope("transfer".into()).into());}
     let engine = s.transfers.clone();
     let id2 = id.clone();
     let mut resp = tokio::task::spawn_blocking(move || engine.complete(&id2, &req.root_hash))
@@ -487,7 +489,7 @@ async fn complete_transfer(
         c.query_row("SELECT backup_source_id,client_item_id FROM transfers WHERE id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|Error::Db(e.to_string()))?
     };
     if let (Some(source),Some(item)) = backup {
-        resp.backup_item_id = Some(s.photos.mark_transfer_verified(&source,&peer.device_id,&item,&resp.file_id,&resp.hash)?);
+        resp.backup_item_id = Some(s.photos.mark_transfer_verified(&source,&peer.device_id,&item,&resp.file_id,&resp.hash,Some(&id))?);
     }
     let target:Option<String>={let c=s.db.lock()?;c.query_row("SELECT target_device_id FROM transfers WHERE id=?1",[&id],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))?};
     if let Some(target)=target {crate::relay::stage_file(&s,&resp.file_id,&peer.device_id,&target,Some(&id))?;}

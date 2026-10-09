@@ -4,7 +4,7 @@ Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partia
 
 - [~] Discover Android MediaStore photos/videos incrementally using the persistent Room queue. Code complete, untested in BUILD; Windows Hub and Android device validation remain.
 - [~] Offer source approval, schedules, Wi-Fi/charging conditions, foreground progress and permission recovery. Code complete, untested in BUILD; Android permission recovery remains unverified on device.
-- [~] Link backup items to completed transfers and mark verification only after durable finalization.
+- [~] Link backup items to completed transfers and mark verification only after durable finalization. Code complete, untested in BUILD; completed transfer ownership, queued hash and Hub bytes are checked before verification.
 - [~] Recheck changed source content and missing, trashed or corrupt Hub copies.
 - [~] Complete EXIF, thumbnails, Year/Month views, full viewers, zoom, sharing and details on Android/Windows.
 - [~] Preserve unsupported originals and show honest preview placeholders.

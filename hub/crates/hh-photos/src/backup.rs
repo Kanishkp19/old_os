@@ -121,13 +121,12 @@ impl PhotoService {
         for item in items {
             let mut found = None;
             if let Some(hash) = &item.hash {
-                let candidates: Vec<String> = {
-                    let mut st = tx.prepare("SELECT id FROM files WHERE hash=?1 AND size=?2 AND deleted_at IS NULL").map_err(db_e)?;
-                    let rows = st.query_map(params![hash, item.size as i64], |r| r.get(0)).map_err(db_e)?;
-                    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db_e)?
-                };
-                for id in candidates {
-                    if verify_file(&tx, &id, hash, Some(item.size)).is_ok() { found = Some(id); break; }
+                let previous:Option<String>=tx.query_row(
+                    "SELECT file_id FROM backup_items WHERE source_id=?1 AND client_item_id=?2
+                     AND status='verified' AND file_id IS NOT NULL AND lower(hash)=lower(?3)",
+                    params![source_id,item.client_item_id,hash],|r|r.get(0)).optional().map_err(db_e)?;
+                if let Some(id)=previous {
+                    if verify_file(&tx,&id,hash,Some(item.size)).is_ok() {found=Some(id);}
                 }
             }
             let status = if found.is_some() { "verified" } else { "pending" };
@@ -137,6 +136,7 @@ impl PhotoService {
                  ON CONFLICT(source_id,client_item_id) DO UPDATE SET file_id=excluded.file_id,
                  hash=excluded.hash,status=excluded.status,verified_at=excluded.verified_at,
                  expected_size=excluded.expected_size,
+                 transfer_id=CASE WHEN backup_items.hash=excluded.hash AND backup_items.file_id=excluded.file_id THEN backup_items.transfer_id ELSE NULL END,
                  local_freed_at=CASE WHEN backup_items.hash=excluded.hash THEN backup_items.local_freed_at ELSE NULL END",
                 params![ulid::Ulid::new().to_string(),source_id,item.client_item_id,found,item.hash,status,
                     if status=="verified" {Some(now_ms())} else {None},item.size as i64]).map_err(db_e)?;
@@ -150,25 +150,28 @@ impl PhotoService {
     /// Called only after transfer finalization; additionally verifies source
     /// ownership and current file bytes before setting deletion eligibility.
     pub fn mark_transfer_verified(&self, source_id:&str, device_id:&str, client_item_id:&str,
-        file_id:&str, expected_hash:&str) -> Result<String> {
+        file_id:&str, expected_hash:&str, transfer_id:Option<&str>) -> Result<String> {
         let source = self.get_source(source_id)?;
         if source.device_id != device_id || !source.enabled { return Err(Error::ForbiddenScope("backup source".into())); }
         let c = self.db.lock()?;
-        let expected_size: Option<i64> = c.query_row("SELECT expected_size FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
-            params![source_id,client_item_id],|r|r.get(0)).ok().flatten();
+        let (id,queued_hash,expected_size):(String,Option<String>,Option<i64>)=c.query_row(
+            "SELECT id,hash,expected_size FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
+            params![source_id,client_item_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
+            .map_err(|_|Error::Conflict("backup item must be queued before verification".into()))?;
+        if queued_hash.as_deref().is_some_and(|hash|!hash.eq_ignore_ascii_case(expected_hash)) {
+            return Err(Error::RootHashMismatch);
+        }
+        if let Some(transfer_id)=transfer_id {
+            let finalized:i64=c.query_row("SELECT COUNT(*) FROM transfers WHERE id=?1 AND device_id=?2
+                AND backup_source_id=?3 AND client_item_id=?4 AND result_file_id=?5
+                AND status='completed' AND lower(expected_root_hash)=lower(?6)",
+                params![transfer_id,device_id,source_id,client_item_id,file_id,expected_hash],|r|r.get(0)).map_err(db_e)?;
+            if finalized!=1 {return Err(Error::Conflict("backup transfer has not finalized".into()));}
+        }
         verify_file(&c,file_id,expected_hash,expected_size.map(|n|n as u64))?;
-        let id: String = c.query_row("SELECT id FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
-            params![source_id,client_item_id],|r|r.get(0)).unwrap_or_else(|_|ulid::Ulid::new().to_string());
-        c.execute("INSERT INTO backup_items(id,source_id,client_item_id,file_id,hash,status,verified_at)
-            VALUES(?1,?2,?3,?4,?5,'verified',?6) ON CONFLICT(source_id,client_item_id) DO UPDATE SET
-            file_id=excluded.file_id,hash=excluded.hash,status='verified',verified_at=excluded.verified_at",
-            params![id,source_id,client_item_id,file_id,expected_hash,now_ms()]).map_err(db_e)?;
+        c.execute("UPDATE backup_items SET file_id=?2,hash=?3,status='verified',verified_at=?4,transfer_id=?5
+            WHERE id=?1",params![id,file_id,expected_hash,now_ms(),transfer_id]).map_err(db_e)?;
         Ok(id)
-    }
-
-    pub fn mark_item_verified(&self, source_id:&str, client_item_id:&str, file_id:&str, hash:&str)->Result<()> {
-        let source=self.get_source(source_id)?;
-        self.mark_transfer_verified(source_id,&source.device_id,client_item_id,file_id,hash).map(|_|())
     }
 
     /// Legacy bookkeeping remains safe but does not grant deletion permission.

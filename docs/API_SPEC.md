@@ -31,8 +31,8 @@
 | 422 | ROOT_HASH_MISMATCH | Whole-file verification failed |
 | 423 | PAIRING_LOCKED | Too many token attempts |
 | 429 | RATE_LIMITED | Throttled (`Retry-After`) |
-| 503 | STORAGE_FULL / STORAGE_UNAVAILABLE | No space / root offline |
-| 507 | INSUFFICIENT_STORAGE | Preflight failed |
+| 503 | STORAGE_UNAVAILABLE | Root offline |
+| 507 | STORAGE_FULL | No space / preflight failed |
 
 ### Pagination
 Cursor-based: `?limit=100&cursor=<opaque>` → `{ "items": [...], "next_cursor": "..." | null }`.
@@ -176,7 +176,7 @@ Response 201 (or 200 if resuming same `client_item_id`+`size`):
 ```
 If `root_hash` matches an existing file: `201` with `already_exists:true`, `existing_file_id` set, no upload needed.
 
-Preflight failures: `507 INSUFFICIENT_STORAGE`.
+Preflight failures: `507 STORAGE_FULL`.
 
 ### `PUT /transfers/{id}/chunks/{n}`
 Headers: `Content-Type: application/octet-stream`, `Content-Length`, `X-Chunk-Hash: <blake3 hex of this chunk>`.

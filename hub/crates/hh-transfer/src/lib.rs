@@ -92,7 +92,7 @@ impl TransferEngine {
         if self.db.list_transfers(Some(device_id),Some("open"))?.len() >= 8 { return Err(Error::RateLimited); }
         if self.db.list_transfers(None,Some("open"))?.len() >= 32 { return Err(Error::RateLimited); }
 
-        // Preflight space (507 INSUFFICIENT_STORAGE).
+        // Preflight space (507 STORAGE_FULL).
         let free = fs2::free_space(&self.cfg.library_root)
             .map_err(|e| Error::StorageUnavailable(e.to_string()))?;
         if req.size > free.saturating_sub(256 * 1024 * 1024) {

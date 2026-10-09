@@ -40,7 +40,14 @@ impl axum::response::IntoResponse for ApiErr {
                 details: serde_json::Value::Null,
             },
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        response
     }
 }
 
@@ -1251,6 +1258,25 @@ async fn network_info(
 ) -> ApiResult<Json<hh_hw::network::NetworkInfo>> {
     let _ = ident(ext)?;
     Ok(Json(s.hw.network_info()?))
+}
+
+#[cfg(test)]
+mod api_contract_tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn rate_limited_response_includes_retry_after() {
+        let response = ApiErr(Error::RateLimited).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(axum::http::header::RETRY_AFTER).unwrap(), "1");
+    }
+
+    #[test]
+    fn storage_full_error_is_507() {
+        assert_eq!(Error::StorageFull.http_status(), 507);
+        assert_eq!(Error::StorageFull.code(), "STORAGE_FULL");
+    }
 }
 
 #[cfg(test)]

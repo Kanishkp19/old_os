@@ -698,6 +698,43 @@ mod tests {
         assert_eq!(db.device_by_id("d1").unwrap().unwrap().status, "revoked");
     }
 
+    fn renewal_device() -> DeviceRow {
+        DeviceRow {
+            id: "renewing".into(), name: "Phone".into(), platform: "android".into(),
+            model: None, app_version: None, cert_serial: "old-serial".into(),
+            cert_expires_at: now_ms() + 86_400_000, scopes: vec!["files".into()],
+            paired_at: now_ms(), last_seen_at: None, status: "active".into(),
+        }
+    }
+
+    #[test]
+    fn staged_renewal_keeps_old_identity_until_activation() {
+        let db = Db::open_memory().unwrap();
+        db.insert_device(&renewal_device(), "old-cert", "old-key").unwrap();
+        let new_expiry = now_ms() + 365 * 86_400_000;
+        db.stage_renewal("renewing", "old-serial", "csr", "new-cert", "new-serial", new_expiry).unwrap();
+        assert!(db.device_accepts_serial("renewing", "old-serial").unwrap());
+        assert!(db.device_accepts_serial("renewing", "new-serial").unwrap());
+        assert_eq!(db.pending_renewal("renewing", "old-serial", "csr").unwrap(), Some(("new-cert".into(), new_expiry)));
+
+        assert_eq!(db.activate_renewal("renewing", "new-serial").unwrap(), Some("old-serial".into()));
+        assert!(!db.device_accepts_serial("renewing", "old-serial").unwrap());
+        assert!(db.is_serial_revoked("old-serial").unwrap());
+        assert!(db.device_accepts_serial("renewing", "new-serial").unwrap());
+    }
+
+    #[test]
+    fn revoked_device_rejects_current_and_pending_serials() {
+        let db = Db::open_memory().unwrap();
+        db.insert_device(&renewal_device(), "old-cert", "old-key").unwrap();
+        db.stage_renewal("renewing", "old-serial", "csr", "new-cert", "new-serial", now_ms() + 365 * 86_400_000).unwrap();
+        db.revoke_device("renewing", "owner removed device").unwrap();
+
+        assert!(db.is_serial_revoked("old-serial").unwrap());
+        assert!(!db.device_accepts_serial("renewing", "old-serial").unwrap());
+        assert!(!db.device_accepts_serial("renewing", "new-serial").unwrap());
+    }
+
     #[test]
     fn transfer_chunk_bitmap() {
         let db = Db::open_memory().unwrap();

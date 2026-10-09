@@ -117,6 +117,7 @@ Sequence: implement all phases → comprehensive tests → fixes → final regre
 - Similar-photo singleton fix `d9fe037` and phase-ledger split `cb54583` were pushed on 2026-10-09; Phase 3 remains partial.
 - Config compatibility fixes `e1f67d7` and `b6a7af6` were pushed on 2026-10-09; Phase 0 remains partial pending the full build and contract gate.
 - Android pairing server-purpose fix `08b591d` and handoff update `98896c1` were pushed on 2026-10-09; pairing and Phase 1 remain partial pending broader failure tests.
+- Ledger reconciliation `872c7a8` and Phase 0 API contract fix `4f74add` were pushed on 2026-10-09; Phase 0 remains partial pending unavailable Windows and format/lint gates.
 - Mac-host builds and unit tests have run; no build has been deployed over the original demonstrated application.
 - Signing and physical hardware results must be recorded when actually available.
 - Failures and environment limitations: record in `WINDOWS_VALIDATION.md`, never mark unavailable checks passed.

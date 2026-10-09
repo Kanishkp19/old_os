@@ -240,3 +240,26 @@ fn pem_key(pem: &str) -> Result<rustls::pki_types::PrivatePkcs8KeyDer<'static>> 
     drop(it);
     key
 }
+
+#[cfg(test)]
+mod pairing_pin_tests {
+    use super::*;
+
+    #[test]
+    fn rogue_hub_fingerprint_is_rejected() {
+        let root = std::env::temp_dir().join(format!("hh-pin-{}", ulid::Ulid::new()));
+        let trusted_dir = root.join("trusted");
+        let rogue_dir = root.join("rogue");
+        std::fs::create_dir_all(&trusted_dir).unwrap();
+        std::fs::create_dir_all(&rogue_dir).unwrap();
+        let trusted = HubIdentity::load_or_create(&trusted_dir, "Trusted Home").unwrap();
+        let rogue = HubIdentity::load_or_create(&rogue_dir, "Rogue Home").unwrap();
+        let scanned_fp = trusted.fingerprint().unwrap();
+        let trusted_verifier = PinnedCaVerifier::new(&trusted.ca_cert_pem).unwrap();
+        let rogue_verifier = PinnedCaVerifier::new(&rogue.ca_cert_pem).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(trusted_verifier.fingerprint_matches(&scanned_fp));
+        assert!(!rogue_verifier.fingerprint_matches(&scanned_fp));
+    }
+}

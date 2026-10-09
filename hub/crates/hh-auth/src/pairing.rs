@@ -27,7 +27,6 @@ pub struct PairingWindow {
     pub code_expires_at: i64,
     /// Failed 6-digit-code attempts this window (low entropy → hard cap).
     code_attempts: u32,
-    token_attempts: u32,
     pending: Option<PendingPair>,
 }
 
@@ -69,7 +68,6 @@ impl PairingManager {
             expires_at: now + PAIR_TOKEN_TTL_MS,
             code_expires_at: now + PAIR_CODE_TTL_MS,
             code_attempts: 0,
-            token_attempts: 0,
             pending: None,
         };
         self.db
@@ -103,7 +101,7 @@ impl PairingManager {
             .max(0)
     }
 
-    /// Validate a QR token. Burns the token on success (single use).
+    /// Validate a QR token. The caller burns it after successful issuance.
     pub fn validate_token(&self, presented: &str) -> Result<String /* token row id */> {
         if !self.is_open() {
             return Err(Error::PairingClosed);
@@ -174,8 +172,9 @@ impl PairingManager {
         if let Some(token) = &req.token {
             if manual { return Err(Error::BadRequest("choose token or code".into())); }
             if hex_sha256(token.as_bytes()) != w.token_hash {
-                w.token_attempts += 1;
-                let locked = w.token_attempts >= MAX_TOKEN_ATTEMPTS as u32;
+                let row = self.db.get_pairing_token(&w.token_hash)?.ok_or(Error::InvalidToken)?;
+                let attempts = self.db.bump_token_attempts(&row.0)?;
+                let locked = attempts >= MAX_TOKEN_ATTEMPTS;
                 if locked { *guard = None; return Err(Error::PairingLocked); }
                 return Err(Error::InvalidToken);
             }
@@ -200,7 +199,9 @@ impl PairingManager {
             }
         }
         let row = self.db.get_pairing_token(&w.token_hash)?.ok_or(Error::InvalidToken)?;
-        if row.2.is_some() { return Err(Error::InvalidToken); }
+        if row.3 >= MAX_TOKEN_ATTEMPTS { *guard = None; return Err(Error::PairingLocked); }
+        if row.2.is_some() { *guard = None; return Err(Error::InvalidToken); }
+        if row.1 <= now_ms() { *guard = None; return Err(Error::TokenExpired); }
         let result = action(&row.0)?;
         *guard = None;
         Ok(result)
@@ -262,9 +263,127 @@ fn urlenc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hh_core::types::PairRequest;
 
     fn mgr() -> PairingManager {
         PairingManager::new(Db::open_memory().unwrap())
+    }
+
+    fn request(token: Option<String>, code: Option<String>) -> PairRequest {
+        PairRequest {
+            token,
+            code,
+            device_name: "Test Phone".into(),
+            platform: "android".into(),
+            model: None,
+            app_version: None,
+            csr_pem: "test-csr".into(),
+        }
+    }
+
+    #[test]
+    fn token_replay_after_pair_commit_is_rejected() {
+        let m = mgr();
+        let window = m.open_window().unwrap();
+        let req = request(Some(window.token.clone()), None);
+        m.claim(&req, false, |token_id| {
+            let device = hh_db::DeviceRow {
+                id: "paired-device".into(), name: "Test Phone".into(), platform: "android".into(),
+                model: None, app_version: None, cert_serial: "paired-serial".into(),
+                cert_expires_at: now_ms() + 86_400_000, scopes: vec!["files".into()],
+                paired_at: now_ms(), last_seen_at: None, status: "active".into(),
+            };
+            m.db.insert_paired_device(&device, "test-cert", token_id)
+        }).unwrap();
+        assert!(m.db.get_pairing_token(&window.token_hash).unwrap().unwrap().2.is_some());
+        assert_eq!(m.db.list_devices().unwrap().len(), 1);
+        assert!(matches!(m.claim(&req, false, |_| Ok(())), Err(Error::PairingClosed)));
+        m.open_window().unwrap();
+        assert!(matches!(m.claim(&req, false, |_| Ok(())), Err(Error::InvalidToken)));
+        assert_eq!(m.db.list_devices().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn wrong_token_attempt_limit_closes_window() {
+        let m = mgr();
+        let window = m.open_window().unwrap();
+        let req = request(Some("wrong-token".into()), None);
+        for _ in 0..(MAX_TOKEN_ATTEMPTS - 1) {
+            assert!(matches!(m.claim(&req, false, |_| Ok(())), Err(Error::InvalidToken)));
+        }
+        assert!(matches!(m.claim(&req, false, |_| Ok(())), Err(Error::PairingLocked)));
+        assert!(!m.is_open());
+        assert_eq!(m.db.get_pairing_token(&window.token_hash).unwrap().unwrap().3, MAX_TOKEN_ATTEMPTS);
+    }
+
+    #[test]
+    fn consent_is_bound_to_exact_request() {
+        let m = mgr();
+        let window = m.open_window().unwrap();
+        let req = request(Some(window.token), None);
+        assert!(matches!(m.claim(&req, true, |_| Ok(())), Err(Error::PairingLocked)));
+        let pending = m.pending().unwrap().unwrap();
+        assert!(m.confirm("wrong-request", true).is_err());
+        m.confirm(&pending.request_id, true).unwrap();
+        let mut changed = req.clone();
+        changed.device_name = "Other Phone".into();
+        assert!(matches!(m.claim(&changed, true, |_| Ok(())), Err(Error::PairingLocked)));
+        assert!(m.claim(&req, true, |_| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn manual_code_requires_approval() {
+        let m = mgr();
+        let window = m.open_window().unwrap();
+        let req = request(None, Some(window.manual_code));
+        let invoked = std::cell::Cell::new(false);
+        assert!(matches!(m.claim(&req, false, |_| { invoked.set(true); Ok(()) }), Err(Error::PairingLocked)));
+        assert!(!invoked.get());
+        let pending = m.pending().unwrap().unwrap();
+        m.confirm(&pending.request_id, true).unwrap();
+        assert!(m.claim(&req, false, |_| { invoked.set(true); Ok(()) }).is_ok());
+        assert!(invoked.get());
+    }
+
+    #[test]
+    fn manual_code_attempt_limit_closes_window() {
+        let m = mgr();
+        let window = m.open_window().unwrap();
+        let wrong = if window.manual_code == "000000" { "000001" } else { "000000" };
+        let req = request(None, Some(wrong.into()));
+        for _ in 0..(MAX_CODE_ATTEMPTS - 1) {
+            assert!(matches!(m.claim(&req, false, |_| Ok(())), Err(Error::InvalidToken)));
+        }
+        assert!(matches!(m.claim(&req, false, |_| Ok(())), Err(Error::PairingLocked)));
+        assert!(!m.is_open());
+    }
+
+    #[test]
+    fn expired_token_row_blocks_claim() {
+        let m = mgr();
+        let window = m.open_window().unwrap();
+        m.db.lock().unwrap().execute(
+            "UPDATE pairing_tokens SET expires_at=?2 WHERE token_hash=?1",
+            (&window.token_hash, now_ms() - 1),
+        ).unwrap();
+        let req = request(Some(window.token), None);
+        let invoked = std::cell::Cell::new(false);
+        assert!(matches!(m.claim(&req, false, |_| { invoked.set(true); Ok(()) }), Err(Error::TokenExpired)));
+        assert!(!invoked.get());
+    }
+
+    #[test]
+    fn persisted_attempt_limit_blocks_claim() {
+        let m = mgr();
+        let window = m.open_window().unwrap();
+        let row = m.db.get_pairing_token(&window.token_hash).unwrap().unwrap();
+        for _ in 0..MAX_TOKEN_ATTEMPTS {
+            m.db.bump_token_attempts(&row.0).unwrap();
+        }
+        let req = request(Some(window.token), None);
+        let invoked = std::cell::Cell::new(false);
+        assert!(matches!(m.claim(&req, false, |_| { invoked.set(true); Ok(()) }), Err(Error::PairingLocked)));
+        assert!(!invoked.get());
     }
 
     #[test]

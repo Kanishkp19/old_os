@@ -523,7 +523,8 @@ async fn abort_transfer(
 struct FilesQ {
     category: Option<String>,
     q: Option<String>,
-    cursor: Option<i64>,
+    cursor: Option<String>,
+    sort: Option<String>,
     limit: Option<u32>,
 }
 
@@ -534,7 +535,7 @@ async fn list_files(
 ) -> ApiResult<Json<Page<FileObject>>> {
     let peer = ident(ext)?;
     require_scope(&peer, "files")?;
-    Ok(Json(s.storage.list_files(q.category.as_deref(), q.q.as_deref(), q.cursor, q.limit.unwrap_or(100))?))
+    Ok(Json(s.storage.list_files_page(q.category.as_deref(), q.q.as_deref(), q.cursor.as_deref(), q.sort.as_deref(), q.limit.unwrap_or(100))?))
 }
 
 async fn get_file(

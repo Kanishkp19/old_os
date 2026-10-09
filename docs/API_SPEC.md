@@ -203,7 +203,7 @@ Headers: `Content-Type: application/octet-stream`, `Content-Length`, `X-Chunk-Ha
 
 | Method | Path | Scope | Description |
 |---|---|---|---|
-| GET | `/files?category=&path=&q=&cursor=` | files | List/browse/search |
+| GET | `/files?category=&q=&sort=&cursor=&limit=` | files | List/browse/search; `sort` is `newest`, `oldest`, `name` or `size`; cursor is opaque and bound to sort |
 | GET | `/files/{id}` | files | Metadata |
 | GET | `/files/{id}/content` | files | Download (supports `Range`) |
 | GET | `/files/{id}/manifest` | files | Chunk hash list |

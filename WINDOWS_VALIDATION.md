@@ -27,3 +27,4 @@
 - UNVERIFIED: On Windows with Ethernet and Wi-Fi, inspect refreshed wake-info for the active Ethernet MAC, sleep the Hub and attempt Android wake; when wake fails, confirm Android uploads remain queued and deliver after reconnect.
 - UNVERIFIED: In Windows WebView2, request camera/location/download from a website and confirm the owner sees the request, can grant and retry, then clears the permission and browsing data; confirm tabs, bookmarks and session restore survive restart.
 - UNVERIFIED: On Windows with WebView2, open YouTube in its isolated window, play and fullscreen a video, attempt supported sign-in, then use the installed-browser fallback if playback or authentication fails.
+- UNVERIFIED: On Windows, play a Hub music file, seek and change volume, queue tracks, switch repeat/shuffle and private playlists, then disconnect the Hub and confirm the player reports failure without deleting playlist data.

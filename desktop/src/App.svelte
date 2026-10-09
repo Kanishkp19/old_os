@@ -5,6 +5,7 @@
   import { calculate } from './calculator.js';
   import { icons, routes, translate } from './i18n.js';
   import Details from './Details.svelte';
+  import PhotoTile from './PhotoTile.svelte';
 
   let route = routes.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'Home';
   let language = 'en', large = false, contrast = false, reduced = true, notifications = true, preferenceId = null;
@@ -205,7 +206,7 @@
     {:else if route === 'Photos'}
       <p class="muted">{t('Phone storage cleanup requires verified copies and confirmation on your phone.')}</p>
       <div class="toolbar months"><button class:active={!photoMonth} on:click={() => { photoMonth = ""; run(load); }}>{t("All months")}</button>{#each items(data.years) as month}<button class:active={photoMonth === `${month.year}-${month.month}`} on:click={() => { photoMonth = `${month.year}-${month.month}`; run(load); }}>{month.year} / {month.month} · {month.count}</button>{/each}</div>
-      <section class="photo-grid">{#each data.photos || [] as photo}<button class="photo" on:click={() => viewFile({ ...photo, id: photo.file_id, mime: photo.mime || (photo.type_ === 'video' ? 'video/mp4' : 'image/jpeg'), name: photo.name || date(photo.taken_at) })}><img src={media(photo.file_id, 'thumb')} alt={photo.name || date(photo.taken_at)} loading="lazy"/><span>{date(photo.taken_at)}</span></button>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{#if cursor}<button on:click={() => run(more)}>{t('Load more')}</button>{/if}
+      <section class="photo-grid">{#each data.photos || [] as photo}<button class="photo" on:click={() => viewFile({ ...photo, id: photo.file_id, mime: photo.mime || (photo.type_ === 'video' ? 'video/mp4' : 'image/jpeg'), name: photo.name || date(photo.taken_at) })}><PhotoTile {photo} label={date(photo.taken_at)} {t}/></button>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{#if cursor}<button on:click={() => run(more)}>{t('Load more')}</button>{/if}
     {:else if route === 'Transfers'}
       <section class="card"><h2>{t('Transfers')}</h2>{#each data.transfers || [] as transfer}<article class="transfer"><div class="row"><div><strong>{transfer.name}</strong><small>{transfer.device} · {t(transfer.status)}{transfer.error_code ? ` · ${transfer.error_code}` : ''}</small></div>{#if ['open','verifying'].includes(transfer.status)}<button on:click={() => confirm(t('Cancel'), () => mutate(`/api/transfers/${transfer.id}`,'DELETE'),transfer.name)}>{t('Cancel')}</button>{/if}</div><progress max="100" value={progress(transfer)} aria-label={transfer.name}></progress><small>{bytes(transfer.bytes_verified)} / {bytes(transfer.size)}{transfer.rate_bps ? ` · ${bytes(transfer.rate_bps)}/s` : ''}{transfer.eta_secs != null ? ` · ${transfer.eta_secs} s` : ''}</small></article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
     {:else if route === 'Storage'}

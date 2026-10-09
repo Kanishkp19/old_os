@@ -66,6 +66,8 @@
     <string name="photo_camera">कैमरा: %1$s</string>
     <string name="photo_duration">अवधि: %1$d सेकंड</string>
     <string name="photo_unsupported">यह प्रारूप यहाँ नहीं दिख सकता। मूल कॉपी सेव करें या उपयुक्त ऐप में खोलें।</string>
+    <string name="photo_preview_pending">पूर्वावलोकन तैयार हो रहा है</string>
+    <string name="photo_preview_original">मूल कॉपी सुरक्षित है; पूर्वावलोकन उपलब्ध नहीं है</string>
     <string name="file_details">%1$s · %2$s</string>
     <string name="backup_partial">केवल चुने हुए फ़ोटो और वीडियो उपलब्ध हैं। बैकअप बढ़ाने के लिए और चुनें।</string>
     <string name="backup_permissions">फ़ोटो पहुँच जाँचें</string>

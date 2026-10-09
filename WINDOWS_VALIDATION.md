@@ -16,3 +16,4 @@
 - UNVERIFIED: Revoke and restore Android photo permission during scheduled backup to a Windows Hub; confirm the queue survives, foreground progress resumes, and the permission warning clears after success.
 - UNVERIFIED: Change a queued Android photo's size, hash or mtime during upload to a Windows Hub; confirm it requeues and only the new durable copy verifies, then remove, trash and corrupt Hub copies and confirm each becomes pending.
 - UNVERIFIED: Browse Windows gallery months, inspect EXIF details, zoom and share full photos; on Android, play a verified video, zoom a verified photo and share an original, including an unsupported codec fallback.
+- UNVERIFIED: Upload HEIC/RAW and video originals to Windows, interrupt thumbnail writes, then confirm originals remain byte-identical and Android/Windows show honest unavailable previews while disk errors leave thumbnail work retryable.

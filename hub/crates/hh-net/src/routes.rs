@@ -734,7 +734,11 @@ async fn photo_thumb(
     require_scope(&peer, "photos")?;
     match s.photos.thumb_path(&file_id, q.size.unwrap_or(256))? {
         Some(p) => {
-            let bytes = tokio::fs::read(&p).await.map_err(Error::from)?;
+            let bytes = match tokio::fs::read(&p).await {
+                Ok(bytes)=>bytes,
+                Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(Response::builder().status(StatusCode::NO_CONTENT).body(Body::empty()).unwrap()),
+                Err(e)=>return Err(Error::from(e).into()),
+            };
             Ok(Response::builder()
                 .header("content-type", "image/jpeg")
                 .body(Body::from(bytes))

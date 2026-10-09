@@ -71,6 +71,8 @@
     <string name="photos_empty">No photos yet. Back up your phone to see them here.</string>
     <string name="files_empty">No files here yet. Send a file to Home to get started.</string>
     <string name="photo_preview_unavailable">Preview unavailable</string>
+    <string name="photo_preview_pending">Preparing preview</string>
+    <string name="photo_preview_original">Original preserved; preview unavailable</string>
     <string name="trash_confirm">Move this file to Home trash?</string>
     <string name="privacy_lan">Your photos and files stay on your Home Hub. Transfers use your local network.</string>
     <string name="backup_scope">Automatic backup covers photos and videos accessible in your phone library.</string>

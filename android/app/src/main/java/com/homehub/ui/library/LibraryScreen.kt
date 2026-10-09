@@ -284,9 +284,16 @@ fun LibraryScreen(photos: Boolean = false, vm: LibraryViewModel = hiltViewModel(
 }
 @Composable
 private fun PhotoThumb(row: JSONObject, vm: LibraryViewModel) {
-    val bitmap by produceState<android.graphics.Bitmap?>(null, vm.id(row)) { value = runCatching { vm.thumbnail(row) }.getOrNull() }
+    val status = row.optString("thumb_status")
+    val bitmap by produceState<android.graphics.Bitmap?>(null, vm.id(row), status) {
+        if (status == "ready") value = runCatching { vm.thumbnail(row) }.getOrNull()
+    }
     bitmap?.let { Image(it.asImageBitmap(), row.getString("name"), Modifier.fillMaxWidth().height(140.dp)) }
-        ?: Box(Modifier.fillMaxWidth().height(140.dp)) { Text(stringResource(R.string.photo_preview_unavailable)) }
+        ?: Box(Modifier.fillMaxWidth().height(140.dp)) { Text(stringResource(when (status) {
+            "pending" -> R.string.photo_preview_pending
+            "unsupported" -> R.string.photo_preview_original
+            else -> R.string.photo_preview_unavailable
+        })) }
 }
 
 @Composable

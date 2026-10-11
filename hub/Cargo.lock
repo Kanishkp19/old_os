@@ -2086,6 +2086,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hh-lock"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "rand 0.8.8",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hh-net"
 version = "0.1.0"
 dependencies = [

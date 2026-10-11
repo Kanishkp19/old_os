@@ -16,6 +16,7 @@ members = [
     "crates/hh-session",
     "crates/hh-tray",
     "crates/hh-shell",
+    "crates/hh-lock",
 ]
 
 [workspace.package]

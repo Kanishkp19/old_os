@@ -1,0 +1,23 @@
+[Unit]
+Description=Home Hub session locker
+ConditionKernelCommandLine=!homehub.mode=trial
+After=homehub-labwc.service
+Requires=homehub-labwc.service
+PartOf=homehub.service
+
+[Service]
+Type=simple
+User=homehub
+Group=homehub
+Environment=XDG_RUNTIME_DIR=/run/homehub
+RuntimeDirectory=homehub
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/hh-lock
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=graphical.target

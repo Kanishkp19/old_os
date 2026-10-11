@@ -1,4 +1,11 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::unnecessary_mut_passed,
+    clippy::chunks_exact_to_as_chunks,
+    clippy::large_enum_variant,
+    clippy::manual_is_multiple_of
+)]
 //! hh-session: Home Hub per-user session helper (TRD §9).
 //!
 //! Windows services run in Session 0 and cannot inject input, capture the

@@ -3,12 +3,12 @@ use hh_shell::{
     apps, input_mode,
     ipc::ShellIpcClient,
     launcher::Launcher,
-    notifications::NotificationCenter,
     oobe::OobeState,
-    quick_settings::QuickSettingsState,
     status_bar::StatusBarState,
     window_adapter::{calculate_work_area, WindowManager},
 };
+#[cfg(unix)]
+use hh_shell::{notifications::NotificationCenter, quick_settings::QuickSettingsState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,8 +30,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let apps = apps::load_app_manifest()?;
     let launcher = Launcher::new(apps);
     let mut status = StatusBarState::default();
-    let mut notifications = NotificationCenter::default();
-    let mut quick_settings = QuickSettingsState::default();
     let checkpoint = input_mode::owner_preferences_path().with_file_name("oobe.json");
     let oobe = OobeState::load_checkpoint(&checkpoint)?.unwrap_or_default();
     let windows = WindowManager::new(calculate_work_area(1366, 768));
@@ -45,6 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(unix)]
     {
+        let mut notifications = NotificationCenter::default();
+        let mut quick_settings = QuickSettingsState::default();
         let path = shell_socket()?;
         if path.exists() {
             let probe = tokio::net::UnixDatagram::unbound()?;

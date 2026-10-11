@@ -1,0 +1,30 @@
+[Unit]
+Description=Home Hub disposable live trial sample service
+ConditionKernelCommandLine=homehub.mode=trial
+After=local-fs.target
+Conflicts=homehub.service homehub-session.service
+Before=homehub.service
+
+[Service]
+Type=simple
+User=homehub
+Group=homehub
+ExecStartPre=+/usr/bin/homehub-installer-trial prepare
+ExecStart=/usr/bin/homehub-installer-trial serve
+ExecStopPost=+/bin/umount /run/homehub-trial
+PrivateNetwork=yes
+IPAddressDeny=any
+IPAddressAllow=localhost
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_UNIX
+ReadWritePaths=/run/homehub-trial
+MemoryMax=768M
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

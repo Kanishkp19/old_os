@@ -89,8 +89,14 @@ pub fn jail_join(root: &Path, rel: &str) -> Result<PathBuf> {
     // destination may not exist yet, so validate its nearest existing parent.
     let canonical_root = root.canonicalize()?;
     let mut existing = out.as_path();
-    while !existing.exists() {
-        existing = existing.parent().ok_or_else(|| Error::BadRequest("invalid destination".into()))?;
+    loop {
+        match existing.symlink_metadata() {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                existing = existing.parent().ok_or_else(|| Error::BadRequest("invalid destination".into()))?;
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
     if !existing.canonicalize()?.starts_with(&canonical_root) {
         return Err(Error::BadRequest("path escapes root".into()));
@@ -194,6 +200,25 @@ mod tests {
         assert!(jail_join(&root, "Photos/2026/10/x.jpg").is_ok());
         assert!(jail_join(&root, "/etc/passwd").is_err());
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jail_rejects_outside_and_dangling_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!("hh-jail-link-{}", ulid::Ulid::new()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("escape")).unwrap();
+        symlink(base.join("missing-outside"), root.join("dangling")).unwrap();
+
+        assert!(jail_join(&root, "escape/photo.jpg").is_err());
+        assert!(jail_join(&root, "dangling/photo.jpg").is_err());
+        assert!(jail_join(&root, "safe/new/photo.jpg").is_ok());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

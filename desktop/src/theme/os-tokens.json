@@ -1,0 +1,11 @@
+{
+  "colors": {
+    "dark": {"wallpaper.base":"#101A17","bg":"#121413","surface":"#1B1E1C","chrome":"#1B1E1CF2","ink":"#ECEFEA","ink.secondary":"#A3ABA5","accent":"#5FBF8F","accent.ink":"#0B1A12","warning":"#E5B05C","danger":"#F2877F","success":"#6CC070","divider":"#2A2E2B","focus":"#8CDEB3"},
+    "light": {"wallpaper.base":"#E4ECE6","bg":"#FAFAF7","surface":"#FFFFFF","chrome":"#FFFFFFF2","ink":"#1A1D1B","ink.secondary":"#5B635E","accent":"#2F6F4E","accent.ink":"#FFFFFF","warning":"#875610","danger":"#B3261E","success":"#2E7D32","divider":"#E3E6E1","focus":"#215E40"},
+    "highContrast": {"wallpaper.base":"#000000","bg":"#000000","surface":"#000000","chrome":"#000000","ink":"#FFFFFF","ink.secondary":"#FFFFFF","accent":"#FFFFFF","accent.ink":"#000000","warning":"#FFFF00","danger":"#FF8080","success":"#80FF80","divider":"#FFFFFF","focus":"#FFFF00"}
+  },
+  "spacing": [4,8,12,16,24,32,48],
+  "radii": {"input":8,"panel":12,"appIcon":16,"shelf":16,"overlay":20,"windowChrome":12},
+  "geometry": {"statusBarHeight":40,"shelfHeight":64,"shelfBottomOffset":12,"safeEdge":16,"touchTargetMin":48,"desktopControlMin":40,"denseRowMin":40,"touchRowMin":56},
+  "typography": {"fontFamilies":["Roboto","Noto Sans Devanagari"],"sizes":[12,14,16,20,28,36],"bodySize":16,"lineHeight":1.4,"labelWeight":500,"headingWeight":600,"focusRingWidth":3,"focusRingOffset":2}
+}

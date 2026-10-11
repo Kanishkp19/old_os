@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "data_dir": "/var/lib/homehub",
+  "library_root": "/srv/homehub",
+  "runtime_dir": "/run/homehub",
+  "service_user": "homehub",
+  "telemetry_opt_in": false,
+  "updates_opt_in": false,
+  "trial": {
+    "mode": "ram-only",
+    "config": "/etc/homehub/trial.json",
+    "install_requires_explicit_handoff": true
+  }
+}

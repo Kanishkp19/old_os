@@ -1,0 +1,7 @@
+{
+  "trial_mode": true,
+  "overlay_max_bytes": 536870912,
+  "allow_internal_disk_writes": false,
+  "lan_advertising": false,
+  "sample_data_path": "/usr/share/homehub/trial/samples"
+}

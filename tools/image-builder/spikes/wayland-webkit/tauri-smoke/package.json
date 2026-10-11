@@ -1,0 +1,19 @@
+{
+  "name": "homehub-tauri-smoke",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"const f=require('fs');f.mkdirSync('target/frontend',{recursive:true});f.writeFileSync('target/frontend/index.html','<html><head><meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\"></head><body><div id=\\\"app\\\"></div><script type=\\\"module\\\" src=\\\"/main.js\\\"></script></body></html>');f.writeFileSync('target/frontend/main.js','import App from \\\"../../src/App.svelte\\\"; new App({target:document.getElementById(\\\"app\\\")});');f.writeFileSync('target/frontend/vite.config.js','import { defineConfig } from \\\"vite\\\"; import { svelte } from \\\"@sveltejs/vite-plugin-svelte\\\"; export default defineConfig({plugins:[svelte()]});');\" && vite build target/frontend --outDir ../../dist --config target/frontend/vite.config.js",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.0.0",
+    "svelte": "4.2.19"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.0.0",
+    "@sveltejs/vite-plugin-svelte": "3.1.2",
+    "vite": "5.4.10"
+  }
+}

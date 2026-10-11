@@ -12,3 +12,4 @@ thiserror.workspace = true
 ulid.workspace = true
 blake3.workspace = true
 tracing.workspace = true
+unicode-normalization = "0.1"

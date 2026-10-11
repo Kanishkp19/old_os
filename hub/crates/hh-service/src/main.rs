@@ -15,11 +15,15 @@
 
 mod logging;
 mod local_security;
+#[cfg(target_os = "linux")]
+mod systemd;
 use std::sync::Arc;
 
 use clap::Parser;
 use hh_auth::{HubIdentity, PairingManager, RevocationList};
 use hh_core::platform::noop;
+#[cfg(target_os = "linux")]
+use hh_core::platform::ServiceHost;
 use hh_core::{Config, Result};
 use hh_db::Db;
 use hh_net::AppState;
@@ -71,6 +75,11 @@ fn main() -> Result<()> {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    if !args.console {
+        return Box::new(systemd::SystemdHost::new(cfg)).run();
+    }
+
     run_console(cfg)
 }
 
@@ -115,12 +124,12 @@ async fn run_console(cfg: Config) -> Result<()> {
         let _ = tokio::signal::ctrl_c().await;
         let _ = stop_tx.send(());
     });
-    run_hub(cfg, stop_rx).await
+    run_hub(cfg, stop_rx, None).await
 }
 
 /// Shared runtime: everything from DB open to the three listeners, with the
 /// stop signal injected so console and SCM service modes behave identically.
-async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> Result<()> {
+async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>, ready: Option<tokio::sync::oneshot::Sender<()>>) -> Result<()> {
     tracing::info!(version = hh_core::HUB_VERSION, "home hub starting");
 
     let db = Db::open(&cfg.db_path())?;
@@ -217,14 +226,27 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>) -> R
     let token_path=cfg.data_dir.join("dashboard_token");
     {
         use std::io::Write;
-        let mut options=std::fs::OpenOptions::new();options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        let write_path = cfg.data_dir.join(format!(".dashboard_token-{}", std::process::id()));
+        #[cfg(windows)]
+        let write_path = token_path.clone();
+        let mut options=std::fs::OpenOptions::new();options.write(true);
+        #[cfg(unix)] options.create_new(true);
+        #[cfg(windows)] options.create(true).truncate(true);
         #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
-        let mut file=options.open(&token_path)?;local_security::protect_admin_token(&cfg.data_dir,&token_path)?;file.write_all(dash_token.as_bytes())?;file.sync_all()?;
-        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&token_path,std::fs::Permissions::from_mode(0o600))?;}
+        let mut file=options.open(&write_path)?;
+        local_security::protect_admin_token(&cfg.data_dir,&write_path)?;
+        file.write_all(dash_token.as_bytes())?;
+        file.sync_all()?;
+        #[cfg(unix)] {
+            std::fs::rename(&write_path, &token_path)?;
+            std::fs::File::open(&cfg.data_dir)?.sync_all()?;
+        }
     }
     let dashboard = hh_net::serve::serve_dashboard(state.clone(), dash_token);
 
     tracing::info!("hub ready: api :47800, dashboard http://127.0.0.1:47801, pairing :47802");
+    if let Some(ready) = ready { let _ = ready.send(()); }
     tokio::select! {
         r = api => { tracing::error!("api server exited: {r:?}"); }
         r = pairing_srv => { tracing::error!("pairing server exited: {r:?}"); }
@@ -395,7 +417,7 @@ mod windows_service {
             .build()
             .map_err(|e| format!("tokio runtime: {e}"))?;
         report(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN, 0, 0)?;
-        let result = rt.block_on(crate::run_hub(cfg, stop_rx));
+        let result = rt.block_on(crate::run_hub(cfg, stop_rx, None));
         report(ServiceState::Stopped, ServiceControlAccept::empty(), 0, 0)?;
         result.map_err(|e| e.to_string())
     }

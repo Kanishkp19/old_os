@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "label": "Demo",
+  "disposable": true,
+  "samples": [
+    { "id": "photo-1", "type": "photo", "label": "Demo photo", "path": "photos/demo-landscape.jpg" },
+    { "id": "file-1", "type": "file", "label": "Demo file", "path": "files/welcome.txt" }
+  ],
+  "unavailable_until_installed": ["upload", "phone-pairing", "browser", "youtube"]
+}

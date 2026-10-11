@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "status": "candidate-pins-unverified",
+  "buildroot": { "version": "2024.02.13", "libc": "glibc", "init": "systemd" },
+  "linux": { "version": "6.6.77", "series": "6.6 LTS" },
+  "mesa": { "version": "24.0.9", "series": "24.x" },
+  "webkitgtk": { "version": "2.44.4", "series": "2.44.x", "gtk": "3" },
+  "gtk4_panel": { "version": "unverified", "purpose": "separate native layer-shell panel" },
+  "tauri": { "version": "2.12.3", "series": "2.x" },
+  "labwc": { "version": "0.7.4", "series": "0.7.x" },
+  "smithay": { "version": "0.3.0", "series": "0.3.x" },
+  "rust": { "version": "1.94.1", "target": "x86_64-unknown-linux-gnu" },
+  "node": { "version": "20.18.1" },
+  "notes": "These are requested release-line candidates, not verified source hashes. G0 Day 1 must record actual Buildroot package versions, source hashes, Cargo.lock, package-lock.json, GTK and Wayland versions before calling the inventory reproducible."
+}

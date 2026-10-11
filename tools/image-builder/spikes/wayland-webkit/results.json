@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "gate": "G0",
+  "status": "pending",
+  "image_sha256": null,
+  "buildroot_commit": null,
+  "compositor_mode": null,
+  "days": {
+    "1": {
+      "status": "pending",
+      "cases": {
+        "dependency_inventory": {
+          "status": "pending",
+          "artifact": null
+        },
+        "package_build": {
+          "status": "pending",
+          "artifact": null
+        }
+      }
+    },
+    "2": {
+      "status": "pending",
+      "cases": {
+        "labwc_boot": {
+          "status": "pending",
+          "artifact": null
+        },
+        "tauri_startup": {
+          "status": "pending",
+          "artifact": null
+        },
+        "authenticated_loopback_read": {
+          "status": "pending",
+          "artifact": null
+        }
+      }
+    },
+    "3": {
+      "status": "pending",
+      "cases": {
+        "smithay_socket": {
+          "status": "pending",
+          "artifact": null
+        },
+        "keyboard": {
+          "status": "pending",
+          "artifact": null
+        },
+        "hindi_ime": {
+          "status": "pending",
+          "artifact": null
+        },
+        "clipboard": {
+          "status": "pending",
+          "artifact": null
+        },
+        "popup_focus": {
+          "status": "pending",
+          "artifact": null
+        },
+        "resize_scale": {
+          "status": "pending",
+          "artifact": null
+        },
+        "close_reopen": {
+          "status": "pending",
+          "artifact": null
+        }
+      }
+    },
+    "4": {
+      "status": "pending",
+      "cases": {
+        "gtk_layer_shell": {
+          "status": "pending",
+          "artifact": null
+        },
+        "at_spi": {
+          "status": "pending",
+          "artifact": null
+        },
+        "lock_capture_protocols": {
+          "status": "pending",
+          "artifact": null
+        },
+        "network_audio": {
+          "status": "pending",
+          "artifact": null
+        },
+        "idle_rss_pss": {
+          "status": "pending",
+          "artifact": null
+        },
+        "restart_twice": {
+          "status": "pending",
+          "artifact": null
+        }
+      }
+    },
+    "5": {
+      "status": "pending",
+      "cases": {
+        "rebuild": {
+          "status": "pending",
+          "artifact": null
+        },
+        "repeat_guest_smoke": {
+          "status": "pending",
+          "artifact": null
+        },
+        "decision": {
+          "status": "pending",
+          "artifact": null
+        }
+      }
+    }
+  },
+  "blockers": [],
+  "selected_baseline": null
+}

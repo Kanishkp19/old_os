@@ -1,0 +1,31 @@
+[Unit]
+Description=Home Hub installed service
+ConditionKernelCommandLine=!homehub.mode=trial
+RequiresMountsFor=/var/lib/homehub /srv/homehub
+After=local-fs.target network.target
+Conflicts=homehub-trial.service
+
+[Service]
+Type=notify
+User=homehub
+Group=homehub
+ExecStart=/usr/bin/hh-service
+WorkingDirectory=/var/lib/homehub
+Environment=HOMEHUB_APPLIANCE=1
+StateDirectory=homehub
+RuntimeDirectory=homehub
+RuntimeDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ReadWritePaths=/var/lib/homehub /srv/homehub /run/homehub
+WatchdogSec=30s
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

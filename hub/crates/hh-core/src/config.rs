@@ -170,9 +170,25 @@ fn default_data_dir() -> PathBuf {
         .join("HomeHub")
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn default_data_dir() -> PathBuf {
-    // Dev/unix builds (Phase 4 will use /var/lib/homehub).
+    if linux_appliance() {
+        return PathBuf::from("/var/lib/homehub");
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".homehub")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_appliance() -> bool {
+    std::path::Path::new("/var/lib/homehub").is_dir()
+        || std::env::var_os("HOMEHUB_APPLIANCE").as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn default_data_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -185,7 +201,12 @@ fn default_library_root() -> PathBuf {
     PathBuf::from(r"C:\HomeHubData")
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn default_library_root() -> PathBuf {
+    PathBuf::from("/srv/homehub")
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn default_library_root() -> PathBuf {
     default_data_dir().join("data")
 }

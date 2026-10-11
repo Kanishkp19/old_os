@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<labwc_config>
+  <core><decoration>server</decoration></core>
+  <!-- Reserved status bar and shelf work area. -->
+  <margin top="40" bottom="76" left="16" right="16" />
+  <snapping>
+    <range><inner>10</inner><outer>10</outer></range>
+    <overlay><enabled>yes</enabled><delay><inner>250</inner><outer>250</outer></delay></overlay>
+  </snapping>
+  <keyboard>
+    <keybind key="Super_L" onRelease="yes"><action name="Execute" command="homehub-shell --show-home" /></keybind>
+    <keybind key="A-Tab"><action name="NextWindow" /></keybind>
+    <keybind key="A-F4"><action name="Close" /></keybind>
+    <keybind key="W-Left"><action name="SnapToEdge" direction="left" /></keybind>
+    <keybind key="W-Right"><action name="SnapToEdge" direction="right" /></keybind>
+  </keyboard>
+</labwc_config>

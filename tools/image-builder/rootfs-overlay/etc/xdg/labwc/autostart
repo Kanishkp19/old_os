@@ -1,0 +1,3 @@
+#!/bin/sh
+# labwc runs this as the unprivileged owner session.
+homehub-shell &

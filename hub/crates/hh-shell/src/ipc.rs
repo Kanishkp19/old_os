@@ -1,0 +1,91 @@
+//! Bounded framed client for the owner-only local broker.
+use hh_core::local_ipc::{decode_frame, encode_frame, LocalIpcError, LocalIpcRequest,
+    LocalIpcResponse, LocalOp, ShellSnapshot, MAX_FRAME_SIZE};
+use std::{path::PathBuf, sync::Arc};
+use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+type MockHandler = Arc<dyn Fn(Vec<u8>) -> Result<Vec<u8>, IpcError> + Send + Sync>;
+
+#[derive(Debug, Error)]
+pub enum IpcError {
+    #[error(transparent)] Io(#[from] std::io::Error),
+    #[error(transparent)] Protocol(#[from] LocalIpcError),
+    #[error(transparent)] Json(#[from] serde_json::Error),
+    #[error("broker operation failed: {0}")] Broker(String),
+    #[error("app launch is not supported by the current local IPC contract")]
+    LaunchUnsupported,
+}
+
+pub struct ShellIpcClient { socket: PathBuf, mock: Option<MockHandler> }
+impl ShellIpcClient {
+    pub fn new() -> Self {
+        let socket = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|dir| PathBuf::from(dir).join("homehub-local.sock"))
+            .unwrap_or_else(|| PathBuf::from("/run/homehub/local-broker.sock"));
+        Self { socket, mock: None }
+    }
+    pub fn with_socket(socket: PathBuf) -> Self { Self { socket, mock: None } }
+    pub fn with_mock(handler: MockHandler) -> Self { Self { socket: PathBuf::new(), mock: Some(handler) } }
+
+    pub async fn request_shell_snapshot(&self) -> Result<ShellSnapshot, IpcError> {
+        let request = LocalIpcRequest { id: "shell-snapshot".into(),
+            op: LocalOp::ShellSnapshot, payload: serde_json::json!({}) };
+        let response = self.exchange(request).await?;
+        if !response.ok {
+            return Err(IpcError::Broker(response.error.map_or_else(
+                || "unknown broker error".into(), |error| error.to_string())));
+        }
+        let data = response.data.ok_or_else(|| IpcError::Broker("missing snapshot".into()))?;
+        Ok(serde_json::from_value(data)?)
+    }
+
+    pub async fn request_app_launch(&self, _app_id: &str) -> Result<(), IpcError> {
+        // LocalOp currently has no launch variant. Never overload an unrelated operation.
+        Err(IpcError::LaunchUnsupported)
+    }
+
+    async fn exchange(&self, request: LocalIpcRequest) -> Result<LocalIpcResponse, IpcError> {
+        let outbound = encode_frame(&request)?;
+        let inbound = if let Some(mock) = &self.mock { mock(outbound)? } else {
+            let mut stream = tokio::net::UnixStream::connect(&self.socket).await?;
+            stream.write_all(&outbound).await?;
+            let mut header = [0u8; 4];
+            stream.read_exact(&mut header).await?;
+            let length = u32::from_be_bytes(header) as usize;
+            if length > MAX_FRAME_SIZE { return Err(IpcError::Protocol(
+                LocalIpcError::InvalidInput("frame exceeds 1 MiB".into()))); }
+            let mut frame = Vec::with_capacity(length + 4);
+            frame.extend_from_slice(&header);
+            frame.resize(length + 4, 0);
+            stream.read_exact(&mut frame[4..]).await?;
+            frame
+        };
+        let response: LocalIpcResponse = decode_frame(&inbound)?;
+        if response.id != request.id {
+            return Err(IpcError::Protocol(LocalIpcError::InvalidInput("response ID mismatch".into())));
+        }
+        Ok(response)
+    }
+}
+impl Default for ShellIpcClient { fn default() -> Self { Self::new() } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn framed_snapshot_request_round_trip() {
+        let snapshot = ShellSnapshot { timestamp: 60, hub_name: "Hub".into(),
+            storage_available_bytes: 10, storage_healthy: true, connected_devices: 1,
+            wifi_ssid: None, volume_pct: 20, battery_pct: None, is_charging: false, is_locked: false };
+        let expected = snapshot.clone();
+        let client = ShellIpcClient::with_mock(Arc::new(move |frame| {
+            let request: LocalIpcRequest = decode_frame(&frame)?;
+            assert_eq!(request.op, LocalOp::ShellSnapshot);
+            Ok(encode_frame(&LocalIpcResponse { id: request.id, ok: true,
+                data: Some(serde_json::to_value(&snapshot)?), error: None })?)
+        }));
+        assert_eq!(client.request_shell_snapshot().await.unwrap(), expected);
+        assert!(matches!(client.request_app_launch("photos").await, Err(IpcError::LaunchUnsupported)));
+    }
+}

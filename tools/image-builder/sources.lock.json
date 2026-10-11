@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "buildroot": {"version": "2024.02.13", "tag": "2024.02.13", "url": "https://buildroot.org/downloads/buildroot-2024.02.13.tar.xz", "sha256": "1d3e2f3c6e3d5123a734f0935f4a790650ac4f851f93539a464d4b8fb5dfa04d"},
+  "linux": {"version": "6.6.77", "tag": "v6.6.77", "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.77.tar.xz", "sha256": "081089dfcf125aef67aa940ebb995ff789b646129f5d4b2365e1d5685b29a84e"},
+  "mesa": {"version": "24.0.9", "tag": "mesa-24.0.9", "url": "https://archive.mesa3d.org/mesa-24.0.9.tar.xz", "sha256": "51aa686ca4060e38711a9e8f60c8f1efaa516baf411946ed7f2c265cd582ca4c"},
+  "pipewire": {"version": "1.0.9", "tag": "1.0.9", "url": "https://gitlab.freedesktop.org/pipewire/pipewire/-/archive/1.0.9/pipewire-1.0.9.tar.gz", "sha256": "a295b3856bc7f55f70be5273f6bad4410cc7893f9ae376f0c04c64357ff824ce"},
+  "wireplumber": {"version": "0.4.17", "tag": "0.4.17", "url": "https://gitlab.freedesktop.org/pipewire/wireplumber/-/archive/0.4.17/wireplumber-0.4.17.tar.gz", "sha256": "a12534fd9c1ecf9fbc09f79192d9d57c9ab7bf01da82615ab4103b2f8e2e91a7"},
+  "webkitgtk": {"version": "2.44.4", "tag": "2.44.4", "url": "https://webkitgtk.org/releases/webkitgtk-2.44.4.tar.xz", "sha256": "2ce4ec1b78413035037aba8326b31ed72696626b7bea7bace5e46ac0d8cbe796"},
+  "labwc": {"version": "0.7.4", "tag": "0.7.4", "url": "https://github.com/labwc/labwc/archive/refs/tags/0.7.4.tar.gz", "sha256": "2afa1ef483863fc6217803a540b9afab6939d2324e9bb4dcf4a028281b731fb9"},
+  "systemd": {"version": "255", "tag": "v255", "url": "https://github.com/systemd/systemd/archive/refs/tags/v255.tar.gz", "sha256": "28854ffb2cb5f9e07fcbdbaf1e03a80b3462a12edeef84893ca2f37b22e4491e"}
+}

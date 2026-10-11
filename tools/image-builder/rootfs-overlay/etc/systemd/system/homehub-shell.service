@@ -1,0 +1,23 @@
+[Unit]
+Description=Home Hub owner shell
+ConditionKernelCommandLine=!homehub.mode=trial
+After=homehub-labwc.service
+Requires=homehub-labwc.service
+PartOf=homehub.service
+
+[Service]
+Type=simple
+User=homehub
+Group=homehub
+Environment=XDG_RUNTIME_DIR=/run/homehub
+RuntimeDirectory=homehub
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/hh-shell
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

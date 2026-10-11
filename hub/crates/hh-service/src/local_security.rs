@@ -3,7 +3,17 @@ use hh_core::Result;
 #[cfg(windows)] use hh_core::Error;
 use std::path::Path;
 pub fn protect_admin_token(data:&Path,path:&Path)->Result<()> {
-    #[cfg(not(windows))] {let _=data;use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o600))?;Ok(())}
+    #[cfg(unix)] {
+        let _ = data;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        unsafe extern "C" { fn getuid() -> u32; }
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_file() || metadata.uid() != unsafe { getuid() } {
+            return Err(hh_core::Error::Internal("unsafe local admin token".into()));
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
     #[cfg(windows)] {
         use std::os::windows::ffi::OsStrExt;
         let sid=std::fs::read_to_string(data.join("authorized-owner.sid"))?;let sid=sid.trim();

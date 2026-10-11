@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod local_ipc;
 pub mod paths;
 pub mod platform;
 pub mod time;
@@ -12,6 +13,7 @@ pub mod types;
 
 pub use config::Config;
 pub use error::{Error, Result};
+pub use local_ipc::{LocalIpcError, LocalIpcRequest, LocalIpcResponse, LocalOp};
 pub use types::*;
 
 /// Hub API port for paired devices (TLS 1.3 + mTLS, HTTP/2). TRD §4.

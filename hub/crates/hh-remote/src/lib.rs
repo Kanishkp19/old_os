@@ -6,6 +6,8 @@
 //! ACLs (see `helper_protocol` below).
 
 pub mod helper_client;
+#[cfg(target_os = "linux")]
+pub mod linux;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

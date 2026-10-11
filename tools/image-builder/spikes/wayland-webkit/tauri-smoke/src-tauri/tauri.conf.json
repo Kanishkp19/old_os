@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Home Hub OS Smoke Test",
+  "version": "0.1.0",
+  "identifier": "com.homehub.smoke",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      { "title": "Home Hub OS Smoke Test", "width": 960, "height": 640 }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:47801; style-src 'self' 'unsafe-inline'",
+      "dangerousRemoteDomainIpcAccess": []
+    }
+  },
+  "bundle": { "active": false }
+}

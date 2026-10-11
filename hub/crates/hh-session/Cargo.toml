@@ -17,6 +17,7 @@ default = ["screen"]
 [dependencies]
 hh-core = { path = "../hh-core" }
 hh-remote = { path = "../hh-remote" }
+hh-hw = { path = "../hh-hw" }
 anyhow = "1"
 clap.workspace = true
 tokio.workspace = true

@@ -7,6 +7,8 @@
 pub mod audit;
 pub mod compat;
 pub mod network;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod wake;
 
 use hh_core::Config;

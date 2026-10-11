@@ -23,6 +23,8 @@ pub mod server;
 
 #[cfg(windows)]
 pub mod platform_win;
+#[cfg(target_os = "linux")]
+pub mod platform_linux;
 
 #[cfg(all(windows, feature = "screen"))]
 mod capture;
@@ -125,12 +127,20 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_ops_fail_honestly_on_unix() {
-        #[cfg(not(windows))]
+    fn unsupported_ops_fail_honestly_on_other_platforms() {
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let r = execute(&HelperRequest::MouseMove { dx: 10, dy: -3 });
-            assert!(!r.ok, "mousemove on unix must fail honestly");
+            assert!(!r.ok, "mousemove must fail honestly");
             assert!(r.error.unwrap().contains("not supported"));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let r = execute(&HelperRequest::MouseMove { dx: 10, dy: -3 });
+            assert!(!r.ok, "remote input must stay blocked until owner authorization");
+            assert!(r.error.unwrap().contains("secure surface"));
+            let status = execute(&HelperRequest::BitlockerStatus);
+            assert_eq!(status.data.unwrap()["supported"], false);
         }
         #[cfg(windows)]
         {

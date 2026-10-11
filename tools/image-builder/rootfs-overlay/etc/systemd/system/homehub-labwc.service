@@ -1,0 +1,23 @@
+[Unit]
+Description=Home Hub owner compositor
+ConditionKernelCommandLine=!homehub.mode=trial
+After=systemd-logind.service homehub-session.service
+Requires=homehub-session.service
+PartOf=homehub.service
+
+[Service]
+Type=simple
+User=homehub
+Group=homehub
+Environment=XDG_RUNTIME_DIR=/run/homehub
+RuntimeDirectory=homehub
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/labwc
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

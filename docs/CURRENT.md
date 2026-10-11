@@ -1,24 +1,31 @@
-# Milestone: Integration E2E Sandbox & Final Validation Ledger
+# Phase 4 — Active Slice: P4.3a (Native Shell Chrome: Notifications, Quick Settings, OOBE & Broker App Launch Extension)
 
 ## Goal
-Finalize local technical validation before Windows hardware testing:
-1. Run and verify the end-to-end sandbox runner `tools/e2e_sandbox.sh` to confirm loopback daemon boot, fake-client mTLS pairing, chunked upload/resume, and SQLite WAL database consistency.
-2. Update `docs/WINDOWS_VALIDATION.md` with complete evidence for all local passes (Rust 70/70, Desktop 2/2 + 0 warnings, Android 18/18, Apple project generation, and all 5 items from FIXLIST.md resolved).
-3. Mark external hardware/Windows-only checks explicitly as pending physical device validation.
+Implement the native shell overlay features (Notifications, Quick Settings, OOBE) and extend the local broker IPC contracts:
+1. Extend `hub/crates/hh-core/src/local_ipc.rs` with `LocalOp::AppLaunch`, `LocalOp::NotificationsList`, `LocalOp::NotificationDismiss`, `LocalOp::NotificationClearAll`, `LocalOp::QuickSettingsSet` and typed DTOs.
+2. Update `hub/crates/hh-shell/src/ipc.rs` to wire typed app launch, notification list/dismiss, and quick settings calls.
+3. Implement `hub/crates/hh-shell/src/notifications.rs` (banners, notification center, DND toggle, bounded history <= 50, critical safety warnings cannot be dismissed to healthy).
+4. Implement `hub/crates/hh-shell/src/quick_settings.rs` (Wi-Fi, audio slider/mute, brightness, session lock, power controls with pending/error states per §4.13).
+5. Implement `hub/crates/hh-shell/src/oobe.rs` (language English/Hindi, touch/mouse mode toggle, Wi-Fi setup, owner credential, pairing QR code, resumable step checkpoints).
+6. Update `hub/crates/hh-shell/src/lib.rs` and `src/main.rs` to wire the new modules.
 
 ## Files to Touch
-- `tools/e2e_sandbox.sh` (if any loopback port/path adjustments are needed)
-- `docs/WINDOWS_VALIDATION.md` (record complete verification ledger)
+- `hub/crates/hh-core/src/local_ipc.rs` (EDIT)
+- `hub/crates/hh-shell/src/ipc.rs` (EDIT)
+- `hub/crates/hh-shell/src/notifications.rs` (NEW)
+- `hub/crates/hh-shell/src/quick_settings.rs` (NEW)
+- `hub/crates/hh-shell/src/oobe.rs` (NEW)
+- `hub/crates/hh-shell/src/lib.rs` (EDIT)
+- `hub/crates/hh-shell/src/main.rs` (EDIT)
 
 ## Targeted Acceptance Checks
-- `bash tools/e2e_sandbox.sh`
 - `cargo check --manifest-path hub/Cargo.toml`
+- `cargo test --manifest-path hub/Cargo.toml -p hh-core -p hh-shell`
 - `npm --prefix desktop run check`
 - `npm --prefix desktop test`
 
 ## Status
-- Status: COMPLETE
-- Blockers: None
-- Evidence: `bash tools/e2e_sandbox.sh` passed 24/24 assertions (including 5/5 fault-injection checks, WAL mode, and SQLite integrity); `cargo check --manifest-path hub/Cargo.toml` passed; `npm --prefix desktop run check` found 0 errors and 0 warnings; `npm --prefix desktop test` passed 2/2.
-- Pending external validation: Windows installer, WebView2, real capture/input, and physical Android/Apple client workflows remain open in the validation ledger.
-- Reference: [docs/TEST_PLAN.md](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/TEST_PLAN.md), [docs/WINDOWS_VALIDATION.md](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/WINDOWS_VALIDATION.md)
+- Status: P4.3a IN PROGRESS
+- Gate: G4 (Isolation, Lock Screen, Notifications & Capture Baseline)
+- Blockers: Wayland guest smoke and external PipeWire/portal capture validation remain pending Linux build host
+- Reference: [PHASE4_IMPLEMENTATION_PLAN.md §5.2, §5.4, §6](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md), [PHASE4_UI_UX_DESIGN.md §2.2, §3, §4](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_UI_UX_DESIGN.md)

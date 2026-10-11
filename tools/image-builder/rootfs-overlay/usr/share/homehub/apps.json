@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "apps": [
+    { "id": "photos", "label": "Photos", "available_in_trial": true },
+    { "id": "files", "label": "Files", "available_in_trial": true },
+    { "id": "browser", "label": "Browser", "available_in_trial": false },
+    { "id": "youtube", "label": "YouTube", "available_in_trial": false },
+    { "id": "music", "label": "Music", "available_in_trial": false },
+    { "id": "notes", "label": "Notes", "available_in_trial": true },
+    { "id": "calculator", "label": "Calculator", "available_in_trial": true },
+    { "id": "devices", "label": "Devices", "available_in_trial": false },
+    { "id": "settings", "label": "Settings", "available_in_trial": true }
+  ]
+}

@@ -41,7 +41,29 @@ impl HubIdentity {
         let server_key_path = data_dir.join("server.key.enc");
         let server_cert_path = data_dir.join("server.cert.pem");
 
-        if ca_cert_path.exists() && ca_key_path.exists() {
+        let identity_paths = [&ca_key_path, &ca_cert_path, &server_key_path, &server_cert_path];
+        let present = identity_paths.map(|path| match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        });
+        let present = present.into_iter().collect::<std::io::Result<Vec<_>>>()?;
+        let count = present.iter().filter(|metadata| metadata.is_some()).count();
+        if count != 0 && count != identity_paths.len() {
+            return Err(Error::Crypto("partial identity detected; refusing to overwrite existing credentials".into()));
+        }
+        #[cfg(unix)]
+        for (path, metadata) in identity_paths.iter().zip(&present) {
+            if let Some(metadata) = metadata {
+                use std::os::unix::fs::MetadataExt;
+                unsafe extern "C" { fn getuid() -> u32; }
+                if !metadata.file_type().is_file() || metadata.uid() != unsafe { getuid() } {
+                    return Err(Error::Crypto(format!("unsafe identity file: {}", path.display())));
+                }
+            }
+        }
+
+        if count == identity_paths.len() {
             let ca_cert_pem = std::fs::read_to_string(&ca_cert_path)?;
             let ca_key_pem = read_protected_key(&ca_key_path)?;
             let ca_key = KeyPair::from_pem(&ca_key_pem)
@@ -378,15 +400,61 @@ fn read_protected_key(path: &Path) -> Result<String> {
     String::from_utf8(plain).map_err(|_| Error::Crypto("decrypted key is not UTF-8".into()))
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn write_protected_key(path: &Path, pem: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, pem)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Err(Error::Crypto(format!("identity key already exists: {}", path.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error.into()),
+    }
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).create_new(true)
+        .mode(0o600).open(path)?;
+    file.write_all(pem.as_bytes())?;
+    file.sync_all()?;
+    let parent = path.parent().ok_or_else(|| Error::Crypto("identity key has no parent directory".into()))?;
+    std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn read_protected_key(path: &Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
+}
+
+#[cfg(all(test, unix))]
+mod unix_identity_tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    fn temp_identity_dir() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("hh-ca-test-{}-{}", std::process::id(), rand::random::<u64>()));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn partial_identity_refuses_regeneration() {
+        let dir = temp_identity_dir();
+        std::fs::write(dir.join("ca.cert.pem"), "existing").unwrap();
+        let error = HubIdentity::load_or_create(&dir, "test").err().unwrap();
+        assert!(matches!(error, Error::Crypto(message) if message == "partial identity detected; refusing to overwrite existing credentials"));
+        assert!(!dir.join("ca.key.enc").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn key_is_private_and_symlink_is_rejected() {
+        let dir = temp_identity_dir();
+        let key = dir.join("ca.key.enc");
+        write_protected_key(&key, "private").unwrap();
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let link = dir.join("server.key.enc");
+        symlink(&key, &link).unwrap();
+        assert!(write_protected_key(&link, "replacement").is_err());
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "private");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

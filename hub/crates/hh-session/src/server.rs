@@ -47,11 +47,29 @@ where S: AsyncRead + AsyncWrite + Unpin {
 pub async fn serve_unix(path: &str) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     if std::env::var_os("HOMEHUB_DEV_HELPER").is_none() { anyhow::bail!("development helper requires HOMEHUB_DEV_HELPER"); }
+    let parent = std::path::Path::new(path).parent().ok_or_else(|| anyhow::anyhow!("socket path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
     // Do not unlink an arbitrary existing path or socket owned by another process.
-    let listener = tokio::net::UnixListener::bind(path)?;
+    // bind(2) applies the process umask to the socket inode at creation.
+    // The helper creates its listener before accepting any untrusted peer.
+    unsafe extern "C" { fn umask(mask: u32) -> u32; }
+    let previous = unsafe { umask(0o177) };
+    let bound = tokio::net::UnixListener::bind(path);
+    unsafe { umask(previous); }
+    let listener = bound?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     loop {
         let (stream, _) = listener.accept().await?;
+        #[cfg(target_os = "linux")]
+        {
+            unsafe extern "C" { fn geteuid() -> u32; }
+            let peer = stream.peer_cred()?;
+            let owner = unsafe { geteuid() };
+            if peer.uid() != owner {
+                tracing::warn!("session IPC identity rejected");
+                continue;
+            }
+        }
         // Serial dispatch bounds outstanding connections and screen starts.
         if let Err(e) = handle_stream(stream).await { tracing::debug!(error = %e, "helper connection ended"); }
     }

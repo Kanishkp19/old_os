@@ -70,56 +70,58 @@ fn wrap(r: Result<(), String>) -> HelperResponse {
 pub mod platform {
     #[cfg(windows)]
     pub use crate::platform_win::*;
+    #[cfg(target_os = "linux")]
+    pub use crate::platform_linux::*;
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn release_input() -> Result<(), String> { Ok(()) }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn mouse_move(_dx: i32, _dy: i32) -> Result<(), String> {
         unsupported()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn click(_button: &str, _count: u8) -> Result<(), String> {
         unsupported()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn scroll(_dy: i32) -> Result<(), String> {
         unsupported()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn key(_key: &str, _down: bool) -> Result<(), String> {
         unsupported()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn text(_s: &str) -> Result<(), String> {
         unsupported()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn media_key(_key: &str) -> Result<(), String> {
         unsupported()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn power(_action: &str) -> Result<(), String> {
         unsupported()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn system_info() -> Result<serde_json::Value, String> {
         unsupported_value()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn hotspot(_enable: bool, _ssid: Option<&str>, _pass: Option<&str>) -> Result<serde_json::Value, String> {
         unsupported_value()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn bitlocker_status() -> Result<serde_json::Value, String> {
         unsupported_value()
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn unsupported() -> Result<(), String> {
         Err("not supported on this platform (Windows helper required)".into())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn unsupported_value() -> Result<serde_json::Value, String> {
         Err("not supported on this platform (Windows helper required)".into())
     }

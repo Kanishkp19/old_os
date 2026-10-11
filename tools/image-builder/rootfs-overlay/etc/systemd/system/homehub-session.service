@@ -1,0 +1,27 @@
+[Unit]
+Description=Home Hub active session helper
+ConditionKernelCommandLine=!homehub.mode=trial
+After=systemd-logind.service homehub.service
+Requires=homehub.service
+PartOf=homehub.service
+
+[Service]
+Type=simple
+User=homehub
+Group=homehub
+ExecStart=/usr/libexec/hh-session --mode socket
+RuntimeDirectory=homehub
+RuntimeDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/homehub
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

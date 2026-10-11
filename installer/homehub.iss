@@ -31,7 +31,7 @@ Source: "staging\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; DestDir: "{tmp}"
 Source: "..\hub\dashboard\*"; DestDir: "{app}\dashboard"; Flags: ignoreversion recursesubdirs
 Source: "runtime\install-runtime.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "runtime\start-user.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "runtime\restore-upgrade.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "runtime\restore-upgrade.ps1"; Flags: dontcopy
 Source: "runtime\uninstall-runtime.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "runtime\pre-upgrade.ps1"; Flags: dontcopy
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -42,14 +42,13 @@ Name: "{commonappdata}\HomeHub"
 [Icons]
 Name: "{group}\Home Hub"; Filename: "{app}\hh-desktop.exe"
 
-[Run]
-Filename: "{app}\hh-desktop.exe"; Description: "Open Home Hub"; Flags: postinstall nowait skipifsilent runasoriginaluser
-
 [UninstallRun]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\uninstall-runtime.ps1"" -AppDir ""{app}"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\uninstall-runtime.ps1"" -AppDir ""{app}"" -DataDir ""{commonappdata}\HomeHub"" -KeepData {code:GetKeepData}"; Flags: runhidden waituntilterminated; RunOnceId: "HomeHubRuntimeCleanup"
 
 [Code]
 var OwnerPage:TInputQueryWizardPage;
+    UpgradeSucceeded:Boolean;
+    KeepData:Boolean;
 
 procedure InitializeWizard;
 begin
@@ -70,6 +69,7 @@ begin
   if Trim(OwnerPage.Values[0])='' then begin Result:='Choose the Windows account that will administer Home Hub.'; exit; end;
   if Pos('"',OwnerPage.Values[0])>0 then begin Result:='Windows account contains an invalid character.'; exit; end;
   ExtractTemporaryFile('pre-upgrade.ps1');
+  ExtractTemporaryFile('restore-upgrade.ps1');
   Script:=ExpandConstant('{tmp}\pre-upgrade.ps1');
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),'-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+Script+'" -AppDir "'+ExpandConstant('{app}')+'" -DataDir "'+ExpandConstant('{commonappdata}\HomeHub')+'"','',SW_HIDE,ewWaitUntilTerminated,Code) or (Code<>0) then
     Result:='Could not prepare the existing Home Hub installation. Its data was left in place.';
@@ -85,6 +85,36 @@ begin
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),Params,'',SW_HIDE,ewWaitUntilTerminated,Code) or (Code<>0) then
       RaiseException('Home Hub could not finish installation. The saved upgrade is retained for recovery.');
   end;
+  if CurStep=ssDone then UpgradeSucceeded:=True;
+end;
+
+procedure DeinitializeSetup;
+var Code:Integer; Marker, Params:String;
+begin
+  Marker:=ExpandConstant('{commonappdata}\HomeHub\pending-upgrade-backup');
+  if not FileExists(Marker) then exit;
+  if UpgradeSucceeded then begin
+    if not DeleteFile(Marker) then Log('Could not clear the completed upgrade marker.');
+    exit;
+  end;
+  Params:='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+ExpandConstant('{tmp}\restore-upgrade.ps1')+'" -AppDir "'+ExpandConstant('{app}')+'" -DataDir "'+ExpandConstant('{commonappdata}\HomeHub')+'"';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),Params,'',SW_HIDE,ewWaitUntilTerminated,Code) or (Code<>0) then begin
+    Log('Automatic upgrade restore failed; the saved backup remains for recovery.');
+    if not WizardSilent then MsgBox('Home Hub could not restore the previous installation automatically. The saved backup remains in ProgramData\HomeHub for recovery.',mbError,MB_OK);
+  end;
+end;
+
+function InitializeUninstall:Boolean;
+begin
+  KeepData:=True;
+  if not UninstallSilent then
+    KeepData:=MsgBox('Keep Home Hub data, keys, and files stored in ProgramData? Files in other library folders are always kept.',mbConfirmation,MB_YESNO or MB_DEFBUTTON1)=IDYES;
+  Result:=True;
+end;
+
+function GetKeepData(Param:String):String;
+begin
+  if KeepData then Result:='yes' else Result:='no';
 end;
 
 ; User data is retained on uninstall, including library, CA, DB, private app

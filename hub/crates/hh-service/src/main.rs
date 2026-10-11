@@ -33,6 +33,9 @@ struct Args {
     console: bool,
     #[arg(long)]
     backup_database:Option<std::path::PathBuf>,
+    /// Export allowlisted service diagnostics without logs or identifiers.
+    #[arg(long, conflicts_with = "backup_database")]
+    export_diagnostics:Option<std::path::PathBuf>,
     #[arg(long)]
     wake_only:bool,
     /// Override data dir (default %ProgramData%\HomeHub).
@@ -50,6 +53,7 @@ fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args = Args::parse();
     if args.wake_only{return Ok(());}
+    if let Some(destination)=&args.export_diagnostics {return export_diagnostics(destination);}
     let mut defaults = Config::default();
     if let Some(d)=&args.data_dir { defaults.data_dir=d.into();defaults.log_dir=defaults.data_dir.join("logs"); }
     if let Some(destination)=&args.backup_database {return Db::snapshot(&defaults.db_path(),destination);}
@@ -58,7 +62,7 @@ fn main() -> Result<()> {
     if let Some(d)=args.data_dir {cfg.data_dir=d.into();}
     if let Some(l)=args.library_root {cfg.library_root=l.into();}
     cfg.ensure_dirs()?;
-    init_logging(&cfg);
+    init_logging(&cfg)?;
 
     #[cfg(windows)]
     {
@@ -70,8 +74,8 @@ fn main() -> Result<()> {
     run_console(cfg)
 }
 
-fn init_logging(cfg: &Config) {
-    let writer=logging::BoundedLog::new(&cfg.log_dir);
+fn init_logging(cfg: &Config) -> Result<()> {
+    let writer=logging::BoundedLog::new(&cfg.log_dir)?;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -79,9 +83,28 @@ fn init_logging(cfg: &Config) {
         )
         .with_writer(move||writer.clone())
         .with_ansi(false)
-        .init();
+        .try_init().map_err(|e|hh_core::Error::Internal(e.to_string()))?;
     // NOTE: never log tokens, keys, or file contents (AGENTS.md §2.7).
+    Ok(())
+}
 
+fn export_diagnostics(destination:&std::path::Path)->Result<()> {
+    // An explicit allowlist keeps user-controlled names, paths, IDs, tokens,
+    // file contents and raw logs out of exported diagnostics.
+    let payload=serde_json::json!({
+        "service_version":hh_core::HUB_VERSION,
+        "platform":std::env::consts::OS,
+        "architecture":std::env::consts::ARCH,
+        "log_limits":{"files":logging::MAX_FILES,"bytes_per_file":logging::MAX_FILE_BYTES},
+    });
+    let bytes=serde_json::to_vec_pretty(&payload).map_err(|e|hh_core::Error::Internal(e.to_string()))?;
+    use std::io::Write;
+    let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+    if let Err(error)=file.write_all(&bytes).and_then(|_|file.sync_all()) {
+        let _=std::fs::remove_file(destination);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 /// Console mode: Ctrl+C is the stop signal.

@@ -9,20 +9,35 @@ try {
     if (Test-Path -LiteralPath $ownerFile -PathType Leaf) {
         $previous = [IO.File]::ReadAllText($ownerFile).Trim()
         if ($previous -ne $sid) { throw 'This Home Hub is already assigned to a different Windows owner. Keep the existing owner for upgrades.' }
-    } else { [IO.File]::WriteAllText($ownerFile,$sid) }
-    & icacls.exe $DataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not protect the Home Hub data directory' }
-    & icacls.exe $ownerFile /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not protect the owner identity' }
+    }
+    $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $admins = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $full = [Security.AccessControl.FileSystemRights]::FullControl
+    $allow = [Security.AccessControl.AccessControlType]::Allow
+    $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $dirAcl = [Security.AccessControl.DirectorySecurity]::new()
+    $dirAcl.SetAccessRuleProtection($true,$false)
+    foreach ($principal in @($system,$admins)) {
+        $dirAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($principal,$full,$inherit,[Security.AccessControl.PropagationFlags]::None,$allow))
+    }
+    [IO.Directory]::SetAccessControl($DataDir,$dirAcl)
+    if (!(Test-Path -LiteralPath $ownerFile -PathType Leaf)) { [IO.File]::WriteAllText($ownerFile,$sid) }
+    $fileAcl = [Security.AccessControl.FileSecurity]::new()
+    $fileAcl.SetAccessRuleProtection($true,$false)
+    foreach ($principal in @($system,$admins)) {
+        $fileAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($principal,$full,$allow))
+    }
+    [IO.File]::SetAccessControl($ownerFile,$fileAcl)
     $bin = Join-Path $AppDir 'hh-service.exe'
     $commandLine = '"' + $bin + '" --data-dir "' + $DataDir + '"'
     if (Get-Service -Name HomeHub -ErrorAction SilentlyContinue) {
-        & sc.exe config HomeHub binPath= $commandLine start= auto | Out-Null
+        & sc.exe config HomeHub binPath= $commandLine start= auto obj= LocalSystem | Out-Null
     } else {
-        & sc.exe create HomeHub binPath= $commandLine start= auto DisplayName= 'Home Hub' | Out-Null
+        & sc.exe create HomeHub binPath= $commandLine start= auto obj= LocalSystem DisplayName= 'Home Hub' | Out-Null
     }
     if ($LASTEXITCODE -ne 0) { throw 'Could not configure the Home Hub service' }
     & sc.exe failure HomeHub reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not configure service recovery' }
     foreach ($rule in @(
         @{ Name='Home Hub API'; Protocol='TCP'; Port='47800'; Program=$bin },
         @{ Name='Home Hub Pairing'; Protocol='TCP'; Port='47802'; Program=$bin },
@@ -30,7 +45,7 @@ try {
         @{ Name='Home Hub Screen'; Protocol='UDP'; Port='Any'; Program=(Join-Path $AppDir 'hh-session.exe') }
     )) {
         Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-        New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow -Profile Private -Protocol $rule.Protocol -LocalPort $rule.Port -RemoteAddress LocalSubnet -Program $rule.Program -ErrorAction Stop | Out-Null
+        New-NetFirewallRule -DisplayName $rule.Name -Group 'Home Hub' -Direction Inbound -Action Allow -Profile Private -Protocol $rule.Protocol -LocalPort $rule.Port -RemoteAddress LocalSubnet -Program $rule.Program -EdgeTraversalPolicy Block -ErrorAction Stop | Out-Null
     }
     $launch = Join-Path $AppDir 'start-user.ps1'
     $taskArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launch + '" -AppDir "' + $AppDir + '" -DataDir "' + $DataDir + '"'
@@ -41,12 +56,7 @@ try {
     Start-Service -Name HomeHub -ErrorAction Stop
     (Get-Service -Name HomeHub).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))
     Start-ScheduledTask -TaskName 'HomeHub User Session' -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path $DataDir 'pending-upgrade-backup') -ErrorAction SilentlyContinue
 } catch {
-    $restore = Join-Path $AppDir 'restore-upgrade.ps1'
-    if ((Test-Path -LiteralPath $restore) -and (Test-Path -LiteralPath (Join-Path $DataDir 'pending-upgrade-backup'))) {
-        & $restore -AppDir $AppDir -DataDir $DataDir
-    }
     Write-Error $_
     exit 1
 }

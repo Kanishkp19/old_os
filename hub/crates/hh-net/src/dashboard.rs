@@ -396,7 +396,6 @@ fn hh_service_diagnostics(app: &AppState) -> serde_json::Value {
         "privacy_note": "Contains no file names or file contents; library and data paths are scrubbed from logs.",
         "hub": {
             "version": hh_core::HUB_VERSION,
-            "hub_id": app.db.hub_identity().map(|(i, _)| i).unwrap_or_default(),
             "uptime_ms": uptime_ms,
             "features": app.cfg.features,
         },

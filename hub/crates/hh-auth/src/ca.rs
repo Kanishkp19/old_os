@@ -408,7 +408,7 @@ const DPAPI_MAGIC: &[u8; 4] = b"DPA1";
 
 #[cfg(windows)]
 fn write_protected_key(path: &Path, pem: &str) -> Result<()> {
-    let enc = dpapi::protect(pem.as_bytes(), "Home Hub CA key").map_err(|e| Error::Crypto(e))?;
+    let enc = dpapi::protect(pem.as_bytes(), "Home Hub CA key").map_err(Error::Crypto)?;
     let mut blob = DPAPI_MAGIC.to_vec();
     blob.extend_from_slice(&enc);
     std::fs::write(path, &blob)?;

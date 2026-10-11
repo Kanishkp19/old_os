@@ -166,11 +166,12 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            // On Windows the op executes for real; just check it apexes ok.
+            // On Windows the op executes for real; in interactive sessions it succeeds,
+            // in headless CI/Session 0 SendInput fails cleanly with UIPI/desktop error.
             let r = execute(&HelperRequest::MouseMove { dx: 0, dy: 0 });
             assert!(
-                r.ok,
-                "mousemove on Windows session should succeed: {:?}",
+                r.ok || r.error.as_deref().unwrap_or("").contains("SendInput failed"),
+                "mousemove on Windows session should succeed or report headless input failure: {:?}",
                 r.error
             );
         }

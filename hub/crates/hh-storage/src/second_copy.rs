@@ -266,7 +266,7 @@ fn same_volume(a: &std::path::Path, b: &std::path::Path) -> Result<bool> {
     }
     #[cfg(windows)]
     {
-        return Ok(a.components().next() == b.components().next());
+        Ok(a.components().next() == b.components().next())
     }
     #[cfg(not(any(unix, windows)))]
     {

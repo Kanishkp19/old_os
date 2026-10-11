@@ -280,13 +280,13 @@ async fn run_hub(
         let write_path = cfg
             .data_dir
             .join(format!(".dashboard_token-{}", std::process::id()));
-        #[cfg(windows)]
+        #[cfg(not(unix))]
         let write_path = token_path.clone();
         let mut options = std::fs::OpenOptions::new();
         options.write(true);
         #[cfg(unix)]
         options.create_new(true);
-        #[cfg(windows)]
+        #[cfg(not(unix))]
         options.create(true).truncate(true);
         #[cfg(unix)]
         {

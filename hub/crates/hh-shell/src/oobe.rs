@@ -89,9 +89,16 @@ impl OobeState {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let temporary = path.with_extension("json.tmp");
+        let temporary = path.with_extension(format!(
+            "json.tmp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        options.write(true).create(true).truncate(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -102,6 +109,10 @@ impl OobeState {
             let mut file = options.open(&temporary)?;
             file.write_all(&serde_json::to_vec(self)?)?;
             file.sync_all()?;
+            #[cfg(windows)]
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
             fs::rename(&temporary, path)
         })();
         if result.is_err() {
@@ -141,7 +152,14 @@ mod tests {
     }
     #[test]
     fn checkpoint_round_trip() {
-        let path = std::env::temp_dir().join(format!("hh-oobe-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "hh-oobe-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         let mut state = OobeState::default();
         assert!(state.select_language("hi"));
         state.save_checkpoint(&path).unwrap();

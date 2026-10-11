@@ -1,5 +1,6 @@
 //! Fail-closed authentication for the installed service/session pipe pair.
 //! The install directory must be administrator-owned (the installer ACL).
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 use std::{ffi::c_void, path::PathBuf, ptr};
 type Handle = *mut c_void;
 #[link(name = "kernel32")]

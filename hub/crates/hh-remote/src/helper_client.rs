@@ -55,16 +55,20 @@ impl HelperClient {
     pub fn detect() -> Option<Self> {
         #[cfg(windows)]
         {
-            Some(Self { transport: Transport::Pipe })
+            Some(Self {
+                transport: Transport::Pipe,
+            })
         }
         #[cfg(not(windows))]
         {
             // Development sockets require explicit opt-in; never advertise
             // Unix fake input/screen support in a shipped service.
-            if std::env::var_os("HOMEHUB_DEV_HELPER").is_none() { return None; }
+            std::env::var_os("HOMEHUB_DEV_HELPER")?;
             let path = std::env::temp_dir().join(SOCKET_NAME);
             if path.exists() {
-                Some(Self { transport: Transport::UnixSocket(path.to_string_lossy().into_owned()) })
+                Some(Self {
+                    transport: Transport::UnixSocket(path.to_string_lossy().into_owned()),
+                })
             } else {
                 None
             }
@@ -81,50 +85,81 @@ impl HelperClient {
 
     /// Execute one request against the helper; connect per call.
     pub fn call(&self, req: &HelperRequest) -> Result<HelperResponse> {
-        let mut line = serde_json::to_string(req).map_err(|e| Error::Internal(format!("helper encode: {e}")))?;
+        let mut line = serde_json::to_string(req)
+            .map_err(|e| Error::Internal(format!("helper encode: {e}")))?;
         line.push('\n');
-        if line.len() > MAX_FRAME_BYTES { return Err(Error::TooLarge("helper request".into())); }
-        let deadline = if matches!(req, HelperRequest::ScreenOffer { .. }) { Duration::from_secs(30) } else { IPC_TIMEOUT };
+        if line.len() > MAX_FRAME_BYTES {
+            return Err(Error::TooLarge("helper request".into()));
+        }
+        let deadline = if matches!(req, HelperRequest::ScreenOffer { .. }) {
+            Duration::from_secs(30)
+        } else {
+            IPC_TIMEOUT
+        };
 
         match &self.transport {
             Transport::Pipe => {
                 #[cfg(windows)]
                 {
-                    if line.len() > MAX_FRAME_BYTES { return Err(Error::BadRequest("helper request too large".into())); }
+                    if line.len() > MAX_FRAME_BYTES {
+                        return Err(Error::BadRequest("helper request too large".into()));
+                    }
                     // Own runtime on a short-lived thread: safe from callers
                     // already inside Tokio, and all overlapped IO is timed.
                     std::thread::spawn(move || {
-                        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
                             .map_err(|_| helper_down())?;
                         rt.block_on(async {
                             tokio::time::timeout(deadline, async {
                                 use std::os::windows::io::AsRawHandle;
                                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                                let pipe_name = crate::windows_security::active_pipe_name().ok_or_else(helper_down)?;
+                                let pipe_name = crate::windows_security::active_pipe_name()
+                                    .ok_or_else(helper_down)?;
                                 let pipe = loop {
-                                    match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+                                    match tokio::net::windows::named_pipe::ClientOptions::new()
+                                        .open(&pipe_name)
+                                    {
                                         Ok(pipe) => break pipe,
-                                        Err(e) if e.raw_os_error() == Some(231) => tokio::time::sleep(Duration::from_millis(25)).await,
+                                        Err(e) if e.raw_os_error() == Some(231) => {
+                                            tokio::time::sleep(Duration::from_millis(25)).await
+                                        }
                                         Err(_) => return Err(helper_down()),
                                     }
                                 };
-                                if !crate::windows_security::verify_session_server(pipe.as_raw_handle()) {
+                                if !crate::windows_security::verify_session_server(
+                                    pipe.as_raw_handle(),
+                                ) {
                                     return Err(Error::Unauthenticated);
                                 }
                                 let mut pipe = pipe;
-                                pipe.write_all(line.as_bytes()).await.map_err(|_| helper_down())?;
+                                pipe.write_all(line.as_bytes())
+                                    .await
+                                    .map_err(|_| helper_down())?;
                                 let mut reader = tokio::io::BufReader::new(pipe);
                                 let mut response = Vec::new();
                                 loop {
                                     let byte = reader.read_u8().await.map_err(|_| helper_down())?;
-                                    if byte == b'\n' { break; }
-                                    if response.len() >= MAX_FRAME_BYTES { return Err(Error::Internal("helper response too large".into())); }
+                                    if byte == b'\n' {
+                                        break;
+                                    }
+                                    if response.len() >= MAX_FRAME_BYTES {
+                                        return Err(Error::Internal(
+                                            "helper response too large".into(),
+                                        ));
+                                    }
                                     response.push(byte);
                                 }
-                                serde_json::from_slice(&response).map_err(|_| Error::Internal("invalid helper response".into()))
-                            }).await.map_err(|_| Error::Internal("session helper timed out".into()))?
+                                serde_json::from_slice(&response)
+                                    .map_err(|_| Error::Internal("invalid helper response".into()))
+                            })
+                            .await
+                            .map_err(|_| Error::Internal("session helper timed out".into()))?
                         })
-                    }).join().map_err(|_| Error::Internal("helper IO worker failed".into()))?
+                    })
+                    .join()
+                    .map_err(|_| Error::Internal("helper IO worker failed".into()))?
                 }
                 #[cfg(not(windows))]
                 {
@@ -137,8 +172,10 @@ impl HelperClient {
                 {
                     use std::os::unix::net::UnixStream;
                     let f = UnixStream::connect(path).map_err(|_| helper_down())?;
-                    f.set_read_timeout(Some(deadline)).map_err(|_| helper_down())?;
-                    f.set_write_timeout(Some(deadline)).map_err(|_| helper_down())?;
+                    f.set_read_timeout(Some(deadline))
+                        .map_err(|_| helper_down())?;
+                    f.set_write_timeout(Some(deadline))
+                        .map_err(|_| helper_down())?;
                     let mut reader = BufReader::new(f);
                     reader
                         .get_mut()
@@ -156,7 +193,9 @@ impl HelperClient {
     }
 
     /// Release keys held by a disconnected remote session.
-    pub fn release_input(&self) -> Result<()> { self.call(&HelperRequest::ReleaseInput)?.into_unit() }
+    pub fn release_input(&self) -> Result<()> {
+        self.call(&HelperRequest::ReleaseInput)?.into_unit()
+    }
 
     /// Connectivity probe; returns the helper's version/platform payload.
     pub fn ping(&self) -> Result<serde_json::Value> {
@@ -170,9 +209,18 @@ impl HelperClient {
     }
 
     /// Mobile-hotspot toggle (FR-8.3) via WinRT tethering in the helper.
-    pub fn hotspot(&self, enable: bool, ssid: Option<&str>, passphrase: Option<&str>) -> Result<serde_json::Value> {
-        self.call(&HelperRequest::Hotspot { enable, ssid: ssid.map(str::to_string), passphrase: passphrase.map(str::to_string) })?
-            .into_data()
+    pub fn hotspot(
+        &self,
+        enable: bool,
+        ssid: Option<&str>,
+        passphrase: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        self.call(&HelperRequest::Hotspot {
+            enable,
+            ssid: ssid.map(str::to_string),
+            passphrase: passphrase.map(str::to_string),
+        })?
+        .into_data()
     }
 
     /// BitLocker status for the library drive (FR-4.5).
@@ -187,9 +235,20 @@ impl HelperClient {
         self.screen_offer_for(&ulid::Ulid::new().to_string(), sdp, preset, kind)
     }
 
-    pub fn screen_offer_for(&self, session_id: &str, sdp: &str, preset: &str, kind: &str) -> Result<serde_json::Value> {
-        self.call(&HelperRequest::ScreenOffer { sdp: sdp.to_string(), preset: preset.to_string(), kind: kind.to_string(), session_id: session_id.into() })?
-            .into_data()
+    pub fn screen_offer_for(
+        &self,
+        session_id: &str,
+        sdp: &str,
+        preset: &str,
+        kind: &str,
+    ) -> Result<serde_json::Value> {
+        self.call(&HelperRequest::ScreenOffer {
+            sdp: sdp.to_string(),
+            preset: preset.to_string(),
+            kind: kind.to_string(),
+            session_id: session_id.into(),
+        })?
+        .into_data()
     }
 
     /// Feed a trickle ICE candidate to the active helper session.
@@ -198,11 +257,18 @@ impl HelperClient {
     }
 
     pub fn add_ice_for(&self, session_id: &str, candidate: &str) -> Result<()> {
-        self.call(&HelperRequest::AddIce { candidate: candidate.to_string(), session_id: session_id.into() })?.into_unit()
+        self.call(&HelperRequest::AddIce {
+            candidate: candidate.to_string(),
+            session_id: session_id.into(),
+        })?
+        .into_unit()
     }
 
     pub fn screen_stop_for(&self, session_id: &str) -> Result<()> {
-        self.call(&HelperRequest::ScreenStopSession { session_id: session_id.into() })?.into_unit()
+        self.call(&HelperRequest::ScreenStopSession {
+            session_id: session_id.into(),
+        })?
+        .into_unit()
     }
 
     pub fn screen_capabilities(&self) -> Result<serde_json::Value> {
@@ -221,8 +287,13 @@ fn helper_down() -> Error {
 
 fn read_response(reader: &mut impl BufRead) -> Result<HelperResponse> {
     let mut line = String::new();
-    reader.take((MAX_FRAME_BYTES + 1) as u64).read_line(&mut line).map_err(|_| helper_down())?;
-    if line.len() > MAX_FRAME_BYTES || !line.ends_with('\n') { return Err(Error::Internal("invalid helper framing".into())); }
+    reader
+        .take((MAX_FRAME_BYTES + 1) as u64)
+        .read_line(&mut line)
+        .map_err(|_| helper_down())?;
+    if line.len() > MAX_FRAME_BYTES || !line.ends_with('\n') {
+        return Err(Error::Internal("invalid helper framing".into()));
+    }
     if line.trim().is_empty() {
         return Err(helper_down());
     }
@@ -268,31 +339,51 @@ impl InputControl for HelperClient {
         self.call(&HelperRequest::MouseMove { dx, dy })?.into_unit()
     }
     fn click(&self, btn: MouseButton, count: u8) -> Result<()> {
-        self.call(&HelperRequest::Click { button: mouse_btn_str(btn).into(), count })?.into_unit()
+        self.call(&HelperRequest::Click {
+            button: mouse_btn_str(btn).into(),
+            count,
+        })?
+        .into_unit()
     }
     fn scroll(&self, dy: i32) -> Result<()> {
         self.call(&HelperRequest::Scroll { dy })?.into_unit()
     }
     fn key(&self, key: &str, down: bool) -> Result<()> {
-        self.call(&HelperRequest::Key { key: key.into(), down })?.into_unit()
+        self.call(&HelperRequest::Key {
+            key: key.into(),
+            down,
+        })?
+        .into_unit()
     }
     fn text(&self, s: &str) -> Result<()> {
         self.call(&HelperRequest::Text { s: s.into() })?.into_unit()
     }
     fn media_key(&self, key: MediaKey) -> Result<()> {
-        self.call(&HelperRequest::Media { key: media_key_str(key).into() })?.into_unit()
+        self.call(&HelperRequest::Media {
+            key: media_key_str(key).into(),
+        })?
+        .into_unit()
     }
 }
 
 impl PowerControl for HelperClient {
     fn sleep(&self) -> Result<()> {
-        self.call(&HelperRequest::Power { action: "sleep".into() })?.into_unit()
+        self.call(&HelperRequest::Power {
+            action: "sleep".into(),
+        })?
+        .into_unit()
     }
     fn restart(&self) -> Result<()> {
-        self.call(&HelperRequest::Power { action: "restart".into() })?.into_unit()
+        self.call(&HelperRequest::Power {
+            action: "restart".into(),
+        })?
+        .into_unit()
     }
     fn shutdown(&self) -> Result<()> {
-        self.call(&HelperRequest::Power { action: "shutdown".into() })?.into_unit()
+        self.call(&HelperRequest::Power {
+            action: "shutdown".into(),
+        })?
+        .into_unit()
     }
 }
 

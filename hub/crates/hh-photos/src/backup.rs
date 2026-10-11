@@ -2,7 +2,7 @@
 
 use hh_core::error::{Error, Result};
 use hh_core::time::now_ms;
-use rusqlite::{params,OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::{db_e, PhotoService};
@@ -46,7 +46,12 @@ pub struct BackupSummary {
 
 impl PhotoService {
     /// Register/approve a backup source (FR-5.1 one-time approval).
-    pub fn upsert_source(&self, device_id: &str, kind: &str, label: Option<&str>) -> Result<BackupSource> {
+    pub fn upsert_source(
+        &self,
+        device_id: &str,
+        kind: &str,
+        label: Option<&str>,
+    ) -> Result<BackupSource> {
         let existing: Option<String> = {
             let c = self.db.lock()?;
             c.query_row(
@@ -91,19 +96,34 @@ impl PhotoService {
         .map_err(|_| Error::NotFound(format!("backup source {id}")))
     }
 
-    pub fn update_source(&self, id: &str, enabled: Option<bool>, wifi_only: Option<bool>, charging_only: Option<bool>) -> Result<()> {
+    pub fn update_source(
+        &self,
+        id: &str,
+        enabled: Option<bool>,
+        wifi_only: Option<bool>,
+        charging_only: Option<bool>,
+    ) -> Result<()> {
         let c = self.db.lock()?;
         if let Some(e) = enabled {
-            c.execute("UPDATE backup_sources SET enabled=?2 WHERE id=?1", params![id, e as i64])
-                .map_err(db_e)?;
+            c.execute(
+                "UPDATE backup_sources SET enabled=?2 WHERE id=?1",
+                params![id, e as i64],
+            )
+            .map_err(db_e)?;
         }
         if let Some(w) = wifi_only {
-            c.execute("UPDATE backup_sources SET wifi_only=?2 WHERE id=?1", params![id, w as i64])
-                .map_err(db_e)?;
+            c.execute(
+                "UPDATE backup_sources SET wifi_only=?2 WHERE id=?1",
+                params![id, w as i64],
+            )
+            .map_err(db_e)?;
         }
         if let Some(ch) = charging_only {
-            c.execute("UPDATE backup_sources SET charging_only=?2 WHERE id=?1", params![id, ch as i64])
-                .map_err(db_e)?;
+            c.execute(
+                "UPDATE backup_sources SET charging_only=?2 WHERE id=?1",
+                params![id, ch as i64],
+            )
+            .map_err(db_e)?;
         }
         Ok(())
     }
@@ -111,25 +131,42 @@ impl PhotoService {
     /// Discovery never treats a previously verified row as current unless
     /// the current source hash and the freshly read Hub content both match.
     pub fn diff(&self, source_id: &str, items: &[DiffItem]) -> Result<DiffResponse> {
-        if items.len() > 2000 { return Err(Error::TooLarge("backup discovery batch".into())); }
+        if items.len() > 2000 {
+            return Err(Error::TooLarge("backup discovery batch".into()));
+        }
         let source = self.get_source(source_id)?;
-        if !source.enabled { return Err(Error::Conflict("backup source is disabled".into())); }
+        if !source.enabled {
+            return Err(Error::Conflict("backup source is disabled".into()));
+        }
         let mut needed = Vec::new();
         let mut already = 0;
         let mut c = self.db.lock()?;
-        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_e)?;
         for item in items {
             let mut found = None;
             if let Some(hash) = &item.hash {
-                let previous:Option<String>=tx.query_row(
-                    "SELECT file_id FROM backup_items WHERE source_id=?1 AND client_item_id=?2
+                let previous: Option<String> = tx
+                    .query_row(
+                        "SELECT file_id FROM backup_items WHERE source_id=?1 AND client_item_id=?2
                      AND status='verified' AND file_id IS NOT NULL AND lower(hash)=lower(?3)",
-                    params![source_id,item.client_item_id,hash],|r|r.get(0)).optional().map_err(db_e)?;
-                if let Some(id)=previous {
-                    if verify_file(&tx,&id,hash,Some(item.size)).is_ok() {found=Some(id);}
+                        params![source_id, item.client_item_id, hash],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(db_e)?;
+                if let Some(id) = previous {
+                    if verify_file(&tx, &id, hash, Some(item.size)).is_ok() {
+                        found = Some(id);
+                    }
                 }
             }
-            let status = if found.is_some() { "verified" } else { "pending" };
+            let status = if found.is_some() {
+                "verified"
+            } else {
+                "pending"
+            };
             tx.execute(
                 "INSERT INTO backup_items(id,source_id,client_item_id,file_id,hash,status,verified_at,expected_size)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
@@ -140,36 +177,75 @@ impl PhotoService {
                  local_freed_at=CASE WHEN excluded.status='verified' AND backup_items.hash=excluded.hash THEN backup_items.local_freed_at ELSE NULL END",
                 params![ulid::Ulid::new().to_string(),source_id,item.client_item_id,found,item.hash,status,
                     if status=="verified" {Some(now_ms())} else {None},item.size as i64]).map_err(db_e)?;
-            if status == "verified" { already += 1; } else { needed.push(item.client_item_id.clone()); }
+            if status == "verified" {
+                already += 1;
+            } else {
+                needed.push(item.client_item_id.clone());
+            }
         }
-        tx.execute("UPDATE backup_sources SET last_run_at=?2 WHERE id=?1",params![source_id,now_ms()]).map_err(db_e)?;
+        tx.execute(
+            "UPDATE backup_sources SET last_run_at=?2 WHERE id=?1",
+            params![source_id, now_ms()],
+        )
+        .map_err(db_e)?;
         tx.commit().map_err(db_e)?;
-        Ok(DiffResponse {new_photos:needed.len() as u64,new_videos:0,already_backed_up:already,needed})
+        Ok(DiffResponse {
+            new_photos: needed.len() as u64,
+            new_videos: 0,
+            already_backed_up: already,
+            needed,
+        })
     }
 
     /// Called only after transfer finalization; additionally verifies source
     /// ownership and current file bytes before setting deletion eligibility.
-    pub fn mark_transfer_verified(&self, source_id:&str, device_id:&str, client_item_id:&str,
-        file_id:&str, expected_hash:&str, transfer_id:Option<&str>) -> Result<String> {
+    pub fn mark_transfer_verified(
+        &self,
+        source_id: &str,
+        device_id: &str,
+        client_item_id: &str,
+        file_id: &str,
+        expected_hash: &str,
+        transfer_id: Option<&str>,
+    ) -> Result<String> {
         let source = self.get_source(source_id)?;
-        if source.device_id != device_id || !source.enabled { return Err(Error::ForbiddenScope("backup source".into())); }
+        if source.device_id != device_id || !source.enabled {
+            return Err(Error::ForbiddenScope("backup source".into()));
+        }
         let c = self.db.lock()?;
         let (id,queued_hash,expected_size):(String,Option<String>,Option<i64>)=c.query_row(
             "SELECT id,hash,expected_size FROM backup_items WHERE source_id=?1 AND client_item_id=?2",
             params![source_id,client_item_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
             .map_err(|_|Error::Conflict("backup item must be queued before verification".into()))?;
-        if queued_hash.as_deref().is_some_and(|hash|!hash.eq_ignore_ascii_case(expected_hash)) {
+        if queued_hash
+            .as_deref()
+            .is_some_and(|hash| !hash.eq_ignore_ascii_case(expected_hash))
+        {
             return Err(Error::RootHashMismatch);
         }
-        if let Some(transfer_id)=transfer_id {
-            let finalized:i64=c.query_row("SELECT COUNT(*) FROM transfers WHERE id=?1 AND device_id=?2
+        if let Some(transfer_id) = transfer_id {
+            let finalized: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM transfers WHERE id=?1 AND device_id=?2
                 AND backup_source_id=?3 AND client_item_id=?4 AND result_file_id=?5
                 AND status='completed' AND lower(expected_root_hash)=lower(?6)",
-                params![transfer_id,device_id,source_id,client_item_id,file_id,expected_hash],|r|r.get(0)).map_err(db_e)?;
-            if finalized!=1 {return Err(Error::Conflict("backup transfer has not finalized".into()));}
+                    params![
+                        transfer_id,
+                        device_id,
+                        source_id,
+                        client_item_id,
+                        file_id,
+                        expected_hash
+                    ],
+                    |r| r.get(0),
+                )
+                .map_err(db_e)?;
+            if finalized != 1 {
+                return Err(Error::Conflict("backup transfer has not finalized".into()));
+            }
         }
-        if let Err(e)=verify_file(&c,file_id,expected_hash,expected_size.map(|n|n as u64)) {
-            invalidate_item(&c,&id)?;
+        if let Err(e) = verify_file(&c, file_id, expected_hash, expected_size.map(|n| n as u64)) {
+            invalidate_item(&c, &id)?;
             return Err(e);
         }
         c.execute("UPDATE backup_items SET file_id=?2,hash=?3,status='verified',verified_at=?4,transfer_id=?5
@@ -178,109 +254,195 @@ impl PhotoService {
     }
 
     /// Legacy bookkeeping remains safe but does not grant deletion permission.
-    pub fn confirm_local_freed(&self, source_id:&str, client_item_id:&str)->Result<()> {
-        let c=self.db.lock()?;
+    pub fn confirm_local_freed(&self, source_id: &str, client_item_id: &str) -> Result<()> {
+        let c = self.db.lock()?;
         let row:(String,Option<String>,Option<String>)=c.query_row("SELECT id,file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified'",
             params![source_id,client_item_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_e)?;
-        let valid=match (&row.1,&row.2) {
-            (Some(file_id),Some(hash))=>verify_file(&c,file_id,hash,None),
-            _=>Err(Error::Conflict("backup copy is unavailable".into())),
+        let valid = match (&row.1, &row.2) {
+            (Some(file_id), Some(hash)) => verify_file(&c, file_id, hash, None),
+            _ => Err(Error::Conflict("backup copy is unavailable".into())),
         };
-        if let Err(e)=valid {invalidate_item(&c,&row.0)?;return Err(e);}
-        c.execute("UPDATE backup_items SET local_freed_at=?3 WHERE source_id=?1 AND client_item_id=?2",
-            params![source_id,client_item_id,now_ms()]).map_err(db_e)?;
+        if let Err(e) = valid {
+            invalidate_item(&c, &row.0)?;
+            return Err(e);
+        }
+        c.execute(
+            "UPDATE backup_items SET local_freed_at=?3 WHERE source_id=?1 AND client_item_id=?2",
+            params![source_id, client_item_id, now_ms()],
+        )
+        .map_err(db_e)?;
         Ok(())
     }
 
-    pub fn create_cleanup_lease(&self,source_id:&str,device_id:&str,ids:&[String])->Result<CleanupLease> {
-        self.create_cleanup_review(source_id,device_id,ids,None)
+    pub fn create_cleanup_lease(
+        &self,
+        source_id: &str,
+        device_id: &str,
+        ids: &[String],
+    ) -> Result<CleanupLease> {
+        self.create_cleanup_review(source_id, device_id, ids, None)
     }
 
-    pub fn create_cleanup_review(&self,source_id:&str,device_id:&str,ids:&[String],review:Option<&str>)->Result<CleanupLease> {
-        if ids.is_empty() || ids.len()>500 { return Err(Error::BadRequest("select 1–500 cleanup items".into())); }
-        if review.is_some_and(|v|v.is_empty()||v.len()>128||!v.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')) {return Err(Error::BadRequest("invalid cleanup review ID".into()));}
-        let source=self.get_source(source_id)?;
-        if source.device_id!=device_id { return Err(Error::ForbiddenScope("backup source".into())); }
-        let lease_id=ulid::Ulid::new().to_string();
-        let mut c=self.db.lock()?;
-        let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
-        if let Some(review)=review {
+    pub fn create_cleanup_review(
+        &self,
+        source_id: &str,
+        device_id: &str,
+        ids: &[String],
+        review: Option<&str>,
+    ) -> Result<CleanupLease> {
+        if ids.is_empty() || ids.len() > 500 {
+            return Err(Error::BadRequest("select 1–500 cleanup items".into()));
+        }
+        if review.is_some_and(|v| {
+            v.is_empty()
+                || v.len() > 128
+                || !v
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        }) {
+            return Err(Error::BadRequest("invalid cleanup review ID".into()));
+        }
+        let source = self.get_source(source_id)?;
+        if source.device_id != device_id {
+            return Err(Error::ForbiddenScope("backup source".into()));
+        }
+        let lease_id = ulid::Ulid::new().to_string();
+        let mut c = self.db.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_e)?;
+        if let Some(review) = review {
             let existing:Option<(String,String)>=tx.query_row("SELECT id,state FROM cleanup_leases WHERE source_id=?1 AND device_id=?2 AND client_review_id=?3",params![source_id,device_id,review],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_e)?;
-            if let Some((id,state))=existing {
-                if state!="active" {return Err(Error::Conflict("cleanup review completed".into()));}
-                revalidate_cleanup_lease(&tx,&id)?;
-                let lease=read_cleanup_lease(&tx,&id)?;
+            if let Some((id, state)) = existing {
+                if state != "active" {
+                    return Err(Error::Conflict("cleanup review completed".into()));
+                }
+                revalidate_cleanup_lease(&tx, &id)?;
+                let lease = read_cleanup_lease(&tx, &id)?;
                 tx.commit().map_err(db_e)?;
                 return Ok(lease);
             }
         }
         tx.execute("INSERT INTO cleanup_leases(id,source_id,device_id,created_at,client_review_id) VALUES(?1,?2,?3,?4,?5)",params![lease_id,source_id,device_id,now_ms(),review]).map_err(db_e)?;
-        let mut items=Vec::new();
+        let mut items = Vec::new();
         for client_id in ids {
             let row: Option<(String,Option<String>,Option<String>)> = tx.query_row("SELECT id,file_id,hash FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND status='verified' AND local_freed_at IS NULL",
                 params![source_id,client_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_e)?;
-            if let Some((backup_id,Some(file_id),Some(hash)))=&row {
-                match verify_file(&tx,&file_id,&hash,None) {
-                    Ok(size)=>{
+            if let Some((backup_id, Some(file_id), Some(hash))) = &row {
+                match verify_file(&tx, file_id, hash, None) {
+                    Ok(size) => {
                         tx.execute("INSERT OR IGNORE INTO cleanup_lease_items(lease_id,file_id,client_item_id,hash,size) VALUES(?1,?2,?3,?4,?5)",params![lease_id,file_id,client_id,hash,size as i64]).map_err(db_e)?;
-                        items.push(CleanupItem {client_item_id:client_id.clone(),file_id:file_id.clone(),hash:hash.clone(),size});
+                        items.push(CleanupItem {
+                            client_item_id: client_id.clone(),
+                            file_id: file_id.clone(),
+                            hash: hash.clone(),
+                            size,
+                        });
                     }
-                    Err(_)=>invalidate_item(&tx,&backup_id)?,
+                    Err(_) => invalidate_item(&tx, backup_id)?,
                 }
-            } else if let Some((backup_id,_,_))=row {
-                invalidate_item(&tx,&backup_id)?;
+            } else if let Some((backup_id, _, _)) = row {
+                invalidate_item(&tx, &backup_id)?;
             }
         }
         tx.commit().map_err(db_e)?;
-        Ok(CleanupLease{lease_id,items,client_review_id:review.map(str::to_owned)})
+        Ok(CleanupLease {
+            lease_id,
+            items,
+            client_review_id: review.map(str::to_owned),
+        })
     }
 
-    pub fn active_cleanup_reviews(&self,source_id:&str,device_id:&str)->Result<Vec<CleanupLease>> {
-        if self.get_source(source_id)?.device_id!=device_id {return Err(Error::ForbiddenScope("backup source".into()));}
-        let c=self.db.lock()?;
+    pub fn active_cleanup_reviews(
+        &self,
+        source_id: &str,
+        device_id: &str,
+    ) -> Result<Vec<CleanupLease>> {
+        if self.get_source(source_id)?.device_id != device_id {
+            return Err(Error::ForbiddenScope("backup source".into()));
+        }
+        let c = self.db.lock()?;
         let mut st=c.prepare("SELECT id FROM cleanup_leases WHERE source_id=?1 AND device_id=?2 AND state='active' ORDER BY created_at LIMIT 500").map_err(db_e)?;
-        let ids=st.query_map(params![source_id,device_id],|r|r.get::<_,String>(0)).map_err(db_e)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
-        ids.iter().map(|id|read_cleanup_lease(&c,id)).collect()
+        let ids = st
+            .query_map(params![source_id, device_id], |r| r.get::<_, String>(0))
+            .map_err(db_e)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_e)?;
+        ids.iter().map(|id| read_cleanup_lease(&c, id)).collect()
     }
 
-    pub fn finish_cleanup_lease(&self,id:&str,device_id:&str,freed:&[String])->Result<()> {
-        let mut c=self.db.lock()?;
-        let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_e)?;
-        let (source,owner,state):(String,String,String)=tx.query_row("SELECT source_id,device_id,state FROM cleanup_leases WHERE id=?1",params![id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_e)?;
-        if owner!=device_id {return Err(Error::ForbiddenScope("cleanup lease".into()));}
-        if state=="completed" {return Ok(());}
+    pub fn finish_cleanup_lease(&self, id: &str, device_id: &str, freed: &[String]) -> Result<()> {
+        let mut c = self.db.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_e)?;
+        let (source, owner, state): (String, String, String) = tx
+            .query_row(
+                "SELECT source_id,device_id,state FROM cleanup_leases WHERE id=?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(db_e)?;
+        if owner != device_id {
+            return Err(Error::ForbiddenScope("cleanup lease".into()));
+        }
+        if state == "completed" {
+            return Ok(());
+        }
         for client_id in freed {
             let (file_id,hash,size):(String,String,i64)=tx.query_row("SELECT file_id,hash,size FROM cleanup_lease_items WHERE lease_id=?1 AND client_item_id=?2",params![id,client_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|Error::BadRequest("item not in cleanup lease".into()))?;
             let backup_id:Option<String>=tx.query_row("SELECT id FROM backup_items WHERE source_id=?1 AND client_item_id=?2 AND file_id=?3 AND lower(hash)=lower(?4) AND status='verified'",params![source,client_id,file_id,hash],|r|r.get(0)).optional().map_err(db_e)?;
-            if let Some(backup_id)=backup_id {
-                if verify_file(&tx,&file_id,&hash,Some(size as u64)).is_ok() {
-                    tx.execute("UPDATE backup_items SET local_freed_at=?2 WHERE id=?1",params![backup_id,now_ms()]).map_err(db_e)?;
-                } else {invalidate_item(&tx,&backup_id)?;}
+            if let Some(backup_id) = backup_id {
+                if verify_file(&tx, &file_id, &hash, Some(size as u64)).is_ok() {
+                    tx.execute(
+                        "UPDATE backup_items SET local_freed_at=?2 WHERE id=?1",
+                        params![backup_id, now_ms()],
+                    )
+                    .map_err(db_e)?;
+                } else {
+                    invalidate_item(&tx, &backup_id)?;
+                }
             }
         }
-        tx.execute("UPDATE cleanup_leases SET state='completed' WHERE id=?1",params![id]).map_err(db_e)?;
+        tx.execute(
+            "UPDATE cleanup_leases SET state='completed' WHERE id=?1",
+            params![id],
+        )
+        .map_err(db_e)?;
         tx.commit().map_err(db_e)?;
         Ok(())
     }
 
     pub fn summary(&self, source_id: &str) -> Result<BackupSummary> {
         let c = self.db.lock()?;
-        recheck_verified(&c,source_id)?;
+        recheck_verified(&c, source_id)?;
         let mut st = c
             .prepare("SELECT status, COUNT(*), COALESCE(SUM(CASE WHEN b.local_freed_at IS NULL THEN f.size ELSE 0 END),0)
                       FROM backup_items b LEFT JOIN files f ON f.id = b.file_id
                       WHERE b.source_id=?1 AND (f.deleted_at IS NULL OR f.id IS NULL) GROUP BY status")
             .map_err(db_e)?;
         let rows: Vec<(String, i64, i64)> = st
-            .query_map(params![source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_map(params![source_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .map_err(db_e)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_e)?;
         let last_run: Option<i64> = c
-            .query_row("SELECT last_run_at FROM backup_sources WHERE id=?1", params![source_id], |r| r.get(0))
+            .query_row(
+                "SELECT last_run_at FROM backup_sources WHERE id=?1",
+                params![source_id],
+                |r| r.get(0),
+            )
             .ok()
             .flatten();
-        let mut s = BackupSummary { backed_up: 0, pending: 0, failed: 0, last_run_at: last_run, reclaimable_bytes: 0 };
+        let mut s = BackupSummary {
+            backed_up: 0,
+            pending: 0,
+            failed: 0,
+            last_run_at: last_run,
+            reclaimable_bytes: 0,
+        };
         for (status, count, bytes) in rows {
             match status.as_str() {
                 "verified" => {
@@ -296,62 +458,121 @@ impl PhotoService {
     }
 }
 
-#[derive(Debug,Clone,Serialize)]
-pub struct CleanupItem { pub client_item_id:String,pub file_id:String,pub hash:String,pub size:u64 }
-#[derive(Debug,Clone,Serialize)]
-pub struct CleanupLease { pub lease_id:String,pub items:Vec<CleanupItem>,pub client_review_id:Option<String> }
-
-fn read_cleanup_lease(c:&rusqlite::Connection,id:&str)->Result<CleanupLease> {
-    let mut st=c.prepare("SELECT client_item_id,file_id,hash,size FROM cleanup_lease_items WHERE lease_id=?1 ORDER BY client_item_id").map_err(db_e)?;
-    let items=st.query_map(params![id],|r|Ok(CleanupItem{client_item_id:r.get(0)?,file_id:r.get(1)?,hash:r.get(2)?,size:r.get::<_,i64>(3)? as u64})).map_err(db_e)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
-    let review=c.query_row("SELECT client_review_id FROM cleanup_leases WHERE id=?1",params![id],|r|r.get::<_,Option<String>>(0)).map_err(db_e)?;
-    Ok(CleanupLease{lease_id:id.to_owned(),items,client_review_id:review})
+#[derive(Debug, Clone, Serialize)]
+pub struct CleanupItem {
+    pub client_item_id: String,
+    pub file_id: String,
+    pub hash: String,
+    pub size: u64,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct CleanupLease {
+    pub lease_id: String,
+    pub items: Vec<CleanupItem>,
+    pub client_review_id: Option<String>,
 }
 
-fn revalidate_cleanup_lease(c:&rusqlite::Connection,id:&str)->Result<()> {
-    let source:String=c.query_row("SELECT source_id FROM cleanup_leases WHERE id=?1",[id],|r|r.get(0)).map_err(db_e)?;
-    let items=read_cleanup_lease(c,id)?.items;
+fn read_cleanup_lease(c: &rusqlite::Connection, id: &str) -> Result<CleanupLease> {
+    let mut st=c.prepare("SELECT client_item_id,file_id,hash,size FROM cleanup_lease_items WHERE lease_id=?1 ORDER BY client_item_id").map_err(db_e)?;
+    let items = st
+        .query_map(params![id], |r| {
+            Ok(CleanupItem {
+                client_item_id: r.get(0)?,
+                file_id: r.get(1)?,
+                hash: r.get(2)?,
+                size: r.get::<_, i64>(3)? as u64,
+            })
+        })
+        .map_err(db_e)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(db_e)?;
+    let review = c
+        .query_row(
+            "SELECT client_review_id FROM cleanup_leases WHERE id=?1",
+            params![id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .map_err(db_e)?;
+    Ok(CleanupLease {
+        lease_id: id.to_owned(),
+        items,
+        client_review_id: review,
+    })
+}
+
+fn revalidate_cleanup_lease(c: &rusqlite::Connection, id: &str) -> Result<()> {
+    let source: String = c
+        .query_row(
+            "SELECT source_id FROM cleanup_leases WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(db_e)?;
+    let items = read_cleanup_lease(c, id)?.items;
     for item in items {
         let current:Option<String>=c.query_row("SELECT id FROM backup_items WHERE source_id=?1 AND client_item_id=?2
             AND file_id=?3 AND lower(hash)=lower(?4) AND status='verified' AND local_freed_at IS NULL",
             params![source,item.client_item_id,item.file_id,item.hash],|r|r.get(0)).optional().map_err(db_e)?;
-        if current.is_none() || verify_file(c,&item.file_id,&item.hash,Some(item.size)).is_err() {
-            c.execute("DELETE FROM cleanup_lease_items WHERE lease_id=?1 AND client_item_id=?2",params![id,item.client_item_id]).map_err(db_e)?;
-            if let Some(backup_id)=current {invalidate_item(c,&backup_id)?;}
+        if current.is_none() || verify_file(c, &item.file_id, &item.hash, Some(item.size)).is_err()
+        {
+            c.execute(
+                "DELETE FROM cleanup_lease_items WHERE lease_id=?1 AND client_item_id=?2",
+                params![id, item.client_item_id],
+            )
+            .map_err(db_e)?;
+            if let Some(backup_id) = current {
+                invalidate_item(c, &backup_id)?;
+            }
         }
     }
     Ok(())
 }
 
-fn invalidate_item(c:&rusqlite::Connection,id:&str)->Result<()> {
+fn invalidate_item(c: &rusqlite::Connection, id: &str) -> Result<()> {
     c.execute("UPDATE backup_items SET status='pending',file_id=NULL,transfer_id=NULL,verified_at=NULL,local_freed_at=NULL WHERE id=?1",[id]).map_err(db_e)?;
     Ok(())
 }
 
-fn recheck_verified(c:&rusqlite::Connection,source_id:&str)->Result<()> {
-    let rows:Vec<(String,Option<String>,Option<String>,Option<i64>)>={
+#[allow(clippy::type_complexity)]
+fn recheck_verified(c: &rusqlite::Connection, source_id: &str) -> Result<()> {
+    let rows: Vec<(String, Option<String>, Option<String>, Option<i64>)> = {
         let mut st=c.prepare("SELECT id,file_id,hash,expected_size FROM backup_items WHERE source_id=?1 AND status='verified'").map_err(db_e)?;
-        let rows=st.query_map([source_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_e)?
-            .collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
+        let rows = st
+            .query_map([source_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(db_e)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_e)?;
         rows
     };
-    for (id,file_id,hash,size) in rows {
-        let valid=match (file_id,hash) {
-            (Some(file_id),Some(hash))=>verify_file(c,&file_id,&hash,size.map(|n|n as u64)).is_ok(),
-            _=>false,
+    for (id, file_id, hash, size) in rows {
+        let valid = match (file_id, hash) {
+            (Some(file_id), Some(hash)) => {
+                verify_file(c, &file_id, &hash, size.map(|n| n as u64)).is_ok()
+            }
+            _ => false,
         };
-        if !valid {invalidate_item(c,&id)?;}
+        if !valid {
+            invalidate_item(c, &id)?;
+        }
     }
     Ok(())
 }
 
-fn verify_file(c:&rusqlite::Connection,id:&str,hash:&str,size:Option<u64>)->Result<u64> {
+fn verify_file(c: &rusqlite::Connection, id: &str, hash: &str, size: Option<u64>) -> Result<u64> {
     let (root,rel,stored_hash,stored_size):(String,String,String,i64)=c.query_row(
         "SELECT r.path,f.rel_path,f.hash,f.size FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE f.id=?1 AND f.deleted_at IS NULL AND r.is_active=1",
         params![id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(db_e)?;
-    if !stored_hash.eq_ignore_ascii_case(hash) || size.is_some_and(|n|n!=stored_size as u64) {return Err(Error::RootHashMismatch);}
-    let path=hh_core::paths::jail_join(std::path::Path::new(&root),&rel)?;
-    let file=std::fs::File::open(path)?;
-    if file.metadata()?.len()!=stored_size as u64 || !hh_transfer::hash_file(&file)?.eq_ignore_ascii_case(hash) {return Err(Error::RootHashMismatch);}
+    if !stored_hash.eq_ignore_ascii_case(hash) || size.is_some_and(|n| n != stored_size as u64) {
+        return Err(Error::RootHashMismatch);
+    }
+    let path = hh_core::paths::jail_join(std::path::Path::new(&root), &rel)?;
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() != stored_size as u64
+        || !hh_transfer::hash_file(&file)?.eq_ignore_ascii_case(hash)
+    {
+        return Err(Error::RootHashMismatch);
+    }
     Ok(stored_size as u64)
 }

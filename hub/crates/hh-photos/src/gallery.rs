@@ -34,27 +34,38 @@ pub struct YearMonthCount {
 }
 
 impl PhotoService {
-    pub fn timeline(&self, cursor: Option<(i64, String)>, limit: u32) -> Result<(Vec<TimelineItem>, Option<String>)> {
-        self.timeline_month(cursor,limit,None)
+    pub fn timeline(
+        &self,
+        cursor: Option<(i64, String)>,
+        limit: u32,
+    ) -> Result<(Vec<TimelineItem>, Option<String>)> {
+        self.timeline_month(cursor, limit, None)
     }
 
-    pub fn timeline_month(&self, cursor: Option<(i64, String)>, limit: u32, month:Option<(i32,u32)>) -> Result<(Vec<TimelineItem>, Option<String>)> {
+    pub fn timeline_month(
+        &self,
+        cursor: Option<(i64, String)>,
+        limit: u32,
+        month: Option<(i32, u32)>,
+    ) -> Result<(Vec<TimelineItem>, Option<String>)> {
         let limit = limit.clamp(1, 500) as i64;
         let c = self.db.lock()?;
         let mut sql="SELECT m.file_id,m.type,m.taken_at,m.width,m.height,m.duration_ms,m.thumb_status,f.name,
             m.taken_at_source,m.orientation,m.camera_make,m.camera_model,f.size,f.mime
             FROM media m JOIN files f ON f.id=m.file_id WHERE f.deleted_at IS NULL".to_string();
-        let mut vals:Vec<Box<dyn rusqlite::ToSql>>=Vec::new();
-        if let Some((year,month))=month {
+        let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some((year, month)) = month {
             sql.push_str(" AND strftime('%Y-%m',m.taken_at/1000,'unixepoch')=?");
             vals.push(Box::new(format!("{year:04}-{month:02}")));
         }
-        if let Some((ts,fid))=cursor {
+        if let Some((ts, fid)) = cursor {
             sql.push_str(" AND (m.taken_at < ? OR (m.taken_at = ? AND m.file_id < ?))");
-            vals.push(Box::new(ts));vals.push(Box::new(ts));vals.push(Box::new(fid));
+            vals.push(Box::new(ts));
+            vals.push(Box::new(ts));
+            vals.push(Box::new(fid));
         }
         sql.push_str(" ORDER BY m.taken_at DESC,m.file_id DESC LIMIT ?");
-        vals.push(Box::new(limit+1));
+        vals.push(Box::new(limit + 1));
         let mut st = c.prepare(&sql).map_err(db_e)?;
         let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|b| b.as_ref()).collect();
         let mut items: Vec<TimelineItem> = st
@@ -69,10 +80,10 @@ impl PhotoService {
                     thumb_status: r.get(6)?,
                     name: r.get(7)?,
                     taken_at_source: r.get(8)?,
-                    orientation: r.get::<_,Option<i64>>(9)?.map(|v|v as u32),
+                    orientation: r.get::<_, Option<i64>>(9)?.map(|v| v as u32),
                     camera_make: r.get(10)?,
                     camera_model: r.get(11)?,
-                    size: r.get::<_,i64>(12)? as u64,
+                    size: r.get::<_, i64>(12)? as u64,
                     mime: r.get(13)?,
                 })
             })
@@ -81,7 +92,9 @@ impl PhotoService {
             .map_err(db_e)?;
         let next = if items.len() as i64 > limit {
             items.truncate(limit as usize);
-            items.last().map(|i| format!("{}:{}", i.taken_at, i.file_id))
+            items
+                .last()
+                .map(|i| format!("{}:{}", i.taken_at, i.file_id))
         } else {
             None
         };
@@ -103,7 +116,11 @@ impl PhotoService {
             .map_err(db_e)?;
         let rows = st
             .query_map([], |r| {
-                Ok(YearMonthCount { year: r.get(0)?, month: r.get(1)?, count: r.get::<_, i64>(2)? as u64 })
+                Ok(YearMonthCount {
+                    year: r.get(0)?,
+                    month: r.get(1)?,
+                    count: r.get::<_, i64>(2)? as u64,
+                })
             })
             .map_err(db_e)?
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -112,7 +129,12 @@ impl PhotoService {
     }
 
     /// Record media metadata for a finalized file (called from complete hook).
-    pub fn register_media(&self, file_id: &str, type_: &str, meta: &crate::meta::MediaMeta) -> Result<()> {
+    pub fn register_media(
+        &self,
+        file_id: &str,
+        type_: &str,
+        meta: &crate::meta::MediaMeta,
+    ) -> Result<()> {
         let c = self.db.lock()?;
         c.execute(
             "INSERT OR REPLACE INTO media
@@ -120,9 +142,18 @@ impl PhotoService {
               camera_make, camera_model, gps_lat, gps_lon)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             params![
-                file_id, type_, meta.taken_at, meta.taken_at_source,
-                meta.width, meta.height, meta.duration_ms.map(|v| v as i64), meta.orientation,
-                meta.camera_make, meta.camera_model, meta.gps_lat, meta.gps_lon
+                file_id,
+                type_,
+                meta.taken_at,
+                meta.taken_at_source,
+                meta.width,
+                meta.height,
+                meta.duration_ms.map(|v| v as i64),
+                meta.orientation,
+                meta.camera_make,
+                meta.camera_model,
+                meta.gps_lat,
+                meta.gps_lon
             ],
         )
         .map_err(db_e)?;

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use hh_core::error::{Error, Result};
 use rcgen::{
-    BasicConstraints, CertificateParams, CertificateSigningRequestParams,
-    DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose, SanType,
+    BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
+    DnType, IsCa, KeyPair, KeyUsagePurpose, SanType,
 };
 use sha2::{Digest, Sha256};
 
@@ -41,7 +41,12 @@ impl HubIdentity {
         let server_key_path = data_dir.join("server.key.enc");
         let server_cert_path = data_dir.join("server.cert.pem");
 
-        let identity_paths = [&ca_key_path, &ca_cert_path, &server_key_path, &server_cert_path];
+        let identity_paths = [
+            &ca_key_path,
+            &ca_cert_path,
+            &server_key_path,
+            &server_cert_path,
+        ];
         let present = identity_paths.map(|path| match std::fs::symlink_metadata(path) {
             Ok(metadata) => Ok(Some(metadata)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -50,15 +55,22 @@ impl HubIdentity {
         let present = present.into_iter().collect::<std::io::Result<Vec<_>>>()?;
         let count = present.iter().filter(|metadata| metadata.is_some()).count();
         if count != 0 && count != identity_paths.len() {
-            return Err(Error::Crypto("partial identity detected; refusing to overwrite existing credentials".into()));
+            return Err(Error::Crypto(
+                "partial identity detected; refusing to overwrite existing credentials".into(),
+            ));
         }
         #[cfg(unix)]
         for (path, metadata) in identity_paths.iter().zip(&present) {
             if let Some(metadata) = metadata {
                 use std::os::unix::fs::MetadataExt;
-                unsafe extern "C" { fn getuid() -> u32; }
+                unsafe extern "C" {
+                    fn getuid() -> u32;
+                }
                 if !metadata.file_type().is_file() || metadata.uid() != unsafe { getuid() } {
-                    return Err(Error::Crypto(format!("unsafe identity file: {}", path.display())));
+                    return Err(Error::Crypto(format!(
+                        "unsafe identity file: {}",
+                        path.display()
+                    )));
                 }
             }
         }
@@ -130,8 +142,8 @@ impl HubIdentity {
         if !dns_name.is_empty() {
             san_dns.push(dns_name.to_string());
         }
-        let mut server_params = CertificateParams::new(san_dns)
-            .map_err(|e| Error::Crypto(e.to_string()))?;
+        let mut server_params =
+            CertificateParams::new(san_dns).map_err(|e| Error::Crypto(e.to_string()))?;
         // Loopback IP SANs: local tooling (curl, browsers on the same machine)
         // validates the hub by IP. LAN IPs are deliberately omitted — DHCP
         // volatility is covered by QR CA pinning (T3), not by cert SANs.
@@ -166,7 +178,12 @@ impl HubIdentity {
         Ok(hub_fingerprint(&self.ca_cert_der))
     }
 
-    pub fn full_fingerprint(&self)->String {Sha256::digest(&self.ca_cert_der).iter().map(|b|format!("{b:02x}")).collect()}
+    pub fn full_fingerprint(&self) -> String {
+        Sha256::digest(&self.ca_cert_der)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
 
     pub fn server_key_pem(&self) -> &str {
         &self.server_key_pem
@@ -174,7 +191,11 @@ impl HubIdentity {
 
     /// Issue a 1-year device certificate from a CSR (TRD §5 step 5).
     /// Returns (cert_pem, cert_serial_hex, expires_at_ms).
-    pub fn issue_device_cert(&self, csr_pem: &str, device_id: &str) -> Result<(String, String, i64)> {
+    pub fn issue_device_cert(
+        &self,
+        csr_pem: &str,
+        device_id: &str,
+    ) -> Result<(String, String, i64)> {
         let csr = CertificateSigningRequestParams::from_pem(csr_pem)
             .map_err(|e| Error::BadRequest(format!("invalid CSR: {e}")))?;
 
@@ -210,13 +231,20 @@ impl HubIdentity {
             .signed_by(&csr.public_key, &ca_cert, &self.ca_key)
             .map_err(|e| Error::Crypto(format!("sign device cert: {e}")))?;
 
-        let serial_hex = serial.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let serial_hex = serial
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         let expires_at = not_after.unix_timestamp() * 1000;
         Ok((cert.pem(), serial_hex, expires_at))
     }
 
     /// Renew a device cert (<30 days to expiry, API_SPEC §4 `/certs/renew`).
-    pub fn renew_device_cert(&self, csr_pem: &str, device_id: &str) -> Result<(String, String, i64)> {
+    pub fn renew_device_cert(
+        &self,
+        csr_pem: &str,
+        device_id: &str,
+    ) -> Result<(String, String, i64)> {
         self.issue_device_cert(csr_pem, device_id)
     }
 }
@@ -267,7 +295,7 @@ mod dpapi {
     //! (crypt32.dll). Output is a CRYPT_INTEGER_BLOB whose pbData must be
     //! freed with LocalFree.
 
-    use std::os::raw::{c_void, c_ulong};
+    use std::os::raw::{c_ulong, c_void};
 
     #[repr(C)]
     pub struct CryptBlob {
@@ -311,7 +339,10 @@ mod dpapi {
             pb_data: plain.as_ptr() as *mut u8,
         };
         let desc = wide(description);
-        let mut out = CryptBlob { cb_data: 0, pb_data: std::ptr::null_mut() };
+        let mut out = CryptBlob {
+            cb_data: 0,
+            pb_data: std::ptr::null_mut(),
+        };
         // SAFETY: all pointers are valid for the duration of the call; the
         // output blob is allocated by DPAPI and freed below with LocalFree.
         let ok = unsafe {
@@ -338,7 +369,10 @@ mod dpapi {
             cb_data: enc.len() as c_ulong,
             pb_data: enc.as_ptr() as *mut u8,
         };
-        let mut out = CryptBlob { cb_data: 0, pb_data: std::ptr::null_mut() };
+        let mut out = CryptBlob {
+            cb_data: 0,
+            pb_data: std::ptr::null_mut(),
+        };
         let mut descr: *mut u16 = std::ptr::null_mut();
         // SAFETY: mirrors protect(); descr is allocated by DPAPI and freed.
         let ok = unsafe {
@@ -355,7 +389,8 @@ mod dpapi {
         if ok == 0 {
             return Err("CryptUnprotectData failed".into());
         }
-        let plain = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize) }.to_vec();
+        let plain =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize) }.to_vec();
         unsafe {
             if !descr.is_null() {
                 LocalFree(descr as *mut c_void);
@@ -373,8 +408,7 @@ const DPAPI_MAGIC: &[u8; 4] = b"DPA1";
 
 #[cfg(windows)]
 fn write_protected_key(path: &Path, pem: &str) -> Result<()> {
-    let enc = dpapi::protect(pem.as_bytes(), "Home Hub CA key")
-        .map_err(|e| Error::Crypto(e))?;
+    let enc = dpapi::protect(pem.as_bytes(), "Home Hub CA key").map_err(|e| Error::Crypto(e))?;
     let mut blob = DPAPI_MAGIC.to_vec();
     blob.extend_from_slice(&enc);
     std::fs::write(path, &blob)?;
@@ -390,8 +424,9 @@ fn read_protected_key(path: &Path) -> Result<String> {
         // Back-compat: a pre-DPAPI build wrote plaintext PEM (TODO removed in
         // this build). Re-protect it transparently on first read.
         None => {
-            let pem = String::from_utf8(raw)
-                .map_err(|_| Error::Crypto("key file is neither DPAPI blob nor UTF-8 PEM".into()))?;
+            let pem = String::from_utf8(raw).map_err(|_| {
+                Error::Crypto("key file is neither DPAPI blob nor UTF-8 PEM".into())
+            })?;
             write_protected_key(path, &pem)?;
             return Ok(pem);
         }
@@ -405,15 +440,25 @@ fn write_protected_key(path: &Path, pem: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     match std::fs::symlink_metadata(path) {
-        Ok(_) => return Err(Error::Crypto(format!("identity key already exists: {}", path.display()))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Ok(_) => {
+            return Err(Error::Crypto(format!(
+                "identity key already exists: {}",
+                path.display()
+            )))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).create_new(true)
-        .mode(0o600).open(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
     file.write_all(pem.as_bytes())?;
     file.sync_all()?;
-    let parent = path.parent().ok_or_else(|| Error::Crypto("identity key has no parent directory".into()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Crypto("identity key has no parent directory".into()))?;
     std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
@@ -429,7 +474,11 @@ mod unix_identity_tests {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn temp_identity_dir() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("hh-ca-test-{}-{}", std::process::id(), rand::random::<u64>()));
+        let path = std::env::temp_dir().join(format!(
+            "hh-ca-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
         std::fs::create_dir(&path).unwrap();
         path
     }
@@ -439,7 +488,9 @@ mod unix_identity_tests {
         let dir = temp_identity_dir();
         std::fs::write(dir.join("ca.cert.pem"), "existing").unwrap();
         let error = HubIdentity::load_or_create(&dir, "test").err().unwrap();
-        assert!(matches!(error, Error::Crypto(message) if message == "partial identity detected; refusing to overwrite existing credentials"));
+        assert!(
+            matches!(error, Error::Crypto(message) if message == "partial identity detected; refusing to overwrite existing credentials")
+        );
         assert!(!dir.join("ca.key.enc").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }

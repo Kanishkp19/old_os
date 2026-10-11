@@ -1,9 +1,12 @@
 //! Owner input preference and physical-device boot detection.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, io, path::{Path, PathBuf}};
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -67,7 +70,10 @@ pub fn write_preference(path: &Path, mode: InputMode) -> io::Result<()> {
         Err(error) => return Err(error),
     };
     if !value.is_object() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "owner shell JSON must be an object"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "owner shell JSON must be an object",
+        ));
     }
     value["input"] = match value.get("input") {
         Some(existing) if existing.is_object() => existing.clone(),
@@ -125,7 +131,9 @@ fn detect_auto() -> InputMode {
 fn bit_set(bitmap: &str, bit: usize) -> bool {
     let words: Vec<&str> = bitmap.split_whitespace().collect();
     let word_index = bit / 64;
-    let Some(word) = words.iter().rev().nth(word_index) else { return false; };
+    let Some(word) = words.iter().rev().nth(word_index) else {
+        return false;
+    };
     u64::from_str_radix(word, 16).is_ok_and(|value| value & (1u64 << (bit % 64)) != 0)
 }
 
@@ -138,15 +146,29 @@ fn capability(path: &Path, kind: &str, bit: usize) -> bool {
 #[cfg(target_os = "linux")]
 fn probe_linux() -> Devices {
     let mut devices = Devices::default();
-    let Ok(entries) = fs::read_dir("/sys/class/input") else { return devices; };
+    let Ok(entries) = fs::read_dir("/sys/class/input") else {
+        return devices;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else { continue; };
-        if !name.starts_with("event") { continue; }
-        let Ok(physical) = fs::canonicalize(&path) else { continue; };
-        if physical.to_string_lossy().contains("/virtual/") { continue; }
-        let label = fs::read_to_string(path.join("device/name")).unwrap_or_default().to_lowercase();
-        if label.contains("uinput") || label.contains("virtual") { continue; }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("event") {
+            continue;
+        }
+        let Ok(physical) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if physical.to_string_lossy().contains("/virtual/") {
+            continue;
+        }
+        let label = fs::read_to_string(path.join("device/name"))
+            .unwrap_or_default()
+            .to_lowercase();
+        if label.contains("uinput") || label.contains("virtual") {
+            continue;
+        }
         let touch = capability(&path, "key", 330)
             && capability(&path, "abs", 53)
             && capability(&path, "abs", 54);
@@ -168,10 +190,18 @@ fn probe_linux() -> Devices {
 #[cfg(target_os = "linux")]
 fn tablet_switch_active(event: &str) -> bool {
     use std::{fs::File, os::fd::AsRawFd};
-    let Ok(file) = File::open(Path::new("/dev/input").join(event)) else { return false; };
+    let Ok(file) = File::open(Path::new("/dev/input").join(event)) else {
+        return false;
+    };
     let mut switches: u64 = 0;
     // EVIOCGSW(8): Linux input ioctl reading the current switch bitmap.
-    let result = unsafe { libc::ioctl(file.as_raw_fd(), 0x8008_451b_u64 as libc::c_ulong, &mut switches) };
+    let result = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            0x8008_451b_u64 as libc::c_ulong,
+            &mut switches,
+        )
+    };
     result >= 0 && switches & (1 << 1) != 0
 }
 
@@ -182,7 +212,11 @@ mod tests {
     #[test]
     fn preference_round_trip_preserves_other_owner_settings() {
         let path = std::env::temp_dir().join(format!("hh-shell-pref-{}.json", std::process::id()));
-        fs::write(&path, br#"{"language":"hi","input":{"mode":"auto","hint":true}}"#).unwrap();
+        fs::write(
+            &path,
+            br#"{"language":"hi","input":{"mode":"auto","hint":true}}"#,
+        )
+        .unwrap();
         write_preference(&path, InputMode::Touch).unwrap();
         assert_eq!(read_preference(&path).unwrap(), InputMode::Touch);
         let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -193,9 +227,32 @@ mod tests {
 
     #[test]
     fn automatic_selection() {
-        assert_eq!(Devices { touchscreen: true, ..Devices::default() }.selected(), InputMode::Touch);
-        assert_eq!(Devices { touchscreen: true, pointer: true, ..Devices::default() }.selected(), InputMode::Mouse);
-        assert_eq!(Devices { touchscreen: true, pointer: true, tablet_posture: true }.selected(), InputMode::Touch);
+        assert_eq!(
+            Devices {
+                touchscreen: true,
+                ..Devices::default()
+            }
+            .selected(),
+            InputMode::Touch
+        );
+        assert_eq!(
+            Devices {
+                touchscreen: true,
+                pointer: true,
+                ..Devices::default()
+            }
+            .selected(),
+            InputMode::Mouse
+        );
+        assert_eq!(
+            Devices {
+                touchscreen: true,
+                pointer: true,
+                tablet_posture: true
+            }
+            .selected(),
+            InputMode::Touch
+        );
         assert_eq!(Devices::default().selected(), InputMode::Mouse);
     }
 }

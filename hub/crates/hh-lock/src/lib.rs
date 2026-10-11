@@ -49,11 +49,17 @@ impl SessionLocker {
         }
     }
 
-    pub fn state(&self) -> LockState { self.state }
+    pub fn state(&self) -> LockState {
+        self.state
+    }
 
-    pub fn status(&self) -> &LockStatus { &self.status }
+    pub fn status(&self) -> &LockStatus {
+        &self.status
+    }
 
-    pub fn set_clock(&mut self, clock_text: String) { self.status.clock_text = clock_text; }
+    pub fn set_clock(&mut self, clock_text: String) {
+        self.status.clock_text = clock_text;
+    }
 
     pub fn set_battery(&mut self, battery_text: Option<String>) {
         self.status.battery_text = battery_text;
@@ -83,7 +89,9 @@ impl SessionLocker {
                 Ok(true)
             }
             result => {
-                self.state = LockState::Locked { outputs: self.outputs };
+                self.state = LockState::Locked {
+                    outputs: self.outputs,
+                };
                 result
             }
         }
@@ -94,7 +102,9 @@ impl SessionLocker {
         self.state = LockState::Locked { outputs: 0 };
     }
 
-    pub fn process_restarted(&mut self) { self.compositor_failed(); }
+    pub fn process_restarted(&mut self) {
+        self.compositor_failed();
+    }
 }
 
 #[cfg(test)]

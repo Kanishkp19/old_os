@@ -27,33 +27,41 @@ pub fn dispatch(req: &HelperRequest) -> HelperResponse {
             Ok(v) => ok_data(v),
             Err(e) => err(e),
         },
-        HelperRequest::Hotspot { enable, ssid, passphrase } => {
-            match platform::hotspot(*enable, ssid.as_deref(), passphrase.as_deref()) {
-                Ok(v) => ok_data(v),
-                Err(e) => err(e),
-            }
-        }
+        HelperRequest::Hotspot {
+            enable,
+            ssid,
+            passphrase,
+        } => match platform::hotspot(*enable, ssid.as_deref(), passphrase.as_deref()) {
+            Ok(v) => ok_data(v),
+            Err(e) => err(e),
+        },
         HelperRequest::BitlockerStatus => match platform::bitlocker_status() {
             Ok(v) => ok_data(v),
             Err(e) => err(e),
         },
-        HelperRequest::ScreenOffer { sdp, preset, kind, session_id } => {
-            match crate::screen::handle_offer(session_id, sdp, preset, kind) {
-                Ok(v) => ok_data(v),
-                Err(e) => err(e),
-            }
-        }
-        HelperRequest::AddIce { candidate, session_id } => {
-            match crate::screen::add_ice(session_id, candidate) {
-                Ok(()) => ok_data(serde_json::json!({})),
-                Err(e) => err(e),
-            }
-        }
+        HelperRequest::ScreenOffer {
+            sdp,
+            preset,
+            kind,
+            session_id,
+        } => match crate::screen::handle_offer(session_id, sdp, preset, kind) {
+            Ok(v) => ok_data(v),
+            Err(e) => err(e),
+        },
+        HelperRequest::AddIce {
+            candidate,
+            session_id,
+        } => match crate::screen::add_ice(session_id, candidate) {
+            Ok(()) => ok_data(serde_json::json!({})),
+            Err(e) => err(e),
+        },
         HelperRequest::ScreenStop => match crate::screen::stop() {
             Ok(()) => ok_data(serde_json::json!({})),
             Err(e) => err(e),
         },
-        HelperRequest::ScreenStopSession { session_id } => wrap(crate::screen::stop_session(session_id)),
+        HelperRequest::ScreenStopSession { session_id } => {
+            wrap(crate::screen::stop_session(session_id))
+        }
         HelperRequest::ScreenCapabilities => ok_data(crate::screen::capabilities()),
     }
 }
@@ -68,13 +76,15 @@ fn wrap(r: Result<(), String>) -> HelperResponse {
 /// Platform surface used by dispatch. Windows fills these from
 /// `platform_win`; other platforms return honest unsupported errors.
 pub mod platform {
-    #[cfg(windows)]
-    pub use crate::platform_win::*;
     #[cfg(target_os = "linux")]
     pub use crate::platform_linux::*;
+    #[cfg(windows)]
+    pub use crate::platform_win::*;
 
     #[cfg(not(any(windows, target_os = "linux")))]
-    pub fn release_input() -> Result<(), String> { Ok(()) }
+    pub fn release_input() -> Result<(), String> {
+        Ok(())
+    }
     #[cfg(not(any(windows, target_os = "linux")))]
     pub fn mouse_move(_dx: i32, _dy: i32) -> Result<(), String> {
         unsupported()
@@ -108,7 +118,11 @@ pub mod platform {
         unsupported_value()
     }
     #[cfg(not(any(windows, target_os = "linux")))]
-    pub fn hotspot(_enable: bool, _ssid: Option<&str>, _pass: Option<&str>) -> Result<serde_json::Value, String> {
+    pub fn hotspot(
+        _enable: bool,
+        _ssid: Option<&str>,
+        _pass: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
         unsupported_value()
     }
     #[cfg(not(any(windows, target_os = "linux")))]

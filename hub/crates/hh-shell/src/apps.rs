@@ -56,7 +56,9 @@ pub fn search<'a>(apps: &'a [App], query: &str) -> Vec<&'a App> {
         .filter(|app| {
             app.label.to_lowercase().contains(&query)
                 || app.id.to_lowercase().contains(&query)
-                || synonyms(&app.id).iter().any(|word| word.to_lowercase().contains(&query))
+                || synonyms(&app.id)
+                    .iter()
+                    .any(|word| word.to_lowercase().contains(&query))
         })
         .collect()
 }
@@ -88,11 +90,14 @@ fn builtin_apps() -> Vec<App> {
         ("devices", "Devices", false),
         ("settings", "Settings", true),
     ];
-    BUILTIN.iter().map(|(id, label, available_in_trial)| App {
-        id: (*id).to_owned(),
-        label: (*label).to_owned(),
-        available_in_trial: *available_in_trial,
-    }).collect()
+    BUILTIN
+        .iter()
+        .map(|(id, label, available_in_trial)| App {
+            id: (*id).to_owned(),
+            label: (*label).to_owned(),
+            available_in_trial: *available_in_trial,
+        })
+        .collect()
 }
 
 #[cfg(test)]

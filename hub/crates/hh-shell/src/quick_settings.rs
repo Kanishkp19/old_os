@@ -16,22 +16,44 @@ pub struct QuickSettingsState {
 
 impl Default for QuickSettingsState {
     fn default() -> Self {
-        Self { is_open: false, wifi_enabled: false, wifi_ssid: None, volume_pct: 50,
-            is_muted: false, brightness_pct: 50, dnd_active: false,
-            is_pending: false, error_message: None }
+        Self {
+            is_open: false,
+            wifi_enabled: false,
+            wifi_ssid: None,
+            volume_pct: 50,
+            is_muted: false,
+            brightness_pct: 50,
+            dnd_active: false,
+            is_pending: false,
+            error_message: None,
+        }
     }
 }
 
 impl QuickSettingsState {
-    pub fn set_volume(&mut self, pct: u8) { self.volume_pct = pct.min(100); }
-    pub fn toggle_mute(&mut self) { self.is_muted = !self.is_muted; }
-    pub fn set_brightness(&mut self, pct: u8) { self.brightness_pct = pct.clamp(10, 100); }
-    pub fn toggle_wifi(&mut self) { self.wifi_enabled = !self.wifi_enabled; }
-    pub fn toggle_dnd(&mut self) { self.dnd_active = !self.dnd_active; }
+    pub fn set_volume(&mut self, pct: u8) {
+        self.volume_pct = pct.min(100);
+    }
+    pub fn toggle_mute(&mut self) {
+        self.is_muted = !self.is_muted;
+    }
+    pub fn set_brightness(&mut self, pct: u8) {
+        self.brightness_pct = pct.clamp(10, 100);
+    }
+    pub fn toggle_wifi(&mut self) {
+        self.wifi_enabled = !self.wifi_enabled;
+    }
+    pub fn toggle_dnd(&mut self) {
+        self.dnd_active = !self.dnd_active;
+    }
     pub fn to_update(&self) -> QuickSettingsUpdate {
-        QuickSettingsUpdate { wifi_enabled: Some(self.wifi_enabled), volume_pct: Some(self.volume_pct),
-            is_muted: Some(self.is_muted), brightness_pct: Some(self.brightness_pct),
-            dnd_active: Some(self.dnd_active) }
+        QuickSettingsUpdate {
+            wifi_enabled: Some(self.wifi_enabled),
+            volume_pct: Some(self.volume_pct),
+            is_muted: Some(self.is_muted),
+            brightness_pct: Some(self.brightness_pct),
+            dnd_active: Some(self.dnd_active),
+        }
     }
 }
 

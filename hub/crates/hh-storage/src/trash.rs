@@ -12,10 +12,13 @@ use crate::{db_e, StorageService};
 impl StorageService {
     pub fn trash_file(&self, id: &str, by_device: Option<&str>) -> Result<()> {
         let mut c = self.db.lock()?;
-        crate::library::assert_mutable(&c,id)?;
+        crate::library::assert_mutable(&c, id)?;
         let tx = c.transaction().map_err(db_e)?;
-        tx.execute("UPDATE files SET deleted_at=?2 WHERE id=?1 AND deleted_at IS NULL", params![id, now_ms()])
-            .map_err(db_e)?;
+        tx.execute(
+            "UPDATE files SET deleted_at=?2 WHERE id=?1 AND deleted_at IS NULL",
+            params![id, now_ms()],
+        )
+        .map_err(db_e)?;
         tx.execute(
             "INSERT OR REPLACE INTO trash (file_id, trashed_at, trashed_by_device_id, purge_after)
              VALUES (?1,?2,?3,?4)",
@@ -48,7 +51,10 @@ impl StorageService {
                     hash: r.get(5)?,
                     created_at: r.get(6)?,
                     modified_at: r.get(7)?,
-                    path: rel.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default(),
+                    path: rel
+                        .rsplit_once('/')
+                        .map(|(d, _)| d.to_string())
+                        .unwrap_or_default(),
                     last_verified_at: r.get(9)?,
                     second_copy_status: String::new(),
                 })
@@ -56,15 +62,30 @@ impl StorageService {
             .map_err(db_e)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_e)?;
-        Ok(Page { items, next_cursor: None })
+        Ok(Page {
+            items,
+            next_cursor: None,
+        })
     }
 
     pub fn restore_file(&self, id: &str) -> Result<()> {
         let mut c = self.db.lock()?;
-        let trashed: i64 = c.query_row("SELECT COUNT(*) FROM trash WHERE file_id=?1", params![id], |r| r.get(0)).map_err(db_e)?;
-        if trashed != 1 { return Err(hh_core::Error::NotFound(format!("trashed file {id}"))); }
+        let trashed: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM trash WHERE file_id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(db_e)?;
+        if trashed != 1 {
+            return Err(hh_core::Error::NotFound(format!("trashed file {id}")));
+        }
         let path = crate::library::disk_path(&c, id, true)?;
-        if !path.is_file() { return Err(hh_core::Error::StorageUnavailable("trashed file is missing; restore cannot continue".into())); }
+        if !path.is_file() {
+            return Err(hh_core::Error::StorageUnavailable(
+                "trashed file is missing; restore cannot continue".into(),
+            ));
+        }
         let tx = c.transaction().map_err(db_e)?;
         tx.execute("UPDATE files SET deleted_at=NULL WHERE id=?1", params![id])
             .map_err(db_e)?;
@@ -77,24 +98,47 @@ impl StorageService {
     /// Explicit purge (admin scope) — the only hard delete in the system,
     /// and only from trash (AGENTS.md §2.2).
     pub fn purge_file(&self, id: &str) -> Result<()> {
-        let mut c=self.db.lock()?;
-        crate::library::assert_mutable(&c,id)?;
+        let mut c = self.db.lock()?;
+        crate::library::assert_mutable(&c, id)?;
         let trashed:i64=c.query_row("SELECT COUNT(*) FROM trash t JOIN files f ON f.id=t.file_id WHERE f.id=?1 AND f.deleted_at IS NOT NULL",params![id],|r|r.get(0)).map_err(db_e)?;
-        if trashed!=1 {return Err(hh_core::Error::Conflict("only trashed files may be purged".into()));}
-        let path=crate::library::disk_path(&c,id,true)?;
+        if trashed != 1 {
+            return Err(hh_core::Error::Conflict(
+                "only trashed files may be purged".into(),
+            ));
+        }
+        let path = crate::library::disk_path(&c, id, true)?;
         // Keep the row and error visible if the drive or file operation fails.
         match std::fs::remove_file(&path) {
-            Ok(())=>{},
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound && path.parent().is_some_and(|p|p.exists())=>{},
-            Err(e)=>return Err(e.into())
+            Ok(()) => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && path.parent().is_some_and(|p| p.exists()) => {}
+            Err(e) => return Err(e.into()),
         }
-        let tx=c.transaction().map_err(db_e)?;
+        let tx = c.transaction().map_err(db_e)?;
         tx.execute("UPDATE backup_items SET file_id=NULL,status='pending',verified_at=NULL WHERE file_id=?1",params![id]).map_err(db_e)?;
-        tx.execute("UPDATE integrity_events SET file_id=NULL WHERE file_id=?1",params![id]).map_err(db_e)?;
-        tx.execute("DELETE FROM cleanup_lease_items WHERE file_id=?1",params![id]).map_err(db_e)?;
-        tx.execute("UPDATE transfers SET result_file_id=NULL WHERE result_file_id=?1",params![id]).map_err(db_e)?;
-        tx.execute("DELETE FROM relay_delivery WHERE file_id=?1 AND status!='pending'",params![id]).map_err(db_e)?;
-        tx.execute("DELETE FROM files WHERE id=?1",params![id]).map_err(db_e)?;
+        tx.execute(
+            "UPDATE integrity_events SET file_id=NULL WHERE file_id=?1",
+            params![id],
+        )
+        .map_err(db_e)?;
+        tx.execute(
+            "DELETE FROM cleanup_lease_items WHERE file_id=?1",
+            params![id],
+        )
+        .map_err(db_e)?;
+        tx.execute(
+            "UPDATE transfers SET result_file_id=NULL WHERE result_file_id=?1",
+            params![id],
+        )
+        .map_err(db_e)?;
+        tx.execute(
+            "DELETE FROM relay_delivery WHERE file_id=?1 AND status!='pending'",
+            params![id],
+        )
+        .map_err(db_e)?;
+        tx.execute("DELETE FROM files WHERE id=?1", params![id])
+            .map_err(db_e)?;
         tx.commit().map_err(db_e)?;
         Ok(())
     }
@@ -117,16 +161,22 @@ impl StorageService {
         for (id, name) in expired {
             let message = format!("Could not permanently remove {name} ({id}). It remains in Trash and Home Hub will retry.");
             match self.purge_file(&id) {
-                Ok(())=>{
-                    n+=1;
-                    let c=self.db.lock()?;
+                Ok(()) => {
+                    n += 1;
+                    let c = self.db.lock()?;
                     c.execute("UPDATE alerts SET resolved_at=?2 WHERE code='TRASH_PURGE_FAILED' AND message=?1 AND resolved_at IS NULL",params![message,now_ms()]).map_err(db_e)?;
-                },
-                Err(e)=>{
+                }
+                Err(e) => {
                     tracing::warn!(file_id=%id,error=%e,"trash purge retained for retry");
-                    let active: i64 = {let c=self.db.lock()?;c.query_row("SELECT COUNT(*) FROM alerts WHERE code='TRASH_PURGE_FAILED' AND message=?1 AND resolved_at IS NULL",params![message],|r|r.get(0)).map_err(db_e)?};
-                    if active==0 {self.db.create_alert("warning","TRASH_PURGE_FAILED",&message)?;}
-                },
+                    let active: i64 = {
+                        let c = self.db.lock()?;
+                        c.query_row("SELECT COUNT(*) FROM alerts WHERE code='TRASH_PURGE_FAILED' AND message=?1 AND resolved_at IS NULL",params![message],|r|r.get(0)).map_err(db_e)?
+                    };
+                    if active == 0 {
+                        self.db
+                            .create_alert("warning", "TRASH_PURGE_FAILED", &message)?;
+                    }
+                }
             }
         }
         Ok(n)

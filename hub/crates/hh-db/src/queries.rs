@@ -15,7 +15,11 @@ use crate::{db_err, opt, Db};
 impl Db {
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let c = self.lock()?;
-        opt(c.query_row("SELECT value FROM settings WHERE key=?1", params![key], |r| r.get(0)))
+        opt(c.query_row(
+            "SELECT value FROM settings WHERE key=?1",
+            params![key],
+            |r| r.get(0),
+        ))
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
@@ -31,13 +35,16 @@ impl Db {
 
     pub fn hub_identity(&self) -> Result<(String, String)> {
         let c = self.lock()?;
-        c.query_row("SELECT id, name FROM hub LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(db_err)
+        c.query_row("SELECT id, name FROM hub LIMIT 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .map_err(db_err)
     }
 
     pub fn set_hub_name(&self, name: &str) -> Result<()> {
         let c = self.lock()?;
-        c.execute("UPDATE hub SET name=?1", params![name]).map_err(db_err)?;
+        c.execute("UPDATE hub SET name=?1", params![name])
+            .map_err(db_err)?;
         Ok(())
     }
 }
@@ -86,8 +93,17 @@ impl Db {
                 cert_serial, cert_expires_at, scopes, paired_at, status)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'active')",
             params![
-                d.id, d.name, d.platform, d.model, d.app_version, public_key, cert_pem,
-                d.cert_serial, d.cert_expires_at, d.scopes.join(","), d.paired_at
+                d.id,
+                d.name,
+                d.platform,
+                d.model,
+                d.app_version,
+                public_key,
+                cert_pem,
+                d.cert_serial,
+                d.cert_expires_at,
+                d.scopes.join(","),
+                d.paired_at
             ],
         )
         .map_err(db_err)?;
@@ -95,43 +111,90 @@ impl Db {
     }
 
     /// Insert an identity and consume its pairing token in one transaction.
-    pub fn insert_paired_device(&self, d: &DeviceRow, cert_pem: &str, token_id: &str) -> Result<()> {
+    pub fn insert_paired_device(
+        &self,
+        d: &DeviceRow,
+        cert_pem: &str,
+        token_id: &str,
+    ) -> Result<()> {
         let mut c = self.lock()?;
-        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
         tx.execute("INSERT INTO devices (id,name,platform,model,app_version,public_key,cert_pem,cert_serial,cert_expires_at,scopes,paired_at,status) VALUES (?1,?2,?3,?4,?5,'',?6,?7,?8,?9,?10,'active')",
             params![d.id,d.name,d.platform,d.model,d.app_version,cert_pem,d.cert_serial,d.cert_expires_at,d.scopes.join(","),d.paired_at]).map_err(db_err)?;
         let changed = tx.execute("UPDATE pairing_tokens SET used_at=?2,used_by_device_id=?3 WHERE id=?1 AND used_at IS NULL AND expires_at>?2 AND attempts<5",params![token_id,now_ms(),d.id]).map_err(db_err)?;
-        if changed != 1 { return Err(Error::InvalidToken); }
+        if changed != 1 {
+            return Err(Error::InvalidToken);
+        }
         tx.commit().map_err(db_err)
     }
 
     /// Renewal is staged until the new certificate first authenticates.
     /// Retrying with the same CSR returns the same certificate after a lost
     /// response; the old identity stays usable until activation or expiry.
-    pub fn pending_renewal(&self,id:&str,old:&str,csr:&str)->Result<Option<(String,i64)>> {
-        let c=self.lock()?;
+    pub fn pending_renewal(&self, id: &str, old: &str, csr: &str) -> Result<Option<(String, i64)>> {
+        let c = self.lock()?;
         let row:Option<(String,i64,String)>=c.query_row("SELECT cert_pem,cert_expires_at,csr_pem FROM certificate_renewals WHERE device_id=?1 AND old_serial=?2 AND expires_at>?3",params![id,old,now_ms()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_err)?;
-        match row {Some((cert,expiry,stored)) if stored==csr=>Ok(Some((cert,expiry))),Some(_)=>Err(Error::Conflict("renewal already pending with another key".into())),None=>Ok(None)}
+        match row {
+            Some((cert, expiry, stored)) if stored == csr => Ok(Some((cert, expiry))),
+            Some(_) => Err(Error::Conflict(
+                "renewal already pending with another key".into(),
+            )),
+            None => Ok(None),
+        }
     }
-    pub fn stage_renewal(&self,id:&str,old:&str,csr:&str,cert:&str,serial:&str,expires:i64)->Result<()> {
-        let c=self.lock()?;
-        let active:i64=c.query_row("SELECT COUNT(*) FROM devices WHERE id=?1 AND cert_serial=?2 AND status='active'",params![id,old],|r|r.get(0)).map_err(db_err)?;
-        if active!=1{return Err(Error::Unauthenticated);}
+    pub fn stage_renewal(
+        &self,
+        id: &str,
+        old: &str,
+        csr: &str,
+        cert: &str,
+        serial: &str,
+        expires: i64,
+    ) -> Result<()> {
+        let c = self.lock()?;
+        let active: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM devices WHERE id=?1 AND cert_serial=?2 AND status='active'",
+                params![id, old],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if active != 1 {
+            return Err(Error::Unauthenticated);
+        }
         let changed=c.execute("INSERT INTO certificate_renewals(device_id,old_serial,new_serial,cert_pem,csr_pem,cert_expires_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(device_id) DO UPDATE SET old_serial=excluded.old_serial,new_serial=excluded.new_serial,cert_pem=excluded.cert_pem,csr_pem=excluded.csr_pem,cert_expires_at=excluded.cert_expires_at,expires_at=excluded.expires_at WHERE certificate_renewals.expires_at<=?8",params![id,old,serial,cert,csr,expires,now_ms()+7*86400000,now_ms()]).map_err(db_err)?;
-        if changed!=1{return Err(Error::Conflict("renewal already pending; retry request".into()));}Ok(())
+        if changed != 1 {
+            return Err(Error::Conflict(
+                "renewal already pending; retry request".into(),
+            ));
+        }
+        Ok(())
     }
-    pub fn device_accepts_serial(&self,id:&str,serial:&str)->Result<bool> {
-        let c=self.lock()?;
+    pub fn device_accepts_serial(&self, id: &str, serial: &str) -> Result<bool> {
+        let c = self.lock()?;
         let n:i64=c.query_row("SELECT COUNT(*) FROM devices d WHERE d.id=?1 AND d.status='active' AND ((d.cert_serial=?2 AND d.cert_expires_at>?3) OR EXISTS(SELECT 1 FROM certificate_renewals r WHERE r.device_id=d.id AND r.new_serial=?2 AND r.old_serial=d.cert_serial AND r.expires_at>?3 AND r.cert_expires_at>?3))",params![id,serial,now_ms()],|r|r.get(0)).map_err(db_err)?;
-        Ok(n==1)
+        Ok(n == 1)
     }
-    pub fn activate_renewal(&self,id:&str,serial:&str)->Result<Option<String>> {
-        let mut c=self.lock()?;let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+    pub fn activate_renewal(&self, id: &str, serial: &str) -> Result<Option<String>> {
+        let mut c = self.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
         let pending:Option<(String,String,i64)>=tx.query_row("SELECT old_serial,cert_pem,cert_expires_at FROM certificate_renewals WHERE device_id=?1 AND new_serial=?2 AND expires_at>?3",params![id,serial,now_ms()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_err)?;
-        let Some((old,cert,expires))=pending else {return Ok(None);};
+        let Some((old, cert, expires)) = pending else {
+            return Ok(None);
+        };
         if tx.execute("UPDATE devices SET cert_pem=?3,cert_serial=?4,cert_expires_at=?5 WHERE id=?1 AND cert_serial=?2 AND status='active'",params![id,old,cert,serial,expires]).map_err(db_err)?!=1{return Err(Error::Unauthenticated);}
         tx.execute("INSERT OR REPLACE INTO revoked_certs(cert_serial,device_id,revoked_at,reason) VALUES(?1,?2,?3,'renewed')",params![old,id,now_ms()]).map_err(db_err)?;
-        tx.execute("DELETE FROM certificate_renewals WHERE device_id=?1",params![id]).map_err(db_err)?;tx.commit().map_err(db_err)?;Ok(Some(old))
+        tx.execute(
+            "DELETE FROM certificate_renewals WHERE device_id=?1",
+            params![id],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(Some(old))
     }
 
     pub fn device_by_id(&self, id: &str) -> Result<Option<DeviceRow>> {
@@ -140,7 +203,7 @@ impl Db {
             "SELECT id,name,platform,model,app_version,cert_serial,cert_expires_at,scopes,paired_at,last_seen_at,status
              FROM devices WHERE id=?1",
             params![id],
-            |r| Ok(device_row(r)?),
+            device_row,
         ))
     }
 
@@ -150,7 +213,7 @@ impl Db {
             "SELECT id,name,platform,model,app_version,cert_serial,cert_expires_at,scopes,paired_at,last_seen_at,status
              FROM devices WHERE cert_serial=?1",
             params![serial],
-            |r| Ok(device_row(r)?),
+            device_row,
         ))
     }
 
@@ -163,7 +226,7 @@ impl Db {
             )
             .map_err(db_err)?;
         let rows = st
-            .query_map([], |r| Ok(device_row(r)?))
+            .query_map([], device_row)
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
@@ -173,9 +236,15 @@ impl Db {
     /// Revocation is immediate: status flip + revocation row, same tx (FR-2.5).
     pub fn revoke_device(&self, id: &str, reason: &str) -> Result<()> {
         let mut c = self.lock()?;
-        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
         let serial: Option<String> = tx
-            .query_row("SELECT cert_serial FROM devices WHERE id=?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT cert_serial FROM devices WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         let serial = serial.ok_or_else(|| Error::NotFound(format!("device {id}")))?;
@@ -208,7 +277,9 @@ impl Db {
 
     pub fn revoked_serials(&self) -> Result<Vec<String>> {
         let c = self.lock()?;
-        let mut st = c.prepare("SELECT cert_serial FROM revoked_certs").map_err(db_err)?;
+        let mut st = c
+            .prepare("SELECT cert_serial FROM revoked_certs")
+            .map_err(db_err)?;
         let rows = st
             .query_map([], |r| r.get(0))
             .map_err(db_err)?
@@ -239,7 +310,11 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_pairing_token(&self, token_hash: &str) -> Result<Option<(String, i64, Option<i64>, i64)>> {
+    #[allow(clippy::type_complexity)]
+    pub fn get_pairing_token(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<(String, i64, Option<i64>, i64)>> {
         let c = self.lock()?;
         opt(c.query_row(
             "SELECT id, expires_at, used_at, attempts FROM pairing_tokens WHERE token_hash=?1",
@@ -255,8 +330,12 @@ impl Db {
             params![id],
         )
         .map_err(db_err)?;
-        c.query_row("SELECT attempts FROM pairing_tokens WHERE id=?1", params![id], |r| r.get(0))
-            .map_err(db_err)
+        c.query_row(
+            "SELECT attempts FROM pairing_tokens WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(db_err)
     }
 
     pub fn burn_token(&self, id: &str, device_id: &str) -> Result<()> {
@@ -295,8 +374,19 @@ impl Db {
                 created_at, updated_at, expires_at)
              VALUES (?1,?2,'upload',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'open',?13,?13,?14)",
             params![
-                id, device_id, kind, name, size as i64, mime, rel_path, chunk_size as i64,
-                chunk_count as i64, expected_root_hash, client_item_id, tmp_path, now_ms(),
+                id,
+                device_id,
+                kind,
+                name,
+                size as i64,
+                mime,
+                rel_path,
+                chunk_size as i64,
+                chunk_count as i64,
+                expected_root_hash,
+                client_item_id,
+                tmp_path,
+                now_ms(),
                 expires_at
             ],
         )
@@ -312,11 +402,16 @@ impl Db {
                     created_at,updated_at,result_file_id,error_code
              FROM transfers WHERE id=?1",
             params![id],
-            |r| transfer_row(r),
+            transfer_row,
         ))
     }
 
-    pub fn find_resumable(&self, device_id: &str, client_item_id: &str, size: u64) -> Result<Option<TransferRow>> {
+    pub fn find_resumable(
+        &self,
+        device_id: &str,
+        client_item_id: &str,
+        size: u64,
+    ) -> Result<Option<TransferRow>> {
         let c = self.lock()?;
         opt(c.query_row(
             "SELECT id,device_id,kind,name,size,mime,rel_path,chunk_size,chunk_count,
@@ -326,11 +421,16 @@ impl Db {
              WHERE device_id=?1 AND client_item_id=?2 AND size=?3 AND status='open'
              ORDER BY updated_at DESC LIMIT 1",
             params![device_id, client_item_id, size as i64],
-            |r| transfer_row(r),
+            transfer_row,
         ))
     }
 
-    pub fn update_transfer_status(&self, id: &str, status: &str, error: Option<&str>) -> Result<()> {
+    pub fn update_transfer_status(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
         let c = self.lock()?;
         c.execute(
             "UPDATE transfers SET status=?2, error_code=?3, updated_at=?4,
@@ -352,7 +452,11 @@ impl Db {
         Ok(())
     }
 
-    pub fn list_transfers(&self, device_id: Option<&str>, status: Option<&str>) -> Result<Vec<TransferRow>> {
+    pub fn list_transfers(
+        &self,
+        device_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<TransferRow>> {
         let c = self.lock()?;
         let mut sql = String::from(
             "SELECT id,device_id,kind,name,size,mime,rel_path,chunk_size,chunk_count,
@@ -372,7 +476,7 @@ impl Db {
         let mut st = c.prepare(&sql).map_err(db_err)?;
         let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|b| b.as_ref()).collect();
         let rows = st
-            .query_map(refs.as_slice(), |r| transfer_row(r))
+            .query_map(refs.as_slice(), transfer_row)
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
@@ -383,7 +487,9 @@ impl Db {
 
     pub fn record_chunk(&self, transfer_id: &str, idx: u64, hash: &str, size: u64) -> Result<()> {
         let mut c = self.lock()?;
-        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
         tx.execute(
             "INSERT OR REPLACE INTO transfer_chunks (transfer_id, idx, hash, size, verified_at)
              VALUES (?1,?2,?3,?4,?5)",
@@ -449,7 +555,13 @@ impl Db {
 
     // ---- audit log (append-only, BACKEND_SCHEMA §8) ----
 
-    pub fn audit(&self, device_id: Option<&str>, action: &str, detail: Option<&str>, ip: Option<&str>) -> Result<()> {
+    pub fn audit(
+        &self,
+        device_id: Option<&str>,
+        action: &str,
+        detail: Option<&str>,
+        ip: Option<&str>,
+    ) -> Result<()> {
         let c = self.lock()?;
         c.execute(
             "INSERT INTO audit_log (ts, device_id, action, detail, ip) VALUES (?1,?2,?3,?4,?5)",
@@ -461,18 +573,26 @@ impl Db {
 
     /// Newest-first audit page for the dashboard Activity view (FR-2.6).
     /// Returns (rows, total_matching).
-    pub fn list_audit(&self, device_id: Option<&str>, limit: u32, offset: u32) -> Result<(Vec<AuditRow>, i64)> {
+    pub fn list_audit(
+        &self,
+        device_id: Option<&str>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<AuditRow>, i64)> {
         let limit = limit.clamp(1, 500);
         let c = self.lock()?;
         let total: i64 = if let Some(d) = device_id {
-            c.query_row("SELECT COUNT(*) FROM audit_log WHERE device_id=?1", params![d], |r| r.get(0))
+            c.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE device_id=?1",
+                params![d],
+                |r| r.get(0),
+            )
         } else {
             c.query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
         }
         .map_err(db_err)?;
-        let mut sql = String::from(
-            "SELECT id, ts, device_id, action, detail, ip FROM audit_log WHERE 1=1",
-        );
+        let mut sql =
+            String::from("SELECT id, ts, device_id, action, detail, ip FROM audit_log WHERE 1=1");
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![];
         if let Some(d) = device_id {
             sql.push_str(" AND device_id=?");
@@ -502,7 +622,11 @@ impl Db {
 
     /// Verified-but-not-yet-freed backup items for the phone's
     /// "Free phone storage" flow (FR-5.3, W1.3).
-    pub fn backup_verified_items(&self, source_id: &str, limit: u32) -> Result<Vec<VerifiedItemRow>> {
+    pub fn backup_verified_items(
+        &self,
+        source_id: &str,
+        limit: u32,
+    ) -> Result<Vec<VerifiedItemRow>> {
         let c = self.lock()?;
         let mut st = c
             .prepare(
@@ -556,20 +680,33 @@ impl Db {
     }
 
     /// Maintain one current alert for a periodically sampled condition.
-    pub fn set_condition_alert(&self, severity:Option<&str>, code:&str, message:&str)->Result<()> {
-        let mut c=self.lock()?;
-        let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+    pub fn set_condition_alert(
+        &self,
+        severity: Option<&str>,
+        code: &str,
+        message: &str,
+    ) -> Result<()> {
+        let mut c = self.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
         match severity {
-            Some(severity)=>{
+            Some(severity) => {
                 let existing:Option<String>=tx.query_row("SELECT id FROM alerts WHERE code=?1 AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1",[code],|r|r.get(0)).optional().map_err(db_err)?;
-                if let Some(id)=existing {
+                if let Some(id) = existing {
                     tx.execute("UPDATE alerts SET severity=?2,message=?3,acknowledged_at=CASE WHEN severity=?2 THEN acknowledged_at ELSE NULL END WHERE id=?1",params![id,severity,message]).map_err(db_err)?;
                     tx.execute("UPDATE alerts SET resolved_at=?2 WHERE code=?1 AND resolved_at IS NULL AND id<>?3",params![code,now_ms(),id]).map_err(db_err)?;
                 } else {
                     tx.execute("INSERT INTO alerts(id,severity,code,message,created_at) VALUES(?1,?2,?3,?4,?5)",params![ulid::Ulid::new().to_string(),severity,code,message,now_ms()]).map_err(db_err)?;
                 }
             }
-            None=>{tx.execute("UPDATE alerts SET resolved_at=?2 WHERE code=?1 AND resolved_at IS NULL",params![code,now_ms()]).map_err(db_err)?;}
+            None => {
+                tx.execute(
+                    "UPDATE alerts SET resolved_at=?2 WHERE code=?1 AND resolved_at IS NULL",
+                    params![code, now_ms()],
+                )
+                .map_err(db_err)?;
+            }
         }
         tx.commit().map_err(db_err)?;
         Ok(())
@@ -618,7 +755,11 @@ fn device_row(r: &rusqlite::Row<'_>) -> std::result::Result<DeviceRow, rusqlite:
         app_version: r.get(4)?,
         cert_serial: r.get(5)?,
         cert_expires_at: r.get(6)?,
-        scopes: scopes_csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        scopes: scopes_csv
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         paired_at: r.get(8)?,
         last_seen_at: r.get(9)?,
         status: r.get(10)?,
@@ -706,10 +847,17 @@ mod tests {
     fn device_lifecycle() {
         let db = Db::open_memory().unwrap();
         let d = DeviceRow {
-            id: "d1".into(), name: "Pixel".into(), platform: "android".into(),
-            model: None, app_version: None, cert_serial: "serial-1".into(),
-            cert_expires_at: now_ms() + 1000, scopes: vec!["files".into(), "transfer".into()],
-            paired_at: now_ms(), last_seen_at: None, status: "active".into(),
+            id: "d1".into(),
+            name: "Pixel".into(),
+            platform: "android".into(),
+            model: None,
+            app_version: None,
+            cert_serial: "serial-1".into(),
+            cert_expires_at: now_ms() + 1000,
+            scopes: vec!["files".into(), "transfer".into()],
+            paired_at: now_ms(),
+            last_seen_at: None,
+            status: "active".into(),
         };
         db.insert_device(&d, "PEM", "PUB").unwrap();
         assert!(db.device_by_serial("serial-1").unwrap().is_some());
@@ -720,24 +868,46 @@ mod tests {
 
     fn renewal_device() -> DeviceRow {
         DeviceRow {
-            id: "renewing".into(), name: "Phone".into(), platform: "android".into(),
-            model: None, app_version: None, cert_serial: "old-serial".into(),
-            cert_expires_at: now_ms() + 86_400_000, scopes: vec!["files".into()],
-            paired_at: now_ms(), last_seen_at: None, status: "active".into(),
+            id: "renewing".into(),
+            name: "Phone".into(),
+            platform: "android".into(),
+            model: None,
+            app_version: None,
+            cert_serial: "old-serial".into(),
+            cert_expires_at: now_ms() + 86_400_000,
+            scopes: vec!["files".into()],
+            paired_at: now_ms(),
+            last_seen_at: None,
+            status: "active".into(),
         }
     }
 
     #[test]
     fn staged_renewal_keeps_old_identity_until_activation() {
         let db = Db::open_memory().unwrap();
-        db.insert_device(&renewal_device(), "old-cert", "old-key").unwrap();
+        db.insert_device(&renewal_device(), "old-cert", "old-key")
+            .unwrap();
         let new_expiry = now_ms() + 365 * 86_400_000;
-        db.stage_renewal("renewing", "old-serial", "csr", "new-cert", "new-serial", new_expiry).unwrap();
+        db.stage_renewal(
+            "renewing",
+            "old-serial",
+            "csr",
+            "new-cert",
+            "new-serial",
+            new_expiry,
+        )
+        .unwrap();
         assert!(db.device_accepts_serial("renewing", "old-serial").unwrap());
         assert!(db.device_accepts_serial("renewing", "new-serial").unwrap());
-        assert_eq!(db.pending_renewal("renewing", "old-serial", "csr").unwrap(), Some(("new-cert".into(), new_expiry)));
+        assert_eq!(
+            db.pending_renewal("renewing", "old-serial", "csr").unwrap(),
+            Some(("new-cert".into(), new_expiry))
+        );
 
-        assert_eq!(db.activate_renewal("renewing", "new-serial").unwrap(), Some("old-serial".into()));
+        assert_eq!(
+            db.activate_renewal("renewing", "new-serial").unwrap(),
+            Some("old-serial".into())
+        );
         assert!(!db.device_accepts_serial("renewing", "old-serial").unwrap());
         assert!(db.is_serial_revoked("old-serial").unwrap());
         assert!(db.device_accepts_serial("renewing", "new-serial").unwrap());
@@ -746,9 +916,19 @@ mod tests {
     #[test]
     fn revoked_device_rejects_current_and_pending_serials() {
         let db = Db::open_memory().unwrap();
-        db.insert_device(&renewal_device(), "old-cert", "old-key").unwrap();
-        db.stage_renewal("renewing", "old-serial", "csr", "new-cert", "new-serial", now_ms() + 365 * 86_400_000).unwrap();
-        db.revoke_device("renewing", "owner removed device").unwrap();
+        db.insert_device(&renewal_device(), "old-cert", "old-key")
+            .unwrap();
+        db.stage_renewal(
+            "renewing",
+            "old-serial",
+            "csr",
+            "new-cert",
+            "new-serial",
+            now_ms() + 365 * 86_400_000,
+        )
+        .unwrap();
+        db.revoke_device("renewing", "owner removed device")
+            .unwrap();
 
         assert!(db.is_serial_revoked("old-serial").unwrap());
         assert!(!db.device_accepts_serial("renewing", "old-serial").unwrap());
@@ -759,14 +939,35 @@ mod tests {
     fn transfer_chunk_bitmap() {
         let db = Db::open_memory().unwrap();
         let d = DeviceRow {
-            id: "d1".into(), name: "n".into(), platform: "android".into(),
-            model: None, app_version: None, cert_serial: "s".into(),
-            cert_expires_at: 0, scopes: vec![], paired_at: 0, last_seen_at: None,
+            id: "d1".into(),
+            name: "n".into(),
+            platform: "android".into(),
+            model: None,
+            app_version: None,
+            cert_serial: "s".into(),
+            cert_expires_at: 0,
+            scopes: vec![],
+            paired_at: 0,
+            last_seen_at: None,
             status: "active".into(),
         };
         db.insert_device(&d, "PEM", "PUB").unwrap();
-        db.insert_transfer("t1", "d1", "send", "f.bin", 100, None, None, 4, 25,
-            None, None, "/tmp/x.part", now_ms() + 1000).unwrap();
+        db.insert_transfer(
+            "t1",
+            "d1",
+            "send",
+            "f.bin",
+            100,
+            None,
+            None,
+            4,
+            25,
+            None,
+            None,
+            "/tmp/x.part",
+            now_ms() + 1000,
+        )
+        .unwrap();
         db.record_chunk("t1", 0, "h0", 4).unwrap();
         db.record_chunk("t1", 1, "h1", 4).unwrap();
         db.record_chunk("t1", 3, "h3", 4).unwrap();

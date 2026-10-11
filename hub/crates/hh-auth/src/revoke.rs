@@ -16,14 +16,20 @@ pub struct RevocationList {
 
 impl RevocationList {
     pub fn load(db: Db) -> Result<Self> {
-        let list = Self { db, inner: Arc::new(RwLock::new(HashSet::new())) };
+        let list = Self {
+            db,
+            inner: Arc::new(RwLock::new(HashSet::new())),
+        };
         list.refresh()?;
         Ok(list)
     }
 
     pub fn refresh(&self) -> Result<()> {
         let serials = self.db.revoked_serials()?;
-        let mut set = self.inner.write().map_err(|_| hh_core::Error::Internal("revocation lock poisoned".into()))?;
+        let mut set = self
+            .inner
+            .write()
+            .map_err(|_| hh_core::Error::Internal("revocation lock poisoned".into()))?;
         *set = serials.into_iter().collect();
         Ok(())
     }
@@ -35,6 +41,9 @@ impl RevocationList {
     }
 
     pub fn is_revoked(&self, serial: &str) -> bool {
-        self.inner.read().map(|s| s.contains(serial)).unwrap_or(true) // fail closed
+        self.inner
+            .read()
+            .map(|s| s.contains(serial))
+            .unwrap_or(true) // fail closed
     }
 }

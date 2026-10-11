@@ -175,7 +175,10 @@ impl ChunkBitmap {
             }
             ranges.push((c, c));
         }
-        Self { encoding: "ranges".into(), ranges }
+        Self {
+            encoding: "ranges".into(),
+            ranges,
+        }
     }
 
     pub fn contains(&self, idx: u64) -> bool {

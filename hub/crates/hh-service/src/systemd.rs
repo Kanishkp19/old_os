@@ -12,11 +12,15 @@ pub struct SystemdHost {
 }
 
 impl SystemdHost {
-    pub fn new(config: Config) -> Self { Self { config } }
+    pub fn new(config: Config) -> Self {
+        Self { config }
+    }
 }
 
 fn notify(message: &str) -> Result<()> {
-    let Some(path) = std::env::var_os("NOTIFY_SOCKET") else { return Ok(()); };
+    let Some(path) = std::env::var_os("NOTIFY_SOCKET") else {
+        return Ok(());
+    };
     let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
     let address = if bytes.first() == Some(&b'@') {
         SocketAddr::from_abstract_name(&bytes[1..])?
@@ -29,22 +33,32 @@ fn notify(message: &str) -> Result<()> {
 
 fn watchdog_interval() -> Option<Duration> {
     let pid = std::env::var("WATCHDOG_PID").ok();
-    if pid.as_deref().is_some_and(|value| value.parse::<u32>().ok() != Some(std::process::id())) {
+    if pid
+        .as_deref()
+        .is_some_and(|value| value.parse::<u32>().ok() != Some(std::process::id()))
+    {
         return None;
     }
     let micros = std::env::var("WATCHDOG_USEC").ok()?.parse::<u64>().ok()?;
-    if micros == 0 { None } else { Some(Duration::from_micros((micros / 2).max(1))) }
+    if micros == 0 {
+        None
+    } else {
+        Some(Duration::from_micros((micros / 2).max(1)))
+    }
 }
 
 impl ServiceHost for SystemdHost {
     fn run(self: Box<Self>) -> Result<()> {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
             .map_err(|error| Error::Internal(format!("systemd runtime: {error}")))?;
         runtime.block_on(async move {
             let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
             let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
             let signals = tokio::spawn(async move {
-                let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+                let mut terminate =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
                 tokio::select! {
                     _ = terminate.recv() => {},
                     _ = tokio::signal::ctrl_c() => {},

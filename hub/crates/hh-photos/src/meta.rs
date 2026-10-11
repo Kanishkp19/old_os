@@ -22,7 +22,11 @@ pub struct MediaMeta {
 }
 
 pub fn extract(path: &Path, mime: Option<&str>) -> Result<MediaMeta> {
-    let mut meta = MediaMeta { taken_at: now_ms(), taken_at_source: "upload", ..Default::default() };
+    let mut meta = MediaMeta {
+        taken_at: now_ms(),
+        taken_at_source: "upload",
+        ..Default::default()
+    };
 
     // mtime fallback (better than upload time).
     if let Ok(md) = std::fs::metadata(path) {
@@ -51,9 +55,13 @@ pub fn extract(path: &Path, mime: Option<&str>) -> Result<MediaMeta> {
 }
 
 fn extract_exif(path: &Path, meta: &mut MediaMeta) {
-    let Ok(file) = std::fs::File::open(path) else { return };
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
     let mut buf = std::io::BufReader::new(file);
-    let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) else { return };
+    let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) else {
+        return;
+    };
 
     if let Some(f) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
         if let exif::Value::Ascii(ref v) = f.value {
@@ -89,8 +97,14 @@ fn extract_exif(path: &Path, meta: &mut MediaMeta) {
     let lon = exif.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY);
     let lon_ref = exif.get_field(exif::Tag::GPSLongitudeRef, exif::In::PRIMARY);
     if let (Some(lat), Some(lon)) = (lat, lon) {
-        meta.gps_lat = dms_to_deg(&lat.value, lat_ref.map(|f| f.display_value().to_string()).as_deref());
-        meta.gps_lon = dms_to_deg(&lon.value, lon_ref.map(|f| f.display_value().to_string()).as_deref());
+        meta.gps_lat = dms_to_deg(
+            &lat.value,
+            lat_ref.map(|f| f.display_value().to_string()).as_deref(),
+        );
+        meta.gps_lon = dms_to_deg(
+            &lon.value,
+            lon_ref.map(|f| f.display_value().to_string()).as_deref(),
+        );
     }
 }
 
@@ -138,7 +152,10 @@ mod tests {
     #[test]
     fn exif_datetime() {
         assert_eq!(parse_exif_datetime("1970:01:01 00:00:00"), Some(0));
-        assert_eq!(parse_exif_datetime("2026:10:05 00:00:00"), Some(1_791_158_400_000));
+        assert_eq!(
+            parse_exif_datetime("2026:10:05 00:00:00"),
+            Some(1_791_158_400_000)
+        );
         assert_eq!(parse_exif_datetime("bad"), None);
     }
 }

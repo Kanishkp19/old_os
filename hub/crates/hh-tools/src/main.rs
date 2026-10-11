@@ -58,7 +58,14 @@ enum Cmd {
 
 fn parse_size(s: &str) -> u64 {
     let s = s.trim().to_uppercase();
-    for (suffix, mul) in [("GIB", 1 << 30), ("MIB", 1 << 20), ("KIB", 1 << 10), ("GB", 1_000_000_000u64), ("MB", 1_000_000), ("KB", 1_000)] {
+    for (suffix, mul) in [
+        ("GIB", 1 << 30),
+        ("MIB", 1 << 20),
+        ("KIB", 1 << 10),
+        ("GB", 1_000_000_000u64),
+        ("MB", 1_000_000),
+        ("KB", 1_000),
+    ] {
         if let Some(num) = s.strip_suffix(suffix) {
             return num.trim().parse::<u64>().unwrap_or(0) * mul;
         }
@@ -97,7 +104,11 @@ async fn main() -> anyhow::Result<()> {
             hh_hw::wake::send_wake(&mac, &broadcast)?;
             println!("magic packet sent to {mac} via {broadcast}");
         }
-        Cmd::GenTestData { dir, photos, videos } => {
+        Cmd::GenTestData {
+            dir,
+            photos,
+            videos,
+        } => {
             std::fs::create_dir_all(&dir)?;
             for i in 0..photos {
                 // Minimal valid JPEG header + payload (enough for import scans,
@@ -112,7 +123,10 @@ async fn main() -> anyhow::Result<()> {
                 let data = vec![0u8; 1 << 20];
                 std::fs::write(dir.join(format!("VID_{i:04}.mp4")), data)?;
             }
-            println!("generated {photos} photos + {videos} videos in {}", dir.display());
+            println!(
+                "generated {photos} photos + {videos} videos in {}",
+                dir.display()
+            );
         }
     }
     Ok(())

@@ -56,12 +56,16 @@ impl Preset {
             }
             if line.starts_with("b=AS:") {
                 lines.push(cap.clone());
-                if video { capped = true; }
+                if video {
+                    capped = true;
+                }
             } else {
                 lines.push(line.to_string());
             }
         }
-        if video && !capped { lines.push(cap); }
+        if video && !capped {
+            lines.push(cap);
+        }
         lines.join("\r\n")
     }
 }
@@ -86,7 +90,9 @@ pub struct ScreenSession {
 
 /// Abstraction over a WebRTC peer (webrtc-rs in production, mock in tests).
 pub trait WebRtcPeer: Send {
-    fn configure(&mut self, _id: &str, _kind: &str, _preset: Preset) -> Result<()> { Ok(()) }
+    fn configure(&mut self, _id: &str, _kind: &str, _preset: Preset) -> Result<()> {
+        Ok(())
+    }
     fn set_remote_offer(&mut self, sdp: &str) -> Result<()>;
     fn create_answer(&mut self) -> Result<String>;
     fn add_ice_candidate(&mut self, candidate: &str) -> Result<()>;
@@ -116,7 +122,10 @@ impl WebRtcPeer for LoopbackPeer {
     }
 
     fn create_answer(&mut self) -> Result<String> {
-        let offer = self.offer.clone().ok_or_else(|| Error::Conflict("no offer before answer".into()))?;
+        let offer = self
+            .offer
+            .clone()
+            .ok_or_else(|| Error::Conflict("no offer before answer".into()))?;
         Ok(format!("v=0\r\no=homehub-loopback\r\n{offer}\r\n"))
     }
 
@@ -142,26 +151,54 @@ struct HelperPeer {
 }
 impl WebRtcPeer for HelperPeer {
     fn configure(&mut self, id: &str, kind: &str, preset: Preset) -> Result<()> {
-        self.id = id.into(); self.kind = kind.into(); self.preset = preset; Ok(())
+        self.id = id.into();
+        self.kind = kind.into();
+        self.preset = preset;
+        Ok(())
     }
-    fn set_remote_offer(&mut self, sdp: &str) -> Result<()> { self.offer = Some(sdp.into()); Ok(()) }
+    fn set_remote_offer(&mut self, sdp: &str) -> Result<()> {
+        self.offer = Some(sdp.into());
+        Ok(())
+    }
     fn create_answer(&mut self) -> Result<String> {
-        let offer = self.offer.as_deref().ok_or_else(|| Error::Conflict("screen offer required".into()))?;
-        let preset = match self.preset { Preset::Low => "low", Preset::Balanced => "balanced", Preset::High => "high" };
+        let offer = self
+            .offer
+            .as_deref()
+            .ok_or_else(|| Error::Conflict("screen offer required".into()))?;
+        let preset = match self.preset {
+            Preset::Low => "low",
+            Preset::Balanced => "balanced",
+            Preset::High => "high",
+        };
         // A transport timeout can hide a successful start. Always attempt
         // exact-id cleanup even when no answer reached the caller.
         self.started = true;
-        let answer = self.helper.screen_offer_for(&self.id, offer, preset, &self.kind)?;
-        answer.get("answer_sdp").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
+        let answer = self
+            .helper
+            .screen_offer_for(&self.id, offer, preset, &self.kind)?;
+        answer
+            .get("answer_sdp")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
             .ok_or_else(|| Error::Internal("session helper returned no screen answer".into()))
     }
-    fn add_ice_candidate(&mut self, candidate: &str) -> Result<()> { self.helper.add_ice_for(&self.id, candidate) }
+    fn add_ice_candidate(&mut self, candidate: &str) -> Result<()> {
+        self.helper.add_ice_for(&self.id, candidate)
+    }
     fn close(&mut self) -> Result<()> {
-        if self.started { self.started = false; self.helper.screen_stop_for(&self.id)?; }
+        if self.started {
+            self.started = false;
+            self.helper.screen_stop_for(&self.id)?;
+        }
         Ok(())
     }
 }
-impl Drop for HelperPeer { fn drop(&mut self) { let _ = self.close(); } }
+impl Drop for HelperPeer {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
 
 #[derive(Default)]
 struct State {
@@ -201,11 +238,17 @@ impl StreamService {
 
     /// Production constructor: sessions persist to the hub DB.
     pub fn with_db(db: Db) -> Self {
-        Self { db: Some(db), ..Self::default() }
+        Self {
+            db: Some(db),
+            ..Self::default()
+        }
     }
 
     /// Install the production peer factory (helper-process backed).
-    pub fn with_peer_factory(mut self, factory: Arc<dyn Fn() -> Box<dyn WebRtcPeer> + Send + Sync>) -> Self {
+    pub fn with_peer_factory(
+        mut self,
+        factory: Arc<dyn Fn() -> Box<dyn WebRtcPeer> + Send + Sync>,
+    ) -> Self {
         self.peer_factory = Some(factory);
         self
     }
@@ -214,7 +257,16 @@ impl StreamService {
     /// balanced regardless of CPU-only hardware-audit estimates.
     pub fn with_helper(mut self, helper: hh_remote::helper_client::HelperClient) -> Self {
         self.helper = Some(helper.clone());
-        self.peer_factory = Some(Arc::new(move || Box::new(HelperPeer { helper: helper.clone(), id: String::new(), kind: String::new(), preset: Preset::Low, offer: None, started: false })));
+        self.peer_factory = Some(Arc::new(move || {
+            Box::new(HelperPeer {
+                helper: helper.clone(),
+                id: String::new(),
+                kind: String::new(),
+                preset: Preset::Low,
+                offer: None,
+                started: false,
+            })
+        }));
         self.peer_max_preset = Some(Preset::Balanced);
         self
     }
@@ -235,9 +287,17 @@ impl StreamService {
         rating: &str,
         offer_sdp: &str,
     ) -> Result<(String, Preset, String)> {
-        if !matches!(kind, "view" | "cast") || offer_sdp.is_empty() || offer_sdp.len() > 512 * 1024 { return Err(Error::BadRequest("invalid screen offer".into())); }
-        let mut state = self.state.lock().map_err(|_| Error::Internal("stream lock poisoned".into()))?;
-        if !state.sessions.is_empty() { return Err(Error::Conflict("a screen session is already active".into())); }
+        if !matches!(kind, "view" | "cast") || offer_sdp.is_empty() || offer_sdp.len() > 512 * 1024
+        {
+            return Err(Error::BadRequest("invalid screen offer".into()));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Internal("stream lock poisoned".into()))?;
+        if !state.sessions.is_empty() {
+            return Err(Error::Conflict("a screen session is already active".into()));
+        }
         let max = max_preset_for_rating(rating)
             .ok_or_else(|| Error::Conflict("screen sharing is limited on this laptop".into()))?;
         let max = self.peer_max_preset.map(|cap| max.min(cap)).unwrap_or(max);
@@ -250,9 +310,16 @@ impl StreamService {
         let negotiated = (|| {
             peer.configure(&id, kind, preset)?;
             peer.set_remote_offer(offer_sdp)?;
-            peer.create_answer().map(|answer| Preset::apply_to_sdp(&answer, preset))
+            peer.create_answer()
+                .map(|answer| Preset::apply_to_sdp(&answer, preset))
         })();
-        let answer = match negotiated { Ok(answer) => answer, Err(e) => { let _ = peer.close(); return Err(e); } };
+        let answer = match negotiated {
+            Ok(answer) => answer,
+            Err(e) => {
+                let _ = peer.close();
+                return Err(e);
+            }
+        };
 
         let meta = ScreenSession {
             id: id.clone(),
@@ -263,14 +330,26 @@ impl StreamService {
             last_activity_ms: now_ms(),
             state: "active".into(),
         };
-        if let Err(e) = self.db_record_start(&meta) { let _ = peer.close(); return Err(e); }
-        state.sessions.insert(id.clone(), ActiveSession { meta, peer, ice: vec![] });
+        if let Err(e) = self.db_record_start(&meta) {
+            let _ = peer.close();
+            return Err(e);
+        }
+        state.sessions.insert(
+            id.clone(),
+            ActiveSession {
+                meta,
+                peer,
+                ice: vec![],
+            },
+        );
         Ok((id, preset, answer))
     }
 
     /// Trickle ICE from the viewer (both sides journal for the peer impl).
     pub fn add_ice_candidate(&self, session_id: &str, candidate: &str) -> Result<()> {
-        if candidate.len() > 8192 { return Err(Error::TooLarge("screen ICE candidate".into())); }
+        if candidate.len() > 8192 {
+            return Err(Error::TooLarge("screen ICE candidate".into()));
+        }
         let mut st = self
             .state
             .lock()
@@ -279,7 +358,9 @@ impl StreamService {
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| Error::NotFound(format!("screen session {session_id}")))?;
-        if s.ice.len() >= 128 { return Err(Error::RateLimited); }
+        if s.ice.len() >= 128 {
+            return Err(Error::RateLimited);
+        }
         s.peer.add_ice_candidate(candidate)?;
         s.ice.push(candidate.to_string());
         Ok(())
@@ -330,9 +411,17 @@ impl StreamService {
 
     /// Renew the media lease for its authenticated device.
     pub fn touch_session(&self, id: &str, device_id: &str) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_| Error::Internal("stream lock poisoned".into()))?;
-        let session = state.sessions.get_mut(id).ok_or_else(|| Error::NotFound("screen session".into()))?;
-        if session.meta.device_id != device_id { return Err(Error::ForbiddenScope("remote".into())); }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Internal("stream lock poisoned".into()))?;
+        let session = state
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| Error::NotFound("screen session".into()))?;
+        if session.meta.device_id != device_id {
+            return Err(Error::ForbiddenScope("remote".into()));
+        }
         session.meta.last_activity_ms = now_ms();
         Ok(())
     }
@@ -341,17 +430,40 @@ impl StreamService {
     /// Holding the lifecycle lock while querying prevents a stale helper
     /// snapshot from accidentally retiring a concurrently starting session.
     pub fn reconcile_closed_sessions(&self) -> Result<Vec<String>> {
-        let Some(helper) = &self.helper else { return Ok(Vec::new()); };
+        let Some(helper) = &self.helper else {
+            return Ok(Vec::new());
+        };
         let removed = {
-            let mut state = self.state.lock().map_err(|_| Error::Internal("stream lock poisoned".into()))?;
-            if state.sessions.is_empty() { return Ok(Vec::new()); }
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Error::Internal("stream lock poisoned".into()))?;
+            if state.sessions.is_empty() {
+                return Ok(Vec::new());
+            }
             // An unreachable or malformed helper cannot keep a media lease alive.
-            let active = helper.screen_capabilities().ok()
-                .and_then(|v| v.get("current_sessions").and_then(serde_json::Value::as_array).cloned())
-                .filter(|sessions| sessions.len() <= 1 && sessions.iter().all(serde_json::Value::is_string))
+            let active = helper
+                .screen_capabilities()
+                .ok()
+                .and_then(|v| {
+                    v.get("current_sessions")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                })
+                .filter(|sessions| {
+                    sessions.len() <= 1 && sessions.iter().all(serde_json::Value::is_string)
+                })
                 .unwrap_or_default();
-            let closed: Vec<_> = state.sessions.keys().filter(|id| !active.iter().any(|v| v.as_str() == Some(id.as_str()))).cloned().collect();
-            closed.into_iter().filter_map(|id| state.sessions.remove(&id).map(|session| (id, session))).collect::<Vec<_>>()
+            let closed: Vec<_> = state
+                .sessions
+                .keys()
+                .filter(|id| !active.iter().any(|v| v.as_str() == Some(id.as_str())))
+                .cloned()
+                .collect();
+            closed
+                .into_iter()
+                .filter_map(|id| state.sessions.remove(&id).map(|session| (id, session)))
+                .collect::<Vec<_>>()
         };
         let mut closed = Vec::new();
         for (id, mut session) in removed {
@@ -364,22 +476,42 @@ impl StreamService {
 
     /// Remove expired peers through the same exact-session cleanup path.
     pub fn expire_idle_sessions(&self, timeout_ms: i64) -> Result<Vec<String>> {
-        if timeout_ms <= 0 { return Err(Error::BadRequest("invalid screen idle timeout".into())); }
+        if timeout_ms <= 0 {
+            return Err(Error::BadRequest("invalid screen idle timeout".into()));
+        }
         let now = now_ms();
         // Decide and remove while holding one lock, so a successful heartbeat
         // cannot race a stale expiration decision.
         let removed = {
-            let mut state = self.state.lock().map_err(|_| Error::Internal("stream lock poisoned".into()))?;
-            let ids: Vec<_> = state.sessions.values().filter(|s| now.saturating_sub(s.meta.last_activity_ms) >= timeout_ms).map(|s| s.meta.id.clone()).collect();
-            ids.into_iter().filter_map(|id| state.sessions.remove(&id).map(|session| (id, session))).collect::<Vec<_>>()
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Error::Internal("stream lock poisoned".into()))?;
+            let ids: Vec<_> = state
+                .sessions
+                .values()
+                .filter(|s| now.saturating_sub(s.meta.last_activity_ms) >= timeout_ms)
+                .map(|s| s.meta.id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| state.sessions.remove(&id).map(|session| (id, session)))
+                .collect::<Vec<_>>()
         };
-        let mut expired = Vec::new(); let mut first_error = None;
+        let mut expired = Vec::new();
+        let mut first_error = None;
         for (id, mut session) in removed {
-            let closed = session.peer.close(); let recorded = self.db_record_end(&id);
-            if let Err(error) = closed.and(recorded) { if first_error.is_none() { first_error = Some(error); } }
+            let closed = session.peer.close();
+            let recorded = self.db_record_end(&id);
+            if let Err(error) = closed.and(recorded) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
             expired.push(id);
         }
-        if let Some(error) = first_error { return Err(error); }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
         Ok(expired)
     }
 
@@ -468,32 +600,52 @@ mod tests {
         let closes = Arc::new(AtomicUsize::new(0));
         let closes_for_factory = closes.clone();
         let svc = StreamService::default().with_peer_factory(Arc::new(move || {
-            Box::new(CountingPeer { closes: closes_for_factory.clone(), has_offer: false })
-                as Box<dyn WebRtcPeer>
+            Box::new(CountingPeer {
+                closes: closes_for_factory.clone(),
+                has_offer: false,
+            }) as Box<dyn WebRtcPeer>
         }));
         (svc, closes)
     }
 
     #[test]
     fn production_without_helper_refuses_screen_support() {
-        assert!(StreamService::new().start_session("d1", "view", None, "good", "v=0").is_err());
+        assert!(StreamService::new()
+            .start_session("d1", "view", None, "good", "v=0")
+            .is_err());
     }
 
     #[test]
     fn preset_gating() {
-        assert!(matches!(max_preset_for_rating("excellent"), Some(Preset::High)));
-        assert!(matches!(max_preset_for_rating("limited"), Some(Preset::Low)));
+        assert!(matches!(
+            max_preset_for_rating("excellent"),
+            Some(Preset::High)
+        ));
+        assert!(matches!(
+            max_preset_for_rating("limited"),
+            Some(Preset::Low)
+        ));
         assert!(max_preset_for_rating("not_recommended").is_none());
-        assert!(Preset::apply_to_sdp("v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendonly", Preset::Low)
-            .contains("m=video 9 UDP/TLS/RTP/SAVPF 96\r\nb=AS:2000\r\na=sendonly"));
+        assert!(Preset::apply_to_sdp(
+            "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendonly",
+            Preset::Low
+        )
+        .contains("m=video 9 UDP/TLS/RTP/SAVPF 96\r\nb=AS:2000\r\na=sendonly"));
     }
 
     #[test]
     fn session_lifecycle_and_answer_sdp() {
         let (s, closes) = counting_service();
         // Requested High on a "good" laptop caps to Balanced; answer BW set.
-        let (id, preset, answer) =
-            s.start_session("d1", "view", Some(Preset::High), "good", "v=0\r\nb=AS:9999\r\n").unwrap();
+        let (id, preset, answer) = s
+            .start_session(
+                "d1",
+                "view",
+                Some(Preset::High),
+                "good",
+                "v=0\r\nb=AS:9999\r\n",
+            )
+            .unwrap();
         assert!(matches!(preset, Preset::Balanced));
         assert!(answer.contains("b=AS:6000"));
         assert_eq!(s.active_sessions().len(), 1);
@@ -504,7 +656,11 @@ mod tests {
 
         s.stop_session(&id).unwrap();
         assert!(s.active_sessions().is_empty());
-        assert_eq!(closes.load(Ordering::SeqCst), 1, "peer must be closed on stop");
+        assert_eq!(
+            closes.load(Ordering::SeqCst),
+            1,
+            "peer must be closed on stop"
+        );
         assert!(matches!(s.stop_session(&id), Err(Error::NotFound(_))));
     }
 
@@ -512,14 +668,24 @@ mod tests {
     fn stop_is_exactly_once_even_if_peer_close_errors() {
         struct BoomPeer;
         impl WebRtcPeer for BoomPeer {
-            fn set_remote_offer(&mut self, _: &str) -> Result<()> { Ok(()) }
-            fn create_answer(&mut self) -> Result<String> { Ok("v=0".into()) }
-            fn add_ice_candidate(&mut self, _: &str) -> Result<()> { Ok(()) }
-            fn close(&mut self) -> Result<()> { Err(Error::Internal("boom".into())) }
+            fn set_remote_offer(&mut self, _: &str) -> Result<()> {
+                Ok(())
+            }
+            fn create_answer(&mut self) -> Result<String> {
+                Ok("v=0".into())
+            }
+            fn add_ice_candidate(&mut self, _: &str) -> Result<()> {
+                Ok(())
+            }
+            fn close(&mut self) -> Result<()> {
+                Err(Error::Internal("boom".into()))
+            }
         }
         let svc = StreamService::default()
             .with_peer_factory(Arc::new(|| Box::new(BoomPeer) as Box<dyn WebRtcPeer>));
-        let (id, _, _) = svc.start_session("d1", "view", None, "good", "v=0").unwrap();
+        let (id, _, _) = svc
+            .start_session("d1", "view", None, "good", "v=0")
+            .unwrap();
         // Session is removed from the map even though peer.close() failed.
         assert!(svc.stop_session(&id).is_err());
         assert!(svc.active_sessions().is_empty());
@@ -528,14 +694,32 @@ mod tests {
     #[test]
     fn ownership_and_heartbeat_guard_lifecycle() {
         let (svc, closes) = counting_service();
-        let (id, _, _) = svc.start_session("d1", "cast", None, "good", "v=0").unwrap();
+        let (id, _, _) = svc
+            .start_session("d1", "cast", None, "good", "v=0")
+            .unwrap();
         assert!(svc.touch_session(&id, "d2").is_err());
-        assert!(svc.start_session("d2", "view", None, "good", "v=0").is_err());
+        assert!(svc
+            .start_session("d2", "view", None, "good", "v=0")
+            .is_err());
         assert_eq!(closes.load(Ordering::SeqCst), 0);
-        svc.state.lock().unwrap().sessions.get_mut(&id).unwrap().meta.last_activity_ms = now_ms() - 60_000;
+        svc.state
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(&id)
+            .unwrap()
+            .meta
+            .last_activity_ms = now_ms() - 60_000;
         svc.touch_session(&id, "d1").unwrap();
         assert!(svc.expire_idle_sessions(45_000).unwrap().is_empty());
-        svc.state.lock().unwrap().sessions.get_mut(&id).unwrap().meta.last_activity_ms = now_ms() - 60_000;
+        svc.state
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(&id)
+            .unwrap()
+            .meta
+            .last_activity_ms = now_ms() - 60_000;
         assert_eq!(svc.expire_idle_sessions(45_000).unwrap(), vec![id]);
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
@@ -543,7 +727,9 @@ mod tests {
     #[test]
     fn rejects_when_rating_says_no() {
         let s = StreamService::new();
-        let err = s.start_session("d1", "view", None, "not_recommended", "v=0").unwrap_err();
+        let err = s
+            .start_session("d1", "view", None, "not_recommended", "v=0")
+            .unwrap_err();
         assert!(matches!(err, Error::Conflict(_)));
     }
 
@@ -579,13 +765,18 @@ mod tests {
             "PUB",
         )
         .unwrap();
-        let s = StreamService::with_db(db.clone()).with_peer_factory(Arc::new(|| Box::new(LoopbackPeer::default())));
+        let s = StreamService::with_db(db.clone())
+            .with_peer_factory(Arc::new(|| Box::new(LoopbackPeer::default())));
 
         let (id, _, _) = s.start_session("d1", "view", None, "good", "v=0").unwrap();
         let open_count: i64 = db
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM remote_sessions WHERE ended_at IS NULL", [], |r| r.get::<_, i64>(0))
+            .query_row(
+                "SELECT COUNT(*) FROM remote_sessions WHERE ended_at IS NULL",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
             .unwrap();
         assert_eq!(open_count, 1);
 
@@ -593,7 +784,11 @@ mod tests {
         let open_after_stop: i64 = db
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM remote_sessions WHERE ended_at IS NULL", [], |r| r.get::<_, i64>(0))
+            .query_row(
+                "SELECT COUNT(*) FROM remote_sessions WHERE ended_at IS NULL",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
             .unwrap();
         assert_eq!(open_after_stop, 0);
 
@@ -603,7 +798,11 @@ mod tests {
         let open_after_reconcile: i64 = db
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM remote_sessions WHERE ended_at IS NULL", [], |r| r.get::<_, i64>(0))
+            .query_row(
+                "SELECT COUNT(*) FROM remote_sessions WHERE ended_at IS NULL",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
             .unwrap();
         assert_eq!(open_after_reconcile, 0);
     }

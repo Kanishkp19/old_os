@@ -65,7 +65,11 @@ impl InputDevice {
         setup[86..88].copy_from_slice(&0x0001u16.to_ne_bytes());
         file.write_all(&setup)?;
         ioctl_no_arg(fd, UI_DEV_CREATE)?;
-        Ok(Self { file: Some(file), held: HashSet::new(), secure_surface_active: true })
+        Ok(Self {
+            file: Some(file),
+            held: HashSet::new(),
+            secure_surface_active: true,
+        })
     }
 
     fn emit(&mut self, kind: u16, code: u16, value: i32) -> Result<()> {
@@ -86,7 +90,11 @@ impl InputDevice {
 
     fn key_event(&mut self, code: u16, down: bool) -> Result<()> {
         self.emit(EV_KEY, code, i32::from(down))?;
-        if down { self.held.insert(code); } else { self.held.remove(&code); }
+        if down {
+            self.held.insert(code);
+        } else {
+            self.held.remove(&code);
+        }
         self.sync()
     }
 
@@ -146,10 +154,16 @@ impl LinuxInputControl {
             Ok(device) => device,
             Err(error) => {
                 tracing::warn!(%error, "remote input disabled; /dev/uinput is unavailable");
-                InputDevice { file: None, held: HashSet::new(), secure_surface_active: true }
+                InputDevice {
+                    file: None,
+                    held: HashSet::new(),
+                    secure_surface_active: true,
+                }
             }
         };
-        Self { device: Mutex::new(device) }
+        Self {
+            device: Mutex::new(device),
+        }
     }
 
     pub fn disconnect(&self) -> Result<()> {
@@ -161,18 +175,24 @@ impl LinuxInputControl {
     pub fn set_secure_surface_active(&self, active: bool) -> Result<()> {
         let mut device = self.lock()?;
         device.secure_surface_active = active;
-        if active { device.release_all()?; }
+        if active {
+            device.release_all()?;
+        }
         Ok(())
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, InputDevice>> {
-        self.device.lock().map_err(|_| Error::Internal("remote input state poisoned".into()))
+        self.device
+            .lock()
+            .map_err(|_| Error::Internal("remote input state poisoned".into()))
     }
 
     fn active_device(&self) -> Result<std::sync::MutexGuard<'_, InputDevice>> {
         let device = self.lock()?;
         if device.secure_surface_active {
-            return Err(Error::ForbiddenScope("remote input blocked on secure surface".into()));
+            return Err(Error::ForbiddenScope(
+                "remote input blocked on secure surface".into(),
+            ));
         }
         Ok(device)
     }
@@ -210,7 +230,8 @@ impl InputControl for LinuxInputControl {
     }
 
     fn key(&self, key: &str, down: bool) -> Result<()> {
-        let code = key_code(key).ok_or_else(|| Error::BadRequest(format!("unsupported key: {key}")))?;
+        let code =
+            key_code(key).ok_or_else(|| Error::BadRequest(format!("unsupported key: {key}")))?;
         self.active_device()?.key_event(code, down)
     }
 
@@ -218,17 +239,31 @@ impl InputControl for LinuxInputControl {
         if s.chars().count() > 1000 {
             return Err(Error::TooLarge("text input too long".into()));
         }
-        let sequence: Vec<(u16, bool)> = s.chars().map(text_key).collect::<Option<_>>()
-            .ok_or_else(|| Error::BadRequest("non-ASCII text requires the owner-session IME".into()))?;
+        let sequence: Vec<(u16, bool)> = s
+            .chars()
+            .map(text_key)
+            .collect::<Option<_>>()
+            .ok_or_else(|| {
+                Error::BadRequest("non-ASCII text requires the owner-session IME".into())
+            })?;
         let mut device = self.active_device()?;
-        if [42, 29, 56, 125].iter().any(|code| device.held.contains(code)) {
-            return Err(Error::BadRequest("release modifiers before text injection".into()));
+        if [42, 29, 56, 125]
+            .iter()
+            .any(|code| device.held.contains(code))
+        {
+            return Err(Error::BadRequest(
+                "release modifiers before text injection".into(),
+            ));
         }
         for (code, shift) in sequence {
-            if shift { device.key_event(42, true)?; }
+            if shift {
+                device.key_event(42, true)?;
+            }
             device.key_event(code, true)?;
             device.key_event(code, false)?;
-            if shift { device.key_event(42, false)?; }
+            if shift {
+                device.key_event(42, false)?;
+            }
         }
         Ok(())
     }
@@ -251,18 +286,37 @@ impl InputControl for LinuxInputControl {
 fn key_code(key: &str) -> Option<u16> {
     let lower = key.to_ascii_lowercase();
     let named = match lower.as_str() {
-        "enter" | "return" => 28, "backspace" => 14, "tab" => 15,
-        "escape" | "esc" => 1, "space" => 57, "up" => 103, "down" => 108,
-        "left" => 105, "right" => 106, "home" => 102, "end" => 107,
-        "pageup" => 104, "pagedown" => 109, "delete" | "del" => 111,
-        "insert" => 110, "shift" => 42, "ctrl" | "control" => 29,
-        "alt" => 56, "meta" | "win" => 125, "menu" => 127,
+        "enter" | "return" => 28,
+        "backspace" => 14,
+        "tab" => 15,
+        "escape" | "esc" => 1,
+        "space" => 57,
+        "up" => 103,
+        "down" => 108,
+        "left" => 105,
+        "right" => 106,
+        "home" => 102,
+        "end" => 107,
+        "pageup" => 104,
+        "pagedown" => 109,
+        "delete" | "del" => 111,
+        "insert" => 110,
+        "shift" => 42,
+        "ctrl" | "control" => 29,
+        "alt" => 56,
+        "meta" | "win" => 125,
+        "menu" => 127,
         _ => {
             if let Some(number) = lower.strip_prefix('f').and_then(|n| n.parse::<u16>().ok()) {
-                return (1..=10).contains(&number).then_some(58 + number)
+                return (1..=10)
+                    .contains(&number)
+                    .then_some(58 + number)
                     .or_else(|| (11..=12).contains(&number).then_some(76 + number));
             }
-            return lower.chars().next().filter(|_| lower.chars().count() == 1)
+            return lower
+                .chars()
+                .next()
+                .filter(|_| lower.chars().count() == 1)
                 .and_then(|c| text_key(c).map(|(code, _)| code));
         }
     };
@@ -273,18 +327,56 @@ fn text_key(c: char) -> Option<(u16, bool)> {
     let shifted = c.is_ascii_uppercase();
     let lower = c.to_ascii_lowercase();
     let code = match lower {
-        'a' => 30, 'b' => 48, 'c' => 46, 'd' => 32, 'e' => 18, 'f' => 33,
-        'g' => 34, 'h' => 35, 'i' => 23, 'j' => 36, 'k' => 37, 'l' => 38,
-        'm' => 50, 'n' => 49, 'o' => 24, 'p' => 25, 'q' => 16, 'r' => 19,
-        's' => 31, 't' => 20, 'u' => 22, 'v' => 47, 'w' => 17, 'x' => 45,
-        'y' => 21, 'z' => 44, '1' | '!' => 2, '2' | '@' => 3,
-        '3' | '#' => 4, '4' | '$' => 5, '5' | '%' => 6,
-        '6' | '^' => 7, '7' | '&' => 8, '8' | '*' => 9,
-        '9' | '(' => 10, '0' | ')' => 11, ' ' => 57,
-        '-' | '_' => 12, '=' | '+' => 13, '[' | '{' => 26,
-        ']' | '}' => 27, ';' | ':' => 39, '\'' | '"' => 40,
-        '`' | '~' => 41, '\\' | '|' => 43, ',' | '<' => 51,
-        '.' | '>' => 52, '/' | '?' => 53, '\n' => 28, '\t' => 15,
+        'a' => 30,
+        'b' => 48,
+        'c' => 46,
+        'd' => 32,
+        'e' => 18,
+        'f' => 33,
+        'g' => 34,
+        'h' => 35,
+        'i' => 23,
+        'j' => 36,
+        'k' => 37,
+        'l' => 38,
+        'm' => 50,
+        'n' => 49,
+        'o' => 24,
+        'p' => 25,
+        'q' => 16,
+        'r' => 19,
+        's' => 31,
+        't' => 20,
+        'u' => 22,
+        'v' => 47,
+        'w' => 17,
+        'x' => 45,
+        'y' => 21,
+        'z' => 44,
+        '1' | '!' => 2,
+        '2' | '@' => 3,
+        '3' | '#' => 4,
+        '4' | '$' => 5,
+        '5' | '%' => 6,
+        '6' | '^' => 7,
+        '7' | '&' => 8,
+        '8' | '*' => 9,
+        '9' | '(' => 10,
+        '0' | ')' => 11,
+        ' ' => 57,
+        '-' | '_' => 12,
+        '=' | '+' => 13,
+        '[' | '{' => 26,
+        ']' | '}' => 27,
+        ';' | ':' => 39,
+        '\'' | '"' => 40,
+        '`' | '~' => 41,
+        '\\' | '|' => 43,
+        ',' | '<' => 51,
+        '.' | '>' => 52,
+        '/' | '?' => 53,
+        '\n' => 28,
+        '\t' => 15,
         _ => return None,
     };
     Some((code, shifted || "!@#$%^&*()_+{}:\"~|<>?".contains(c)))
@@ -294,13 +386,27 @@ pub struct LinuxPowerControl;
 
 impl LinuxPowerControl {
     fn run(action: &str) -> Result<()> {
-        let status = Command::new("systemctl").args(["--no-ask-password", action]).status()?;
-        if status.success() { Ok(()) } else { Err(Error::Internal(format!("systemctl {action} failed: {status}"))) }
+        let status = Command::new("systemctl")
+            .args(["--no-ask-password", action])
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(Error::Internal(format!(
+                "systemctl {action} failed: {status}"
+            )))
+        }
     }
 }
 
 impl PowerControl for LinuxPowerControl {
-    fn sleep(&self) -> Result<()> { Self::run("suspend") }
-    fn restart(&self) -> Result<()> { Self::run("reboot") }
-    fn shutdown(&self) -> Result<()> { Self::run("poweroff") }
+    fn sleep(&self) -> Result<()> {
+        Self::run("suspend")
+    }
+    fn restart(&self) -> Result<()> {
+        Self::run("reboot")
+    }
+    fn shutdown(&self) -> Result<()> {
+        Self::run("poweroff")
+    }
 }

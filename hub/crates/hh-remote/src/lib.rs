@@ -50,7 +50,12 @@ pub enum InputMsg {
 }
 
 impl RemoteService {
-    pub fn new(db: Db, input: Arc<dyn InputControl>, power: Arc<dyn PowerControl>, enabled: bool) -> Self {
+    pub fn new(
+        db: Db,
+        input: Arc<dyn InputControl>,
+        power: Arc<dyn PowerControl>,
+        enabled: bool,
+    ) -> Self {
         Self {
             db,
             input,
@@ -62,15 +67,23 @@ impl RemoteService {
     }
 
     fn check_enabled(&self) -> Result<()> {
-        let enabled=self.db.get_setting("remote.enabled")?.map(|v|v=="true"||v=="1").unwrap_or(self.enabled);
-        if self.db.get_setting("sharing.paused")?.as_deref()==Some("true") || !enabled {
+        let enabled = self
+            .db
+            .get_setting("remote.enabled")?
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(self.enabled);
+        if self.db.get_setting("sharing.paused")?.as_deref() == Some("true") || !enabled {
             return Err(Error::ForbiddenScope("remote".into()));
         }
         Ok(())
     }
 
     fn check_device(&self, device_id: &str) -> Result<()> {
-        if !self.db.device_by_id(device_id)?.is_some_and(|d| d.status == "active" && d.has_scope("remote")) {
+        if !self
+            .db
+            .device_by_id(device_id)?
+            .is_some_and(|d| d.status == "active" && d.has_scope("remote"))
+        {
             return Err(Error::ForbiddenScope("remote".into()));
         }
         Ok(())
@@ -95,11 +108,15 @@ impl RemoteService {
         self.check_enabled()?;
         self.check_device(device_id)?;
         self.rate_check()?;
-        if raw.len() > 8192 { return Err(Error::TooLarge("remote input message".into())); }
+        if raw.len() > 8192 {
+            return Err(Error::TooLarge("remote input message".into()));
+        }
         let msg: InputMsg = serde_json::from_str(raw)
             .map_err(|e| Error::BadRequest(format!("bad input message: {e}")))?;
         match msg {
-            InputMsg::Move { dx, dy } => self.input.mouse_move(dx.clamp(-500, 500), dy.clamp(-500, 500))?,
+            InputMsg::Move { dx, dy } => self
+                .input
+                .mouse_move(dx.clamp(-500, 500), dy.clamp(-500, 500))?,
             InputMsg::Click { b, n } => {
                 let btn = match b.as_str() {
                     "left" => MouseButton::Left,
@@ -110,7 +127,12 @@ impl RemoteService {
                 self.input.click(btn, n.unwrap_or(1).min(2))?;
             }
             InputMsg::Scroll { dy } => self.input.scroll(dy.clamp(-40, 40))?,
-            InputMsg::Key { k, down } => { if k.len() > 32 { return Err(Error::BadRequest("invalid key".into())); } self.input.key(&k, down)?; }
+            InputMsg::Key { k, down } => {
+                if k.len() > 32 {
+                    return Err(Error::BadRequest("invalid key".into()));
+                }
+                self.input.key(&k, down)?;
+            }
             InputMsg::Text { s } => {
                 if s.chars().count() > 1000 {
                     return Err(Error::TooLarge("text input too long".into()));
@@ -127,12 +149,15 @@ impl RemoteService {
         self.check_enabled()?;
         self.check_device(device_id)?;
         if !confirm {
-            return Err(Error::BadRequest("power actions require confirm:true".into()));
+            return Err(Error::BadRequest(
+                "power actions require confirm:true".into(),
+            ));
         }
         if !matches!(action, "sleep" | "restart" | "shutdown") {
             return Err(Error::BadRequest("unknown power action".into()));
         }
-        self.db.audit(Some(device_id), "power_action", Some(action), None)?;
+        self.db
+            .audit(Some(device_id), "power_action", Some(action), None)?;
         match action {
             "sleep" => self.power.sleep(),
             "restart" => self.power.restart(),
@@ -217,7 +242,11 @@ pub mod helper_protocol {
         SystemInfo,
         /// Mobile-hotspot toggle (M3, FR-8.3) via WinRT tethering.
         #[serde(rename = "hotspot")]
-        Hotspot { enable: bool, ssid: Option<String>, passphrase: Option<String> },
+        Hotspot {
+            enable: bool,
+            ssid: Option<String>,
+            passphrase: Option<String>,
+        },
         /// BitLocker status for the library drive (FR-4.5 detect/recommend).
         #[serde(rename = "bitlocker")]
         BitlockerStatus,
@@ -225,9 +254,19 @@ pub mod helper_protocol {
         /// host; the answer + gathered host candidates come back in `data`.
         /// `kind` is "view" (laptop→phone send) or "cast" (phone→laptop recv).
         #[serde(rename = "screen_offer")]
-        ScreenOffer { sdp: String, preset: String, kind: String, #[serde(default)] session_id: String },
+        ScreenOffer {
+            sdp: String,
+            preset: String,
+            kind: String,
+            #[serde(default)]
+            session_id: String,
+        },
         #[serde(rename = "add_ice")]
-        AddIce { candidate: String, #[serde(default)] session_id: String },
+        AddIce {
+            candidate: String,
+            #[serde(default)]
+            session_id: String,
+        },
         #[serde(rename = "screen_stop")]
         ScreenStop,
         #[serde(rename = "screen_stop_session")]

@@ -106,6 +106,9 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(auth.verify("wrong"), Ok(false));
         }
-        assert!(matches!(auth.verify("correct"), Err(AuthError::RateLimited { .. })));
+        assert!(matches!(
+            auth.verify("correct"),
+            Err(AuthError::RateLimited { .. })
+        ));
     }
 }

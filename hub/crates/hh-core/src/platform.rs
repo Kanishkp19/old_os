@@ -98,20 +98,40 @@ pub mod noop {
     }
 
     impl PowerControl for Unsupported {
-        fn sleep(&self) -> Result<()> { Err(unsupported()) }
-        fn restart(&self) -> Result<()> { Err(unsupported()) }
-        fn shutdown(&self) -> Result<()> { Err(unsupported()) }
+        fn sleep(&self) -> Result<()> {
+            Err(unsupported())
+        }
+        fn restart(&self) -> Result<()> {
+            Err(unsupported())
+        }
+        fn shutdown(&self) -> Result<()> {
+            Err(unsupported())
+        }
     }
     impl InputControl for Unsupported {
-        fn mouse_move(&self, _dx: i32, _dy: i32) -> Result<()> { Err(unsupported()) }
-        fn click(&self, _b: MouseButton, _n: u8) -> Result<()> { Err(unsupported()) }
-        fn scroll(&self, _dy: i32) -> Result<()> { Err(unsupported()) }
-        fn key(&self, _k: &str, _down: bool) -> Result<()> { Err(unsupported()) }
-        fn text(&self, _s: &str) -> Result<()> { Err(unsupported()) }
-        fn media_key(&self, _k: MediaKey) -> Result<()> { Err(unsupported()) }
+        fn mouse_move(&self, _dx: i32, _dy: i32) -> Result<()> {
+            Err(unsupported())
+        }
+        fn click(&self, _b: MouseButton, _n: u8) -> Result<()> {
+            Err(unsupported())
+        }
+        fn scroll(&self, _dy: i32) -> Result<()> {
+            Err(unsupported())
+        }
+        fn key(&self, _k: &str, _down: bool) -> Result<()> {
+            Err(unsupported())
+        }
+        fn text(&self, _s: &str) -> Result<()> {
+            Err(unsupported())
+        }
+        fn media_key(&self, _k: MediaKey) -> Result<()> {
+            Err(unsupported())
+        }
     }
     impl DiskHealth for Unsupported {
-        fn list(&self) -> Result<Vec<DiskInfo>> { Ok(vec![]) }
+        fn list(&self) -> Result<Vec<DiskInfo>> {
+            Ok(vec![])
+        }
         fn smart(&self, _id: &str) -> Result<SmartReport> {
             Ok(SmartReport {
                 health: "unknown".into(),

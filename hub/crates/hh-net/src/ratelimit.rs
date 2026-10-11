@@ -13,7 +13,9 @@ pub struct RateLimiter {
 
 impl Default for RateLimiter {
     fn default() -> Self {
-        Self { windows: Mutex::new(HashMap::new()) }
+        Self {
+            windows: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -25,7 +27,7 @@ impl RateLimiter {
             Ok(m) => m,
             Err(_) => return false, // fail closed
         };
-        map.retain(|_,(sec,_)|now.saturating_sub(*sec)<60);
+        map.retain(|_, (sec, _)| now.saturating_sub(*sec) < 60);
         let entry = map.entry(device_id.to_string()).or_insert((now, 0));
         if entry.0 != now {
             *entry = (now, 0);

@@ -45,24 +45,39 @@ impl Db {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path).map_err(db_err)?;
-        let db = Self { conn: Arc::new(Mutex::new(conn)), path: path.to_path_buf() };
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: path.to_path_buf(),
+        };
         db.configure()?;
         db.migrate()?;
         Ok(db)
     }
 
     /// Consistent online snapshot without running migrations on the source.
-    pub fn snapshot(source:&Path,destination:&Path)->Result<()> {
-        if destination.exists(){return Err(Error::Conflict("backup destination exists".into()));}
-        let c=Connection::open_with_flags(source,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(db_err)?;
-        c.busy_timeout(std::time::Duration::from_secs(30)).map_err(db_err)?;
-        c.execute("VACUUM INTO ?1",params![destination.to_string_lossy().as_ref()]).map_err(db_err)?;
-        std::fs::File::open(destination)?.sync_all()?;Ok(())
+    pub fn snapshot(source: &Path, destination: &Path) -> Result<()> {
+        if destination.exists() {
+            return Err(Error::Conflict("backup destination exists".into()));
+        }
+        let c = Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(db_err)?;
+        c.busy_timeout(std::time::Duration::from_secs(30))
+            .map_err(db_err)?;
+        c.execute(
+            "VACUUM INTO ?1",
+            params![destination.to_string_lossy().as_ref()],
+        )
+        .map_err(db_err)?;
+        std::fs::File::open(destination)?.sync_all()?;
+        Ok(())
     }
 
     pub fn open_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(db_err)?;
-        let db = Self { conn: Arc::new(Mutex::new(conn)), path: PathBuf::from(":memory:") };
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: PathBuf::from(":memory:"),
+        };
         db.configure()?;
         db.migrate()?;
         Ok(db)
@@ -81,7 +96,9 @@ impl Db {
     }
 
     pub fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(|_| Error::Db("connection mutex poisoned".into()))
+        self.conn
+            .lock()
+            .map_err(|_| Error::Db("connection mutex poisoned".into()))
     }
 
     fn schema_version(&self) -> Result<i64> {
@@ -107,7 +124,11 @@ impl Db {
                 .map_err(db_err)?
                 > 0;
             drop(c);
-            if has_hub { self.schema_version()? } else { 0 }
+            if has_hub {
+                self.schema_version()?
+            } else {
+                0
+            }
         };
 
         let target = MIGRATIONS.len() as i64;
@@ -124,7 +145,9 @@ impl Db {
             }
             self.backup_before_migration(version - 1)?;
             let mut c = self.lock()?;
-            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+            let tx = c
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(db_err)?;
             tx.execute_batch(sql).map_err(db_err)?;
             if current == 0 && version == 1 {
                 // First boot: single hub identity row. CA fields are filled by
@@ -150,18 +173,26 @@ impl Db {
         if self.path.as_os_str() == ":memory:" || from_version == 0 {
             return Ok(());
         }
-        let bak = self.path.with_extension(format!("db.bak-{from_version}-{}",ulid::Ulid::new()));
+        let bak = self
+            .path
+            .with_extension(format!("db.bak-{from_version}-{}", ulid::Ulid::new()));
         let c = self.lock()?;
         // SQLite takes a consistent snapshot including committed WAL pages.
-        c.execute("VACUUM INTO ?1",params![bak.to_string_lossy().as_ref()]).map_err(db_err)?;
+        c.execute("VACUUM INTO ?1", params![bak.to_string_lossy().as_ref()])
+            .map_err(db_err)?;
         std::fs::File::open(&bak)?.sync_all()?;
         drop(c);
         // prune older backups, keep last 3
-        let mut backups: Vec<PathBuf> = std::fs::read_dir(self.path.parent().unwrap_or(Path::new(".")))?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.file_name().map(|n| n.to_string_lossy().contains(".bak-")).unwrap_or(false))
-            .collect();
-        backups.sort_by_key(|p|p.metadata().and_then(|m|m.modified()).ok());
+        let mut backups: Vec<PathBuf> =
+            std::fs::read_dir(self.path.parent().unwrap_or(Path::new(".")))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().contains(".bak-"))
+                        .unwrap_or(false)
+                })
+                .collect();
+        backups.sort_by_key(|p| p.metadata().and_then(|m| m.modified()).ok());
         while backups.len() > 3 {
             let old = backups.remove(0);
             let _ = std::fs::remove_file(old);

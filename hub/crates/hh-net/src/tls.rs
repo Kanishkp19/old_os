@@ -69,9 +69,11 @@ impl ClientCertVerifier for DeviceCertVerifier {
         intermediates: &[CertificateDer<'_>],
         now: UnixTime,
     ) -> std::result::Result<ClientCertVerified, rustls::Error> {
-        self.inner.verify_client_cert(end_entity, intermediates, now)?;
-        let (_, cert) = x509_parser::parse_x509_certificate(end_entity.as_ref())
-            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+        self.inner
+            .verify_client_cert(end_entity, intermediates, now)?;
+        let (_, cert) = x509_parser::parse_x509_certificate(end_entity.as_ref()).map_err(|_| {
+            rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+        })?;
         let serial = serial_hex(&cert);
         if self.revocation.is_revoked(&serial) {
             return Err(rustls::Error::InvalidCertificate(
@@ -105,9 +107,15 @@ impl ClientCertVerifier for DeviceCertVerifier {
 }
 
 /// TLS 1.3-only server config requiring device certs (port 47800).
-pub fn server_config_mtls(ca: &HubIdentity, revocation: RevocationList) -> Result<Arc<rustls::ServerConfig>> {
-    let certs = vec![CertificateDer::from(pem_first(&ca.server_cert_pem)?), CertificateDer::from(pem_first(&ca.ca_cert_pem)?)];
-    let key = PrivateKeyDer::Pkcs8(pem_key(&ca.server_key_pem())?);
+pub fn server_config_mtls(
+    ca: &HubIdentity,
+    revocation: RevocationList,
+) -> Result<Arc<rustls::ServerConfig>> {
+    let certs = vec![
+        CertificateDer::from(pem_first(&ca.server_cert_pem)?),
+        CertificateDer::from(pem_first(&ca.ca_cert_pem)?),
+    ];
+    let key = PrivateKeyDer::Pkcs8(pem_key(ca.server_key_pem())?);
     let verifier = DeviceCertVerifier::new(ca, revocation)?;
     let provider = rustls::crypto::ring::default_provider();
     let mut cfg = rustls::ServerConfig::builder_with_provider(provider.into())
@@ -122,8 +130,11 @@ pub fn server_config_mtls(ca: &HubIdentity, revocation: RevocationList) -> Resul
 
 /// TLS 1.3 server config without client certs (pairing port 47802).
 pub fn server_config_pairing(ca: &HubIdentity) -> Result<Arc<rustls::ServerConfig>> {
-    let certs = vec![CertificateDer::from(pem_first(&ca.server_cert_pem)?), CertificateDer::from(pem_first(&ca.ca_cert_pem)?)];
-    let key = PrivateKeyDer::Pkcs8(pem_key(&ca.server_key_pem())?);
+    let certs = vec![
+        CertificateDer::from(pem_first(&ca.server_cert_pem)?),
+        CertificateDer::from(pem_first(&ca.ca_cert_pem)?),
+    ];
+    let key = PrivateKeyDer::Pkcs8(pem_key(ca.server_key_pem())?);
     let provider = rustls::crypto::ring::default_provider();
     let mut cfg = rustls::ServerConfig::builder_with_provider(provider.into())
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -146,7 +157,9 @@ pub struct PinnedCaVerifier {
 
 impl PinnedCaVerifier {
     pub fn new(ca_cert_pem: &str) -> Result<Arc<Self>> {
-        Ok(Arc::new(Self { ca_der: pem_first(ca_cert_pem)? }))
+        Ok(Arc::new(Self {
+            ca_der: pem_first(ca_cert_pem)?,
+        }))
     }
 
     pub fn fingerprint_matches(&self, fingerprint: &str) -> bool {
@@ -174,12 +187,20 @@ impl ServerCertVerifier for PinnedCaVerifier {
         _now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         let mut roots = RootCertStore::empty();
-        roots.add(CertificateDer::from(self.ca_der.clone()))
-            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+        roots
+            .add(CertificateDer::from(self.ca_der.clone()))
+            .map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+            })?;
         let parsed = rustls::server::ParsedCertificate::try_from(end_entity)?;
         let provider = rustls::crypto::ring::default_provider();
-        rustls::client::verify_server_cert_signed_by_trust_anchor(&parsed, &roots, _intermediates, _now,
-            provider.signature_verification_algorithms.all)?;
+        rustls::client::verify_server_cert_signed_by_trust_anchor(
+            &parsed,
+            &roots,
+            _intermediates,
+            _now,
+            provider.signature_verification_algorithms.all,
+        )?;
         Ok(ServerCertVerified::assertion())
     }
 
@@ -189,7 +210,12 @@ impl ServerCertVerifier for PinnedCaVerifier {
         _c: &CertificateDer<'_>,
         _d: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(_m, _c, _d, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
+        rustls::crypto::verify_tls12_signature(
+            _m,
+            _c,
+            _d,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -198,7 +224,12 @@ impl ServerCertVerifier for PinnedCaVerifier {
         _c: &CertificateDer<'_>,
         _d: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(_m, _c, _d, &rustls::crypto::ring::default_provider().signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            _m,
+            _c,
+            _d,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -227,7 +258,11 @@ pub fn parse_peer_cert(der: &[u8]) -> Result<(String, String)> {
 }
 
 pub fn serial_hex(cert: &x509_parser::certificate::X509Certificate<'_>) -> String {
-    cert.serial.to_bytes_be().iter().map(|b| format!("{b:02x}")).collect()
+    cert.serial
+        .to_bytes_be()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn pem_first(pem: &str) -> Result<Vec<u8>> {
@@ -235,7 +270,10 @@ fn pem_first(pem: &str) -> Result<Vec<u8>> {
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut rd)
         .collect::<std::result::Result<_, _>>()
         .map_err(|e| Error::Crypto(format!("pem parse: {e}")))?;
-    certs.into_iter().next().map(|c| c.as_ref().to_vec())
+    certs
+        .into_iter()
+        .next()
+        .map(|c| c.as_ref().to_vec())
         .ok_or_else(|| Error::Crypto("no certificate in pem".into()))
 }
 

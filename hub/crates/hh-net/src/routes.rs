@@ -6,9 +6,9 @@ use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::Response;
-use futures::SinkExt;
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
+use futures::SinkExt;
 use hh_core::error::Error;
 use hh_core::types::*;
 use hh_core::{API_VERSION, HUB_VERSION};
@@ -29,9 +29,14 @@ impl From<Error> for ApiErr {
 
 impl axum::response::IntoResponse for ApiErr {
     fn into_response(self) -> Response {
-        let status = StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         // SECURITY §10: internal errors never leak paths/details.
-        let msg = if status.is_server_error() { "internal error".to_string() } else { self.0.to_string() };
+        let msg = if status.is_server_error() {
+            "internal error".to_string()
+        } else {
+            self.0.to_string()
+        };
         let body = ApiError {
             error: ApiErrorBody {
                 code: self.0.code().to_string(),
@@ -51,8 +56,11 @@ impl axum::response::IntoResponse for ApiErr {
     }
 }
 
-pub(crate) fn ident(ext: Option<Extension<PeerIdentityExt>>) -> ApiResult<hh_net_tls::PeerIdentity> {
-    ext.map(|Extension(p)| p.0).ok_or(Error::Unauthenticated.into())
+pub(crate) fn ident(
+    ext: Option<Extension<PeerIdentityExt>>,
+) -> ApiResult<hh_net_tls::PeerIdentity> {
+    ext.map(|Extension(p)| p.0)
+        .ok_or(Error::Unauthenticated.into())
 }
 
 pub(crate) fn require_scope(id: &hh_net_tls::PeerIdentity, scope: &str) -> ApiResult<()> {
@@ -63,7 +71,11 @@ pub(crate) fn require_scope(id: &hh_net_tls::PeerIdentity, scope: &str) -> ApiRe
     }
 }
 
-fn require_transfer_owner(db: &hh_db::Db, transfer_id: &str, peer: &hh_net_tls::PeerIdentity) -> ApiResult<()> {
+fn require_transfer_owner(
+    db: &hh_db::Db,
+    transfer_id: &str,
+    peer: &hh_net_tls::PeerIdentity,
+) -> ApiResult<()> {
     let transfer = db.get_transfer(transfer_id)?.ok_or(Error::TransferGone)?;
     if transfer.device_id != peer.device_id {
         return Err(Error::TransferGone.into());
@@ -71,7 +83,11 @@ fn require_transfer_owner(db: &hh_db::Db, transfer_id: &str, peer: &hh_net_tls::
     Ok(())
 }
 
-fn authorize_transfer_path(db: &hh_db::Db, path: &str, peer: &hh_net_tls::PeerIdentity) -> ApiResult<()> {
+fn authorize_transfer_path(
+    db: &hh_db::Db,
+    path: &str,
+    peer: &hh_net_tls::PeerIdentity,
+) -> ApiResult<()> {
     if let Some(rest) = path.strip_prefix("/v1/transfers/") {
         require_transfer_owner(db, rest.split('/').next().unwrap_or(""), peer)?;
     }
@@ -94,7 +110,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/me", get(get_me).patch(update_me))
         .route("/v1/certs/renew", post(renew_cert))
         .route("/v1/transfers", post(create_transfer).get(list_transfers))
-        .route("/v1/transfers/{id}", get(transfer_status).delete(abort_transfer))
+        .route(
+            "/v1/transfers/{id}",
+            get(transfer_status).delete(abort_transfer),
+        )
         .route(
             "/v1/transfers/{id}/chunks/{n}",
             put(put_chunk).layer(axum::extract::DefaultBodyLimit::max(
@@ -103,7 +122,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/transfers/{id}/complete", post(complete_transfer))
         .route("/v1/files", get(list_files))
-        .route("/v1/files/{id}", get(get_file).patch(rename_file).delete(trash_file))
+        .route(
+            "/v1/files/{id}",
+            get(get_file).patch(rename_file).delete(trash_file),
+        )
         .route("/v1/files/{id}/content", get(file_content))
         .route("/v1/files/{id}/manifest", get(file_manifest))
         .route("/v1/trash", get(list_trash))
@@ -113,17 +135,32 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/photos/timeline", get(photos_timeline))
         .route("/v1/photos/years", get(photos_years))
         .route("/v1/photos/{file_id}/thumb", get(photo_thumb))
-        .route("/v1/backup/sources", post(backup_source_create).get(backup_source_list))
+        .route(
+            "/v1/backup/sources",
+            post(backup_source_create).get(backup_source_list),
+        )
         .route("/v1/backup/sources/{id}", patch(backup_source_update))
         .route("/v1/backup/sources/{id}/diff", post(backup_diff))
         .route("/v1/backup/sources/{id}/summary", get(backup_summary))
-        .route("/v1/backup/sources/{id}/verified-items", get(backup_verified_items))
+        .route(
+            "/v1/backup/sources/{id}/verified-items",
+            get(backup_verified_items),
+        )
         .route("/v1/backup/sources/{id}/cleanup-lease", post(cleanup_lease))
         .route("/v1/backup/sources/{id}/cleanup", get(cleanup_reviews))
-        .route("/v1/backup/cleanup-leases/{id}/complete", post(cleanup_finish))
-        .route("/v1/backup/items/{id}/confirm-local-freed", post(confirm_local_freed))
+        .route(
+            "/v1/backup/cleanup-leases/{id}/complete",
+            post(cleanup_finish),
+        )
+        .route(
+            "/v1/backup/items/{id}/confirm-local-freed",
+            post(confirm_local_freed),
+        )
         .route("/v1/duplicates", get(list_duplicates))
-        .route("/v1/duplicates/{group_id}/resolve", post(resolve_duplicates))
+        .route(
+            "/v1/duplicates/{group_id}/resolve",
+            post(resolve_duplicates),
+        )
         .route("/v1/photos/similar", get(list_similar))
         .route("/v1/photos/similar/scan", post(scan_similar))
         .route("/v1/storage/health", get(storage_health))
@@ -148,42 +185,111 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/network", get(network_info))
         .merge(crate::relay::router())
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), authorize))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            authorize,
+        ))
         .with_state(state)
 }
 
 /// Revalidate certificates/scopes on every request, including keep-alive H2.
-async fn authorize(State(s): State<AppState>, mut req: axum::extract::Request, next: axum::middleware::Next) -> ApiResult<Response> {
-    let identity = req.extensions().get::<PeerIdentityExt>().map(|p|p.0.clone()).ok_or(Error::Unauthenticated)?;
-    let device = s.db.device_by_id(&identity.device_id)?.ok_or(Error::Unauthenticated)?;
-    if device.status != "active" || s.db.is_serial_revoked(&identity.cert_serial)? { return Err(Error::DeviceRevoked.into()); }
-    if !s.db.device_accepts_serial(&identity.device_id,&identity.cert_serial)? { return Err(Error::Unauthenticated.into()); }
-    if let Some(old)=s.db.activate_renewal(&identity.device_id,&identity.cert_serial)?{s.revocation.revoke(&old);}
-    if s.db.get_setting("sharing.paused")?.as_deref() == Some("true") { return Err(Error::StorageUnavailable("sharing paused".into()).into()); }
+async fn authorize(
+    State(s): State<AppState>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> ApiResult<Response> {
+    let identity = req
+        .extensions()
+        .get::<PeerIdentityExt>()
+        .map(|p| p.0.clone())
+        .ok_or(Error::Unauthenticated)?;
+    let device =
+        s.db.device_by_id(&identity.device_id)?
+            .ok_or(Error::Unauthenticated)?;
+    if device.status != "active" || s.db.is_serial_revoked(&identity.cert_serial)? {
+        return Err(Error::DeviceRevoked.into());
+    }
+    if !s
+        .db
+        .device_accepts_serial(&identity.device_id, &identity.cert_serial)?
+    {
+        return Err(Error::Unauthenticated.into());
+    }
+    if let Some(old) =
+        s.db.activate_renewal(&identity.device_id, &identity.cert_serial)?
+    {
+        s.revocation.revoke(&old);
+    }
+    if s.db.get_setting("sharing.paused")?.as_deref() == Some("true") {
+        return Err(Error::StorageUnavailable("sharing paused".into()).into());
+    }
     let path = req.uri().path();
-    if !path.contains("/chunks/") && !s.rate_limiter.check(&identity.device_id) { return Err(Error::RateLimited.into()); }
-    let fresh = PeerIdentity { scopes: device.scopes, ..identity };
+    if !path.contains("/chunks/") && !s.rate_limiter.check(&identity.device_id) {
+        return Err(Error::RateLimited.into());
+    }
+    let fresh = PeerIdentity {
+        scopes: device.scopes,
+        ..identity
+    };
     authorize_transfer_path(&s.db, path, &fresh)?;
-    if let Some(rest) = path.strip_prefix("/v1/backup/sources/").or_else(||path.strip_prefix("/v1/backup/items/")) {
+    if let Some(rest) = path
+        .strip_prefix("/v1/backup/sources/")
+        .or_else(|| path.strip_prefix("/v1/backup/items/"))
+    {
         let sid = rest.split('/').next().unwrap_or("");
-        if s.photos.get_source(sid)?.device_id != fresh.device_id { return Err(Error::ForbiddenScope("backup owner".into()).into()); }
+        if s.photos.get_source(sid)?.device_id != fresh.device_id {
+            return Err(Error::ForbiddenScope("backup owner".into()).into());
+        }
     }
     req.extensions_mut().insert(PeerIdentityExt(fresh));
     Ok(next.run(req).await)
 }
 
 #[derive(Deserialize)]
-struct LeaseReq { client_item_ids: Vec<String>,client_review_id:Option<String> }
-async fn cleanup_lease(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>, Path(id): Path<String>, Json(req): Json<LeaseReq>) -> ApiResult<Json<serde_json::Value>> {
-    let peer = ident(ext)?; require_scope(&peer,"photos")?;
-    Ok(Json(serde_json::json!(s.photos.create_cleanup_review(&id,&peer.device_id,&req.client_item_ids,req.client_review_id.as_deref())?)))
+struct LeaseReq {
+    client_item_ids: Vec<String>,
+    client_review_id: Option<String>,
 }
-async fn cleanup_reviews(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>,Path(id):Path<String>)->ApiResult<Json<serde_json::Value>> {let peer=ident(ext)?;require_scope(&peer,"photos")?;Ok(Json(serde_json::json!({"items":s.photos.active_cleanup_reviews(&id,&peer.device_id)?})))}
+async fn cleanup_lease(
+    State(s): State<AppState>,
+    ext: Option<Extension<PeerIdentityExt>>,
+    Path(id): Path<String>,
+    Json(req): Json<LeaseReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let peer = ident(ext)?;
+    require_scope(&peer, "photos")?;
+    Ok(Json(serde_json::json!(s.photos.create_cleanup_review(
+        &id,
+        &peer.device_id,
+        &req.client_item_ids,
+        req.client_review_id.as_deref()
+    )?)))
+}
+async fn cleanup_reviews(
+    State(s): State<AppState>,
+    ext: Option<Extension<PeerIdentityExt>>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let peer = ident(ext)?;
+    require_scope(&peer, "photos")?;
+    Ok(Json(
+        serde_json::json!({"items":s.photos.active_cleanup_reviews(&id,&peer.device_id)?}),
+    ))
+}
 #[derive(Deserialize)]
-struct LeaseFinishReq { freed_client_item_ids: Vec<String> }
-async fn cleanup_finish(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>, Path(id): Path<String>, Json(req): Json<LeaseFinishReq>) -> ApiResult<Json<serde_json::Value>> {
-    let peer = ident(ext)?; require_scope(&peer,"photos")?;
-    s.photos.finish_cleanup_lease(&id,&peer.device_id,&req.freed_client_item_ids)?;
+struct LeaseFinishReq {
+    freed_client_item_ids: Vec<String>,
+}
+async fn cleanup_finish(
+    State(s): State<AppState>,
+    ext: Option<Extension<PeerIdentityExt>>,
+    Path(id): Path<String>,
+    Json(req): Json<LeaseFinishReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let peer = ident(ext)?;
+    require_scope(&peer, "photos")?;
+    s.photos
+        .finish_cleanup_lease(&id, &peer.device_id, &req.freed_client_item_ids)?;
     Ok(Json(serde_json::json!({"completed":true})))
 }
 
@@ -203,8 +309,18 @@ async fn get_info(State(s): State<AppState>) -> ApiResult<Json<HubInfo>> {
         api_max: API_VERSION,
         features: FeaturesWire {
             photos: s.cfg.features.photos,
-            remote: s.db.get_setting("remote.enabled")?.map(|v|v=="true").unwrap_or(s.cfg.features.remote) && s.helper.is_some(),
-            screen: s.db.get_setting("screen.enabled")?.map(|v|v=="true").unwrap_or(s.cfg.features.screen) && s.helper.is_some(),
+            remote: s
+                .db
+                .get_setting("remote.enabled")?
+                .map(|v| v == "true")
+                .unwrap_or(s.cfg.features.remote)
+                && s.helper.is_some(),
+            screen: s
+                .db
+                .get_setting("screen.enabled")?
+                .map(|v| v == "true")
+                .unwrap_or(s.cfg.features.screen)
+                && s.helper.is_some(),
             hotspot: s.cfg.features.hotspot,
             wol: s.cfg.features.wol,
         },
@@ -216,7 +332,12 @@ async fn get_info(State(s): State<AppState>) -> ApiResult<Json<HubInfo>> {
             internet: None,
         },
         time: hh_core::time::now_ms(),
-        backup_interval_minutes: s.db.get_setting("backup.interval_minutes")?.and_then(|v|v.parse::<u64>().ok()).unwrap_or(60).clamp(1,10080),
+        backup_interval_minutes: s
+            .db
+            .get_setting("backup.interval_minutes")?
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60)
+            .clamp(1, 10080),
     }))
 }
 
@@ -234,8 +355,10 @@ async fn ping(Query(q): Query<PingQ>) -> Response {
 }
 
 async fn get_status(State(s): State<AppState>) -> ApiResult<Json<HubStatus>> {
-    let storage=s.storage.clone();
-    let sum=tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|e|Error::Internal(e.to_string()))??;
+    let storage = s.storage.clone();
+    let sum = tokio::task::spawn_blocking(move || storage.library_summary())
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))??;
     let active = s.db.list_transfers(None, Some("open"))?.len() as u32;
     let health = s
         .storage
@@ -253,27 +376,47 @@ async fn get_status(State(s): State<AppState>) -> ApiResult<Json<HubStatus>> {
     }))
 }
 
-async fn events(State(s): State<AppState>, ext: Option<Extension<PeerIdentityExt>>) -> ApiResult<Sse<impl futures::Stream<Item = Result<SseEvent, std::convert::Infallible>>>> {
+async fn events(
+    State(s): State<AppState>,
+    ext: Option<Extension<PeerIdentityExt>>,
+) -> ApiResult<Sse<impl futures::Stream<Item = Result<SseEvent, std::convert::Infallible>>>> {
     let peer = ident(ext)?;
     let rx = s.events.subscribe();
-    let stream = futures::stream::unfold((rx,s.db.clone(),peer), |(mut rx,db,peer)| async move {
-        loop {
-            let device = db.device_by_id(&peer.device_id).ok().flatten()?;
-            if device.status != "active" || device.cert_serial != peer.cert_serial || device.cert_expires_at <= hh_core::time::now_ms() || db.get_setting("sharing.paused").ok().flatten().as_deref() == Some("true") { return None; }
-            match tokio::time::timeout(std::time::Duration::from_secs(1),rx.recv()).await {
-                Ok(Ok(ev)) => {
-                    if let Some(tid) = ev.data.get("transfer_id").and_then(|v|v.as_str()) {
-                        if db.get_transfer(tid).ok().flatten().map(|t|t.device_id != peer.device_id).unwrap_or(true) { continue; }
+    let stream =
+        futures::stream::unfold((rx, s.db.clone(), peer), |(mut rx, db, peer)| async move {
+            loop {
+                let device = db.device_by_id(&peer.device_id).ok().flatten()?;
+                if device.status != "active"
+                    || device.cert_serial != peer.cert_serial
+                    || device.cert_expires_at <= hh_core::time::now_ms()
+                    || db.get_setting("sharing.paused").ok().flatten().as_deref() == Some("true")
+                {
+                    return None;
+                }
+                match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+                    Ok(Ok(ev)) => {
+                        if let Some(tid) = ev.data.get("transfer_id").and_then(|v| v.as_str()) {
+                            if db
+                                .get_transfer(tid)
+                                .ok()
+                                .flatten()
+                                .map(|t| t.device_id != peer.device_id)
+                                .unwrap_or(true)
+                            {
+                                continue;
+                            }
+                        }
+                        let sse = SseEvent::default()
+                            .event(ev.event)
+                            .data(ev.data.to_string());
+                        return Some((Ok(sse), (rx, db, peer)));
                     }
-                    let sse = SseEvent::default().event(ev.event).data(ev.data.to_string());
-                    return Some((Ok(sse),(rx,db,peer)));
-                },
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(_)) => return None,
-                Err(_) => continue,
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                    Ok(Err(_)) => return None,
+                    Err(_) => continue,
+                }
             }
-        }
-    });
+        });
     Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
 
@@ -285,12 +428,22 @@ async fn list_devices(
 ) -> ApiResult<Json<Vec<Device>>> {
     let id = ident(ext)?;
     require_scope(&id, "admin")?;
-    Ok(Json(s.db.list_devices()?.iter().map(|d| d.to_api()).collect()))
+    Ok(Json(
+        s.db.list_devices()?.iter().map(|d| d.to_api()).collect(),
+    ))
 }
 
-async fn get_me(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>)->ApiResult<Json<serde_json::Value>> {
-    let peer=ident(ext)?;let d=s.db.device_by_id(&peer.device_id)?.ok_or(Error::Unauthenticated)?;
-    Ok(Json(serde_json::json!({"id":d.id,"name":d.name,"scopes":d.scopes})))
+async fn get_me(
+    State(s): State<AppState>,
+    ext: Option<Extension<PeerIdentityExt>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let peer = ident(ext)?;
+    let d =
+        s.db.device_by_id(&peer.device_id)?
+            .ok_or(Error::Unauthenticated)?;
+    Ok(Json(
+        serde_json::json!({"id":d.id,"name":d.name,"scopes":d.scopes}),
+    ))
 }
 
 async fn revoke_device(
@@ -300,18 +453,21 @@ async fn revoke_device(
 ) -> ApiResult<StatusCode> {
     let id = ident(ext)?;
     require_scope(&id, "admin")?;
-    let dev = s
-        .db
-        .device_by_id(&device_id)?
-        .ok_or_else(|| Error::NotFound(device_id.clone()))?;
+    let dev =
+        s.db.device_by_id(&device_id)?
+            .ok_or_else(|| Error::NotFound(device_id.clone()))?;
     s.db.revoke_device(&device_id, "user")?;
     s.revocation.revoke(&dev.cert_serial);
     let stopping = s.clone();
     let revoked_id = device_id.clone();
     tokio::task::spawn_blocking(move || stopping.stop_device_screens(&revoked_id))
-        .await.map_err(|e| Error::Internal(e.to_string()))?;
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))?;
     s.db.audit(Some(&id.device_id), "revoke", Some(&device_id), None)?;
-    s.events.emit("device.revoked", serde_json::json!({"device_id": device_id}));
+    s.events.emit(
+        "device.revoked",
+        serde_json::json!({"device_id": device_id}),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -352,22 +508,40 @@ async fn renew_cert(
     body: String,
 ) -> ApiResult<Json<serde_json::Value>> {
     let id = ident(ext)?;
-    let dev = s
-        .db
-        .device_by_id(&id.device_id)?
-        .ok_or(Error::Unauthenticated)?;
+    let dev =
+        s.db.device_by_id(&id.device_id)?
+            .ok_or(Error::Unauthenticated)?;
     let ms_left = dev.cert_expires_at - hh_core::time::now_ms();
     if ms_left > 30 * 24 * 3600 * 1000 {
         return Err(Error::Conflict("cert not due for renewal (>30 days left)".into()).into());
     }
     let csr = if body.trim_start().starts_with('{') {
-        serde_json::from_str::<serde_json::Value>(&body).map_err(|_|Error::BadRequest("invalid renewal request".into()))?
-            .get("csr_pem").and_then(|v|v.as_str()).ok_or_else(||Error::BadRequest("csr_pem required".into()))?.to_owned()
-    } else { body };
-    if let Some((cert_pem,expires))=s.db.pending_renewal(&id.device_id,&id.cert_serial,&csr)? {return Ok(Json(serde_json::json!({"cert_pem":cert_pem,"cert_expires_at":expires})));}
+        serde_json::from_str::<serde_json::Value>(&body)
+            .map_err(|_| Error::BadRequest("invalid renewal request".into()))?
+            .get("csr_pem")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::BadRequest("csr_pem required".into()))?
+            .to_owned()
+    } else {
+        body
+    };
+    if let Some((cert_pem, expires)) = s.db.pending_renewal(&id.device_id, &id.cert_serial, &csr)? {
+        return Ok(Json(
+            serde_json::json!({"cert_pem":cert_pem,"cert_expires_at":expires}),
+        ));
+    }
     let (cert_pem, serial, expires) = s.ca.renew_device_cert(&csr, &id.device_id)?;
-    s.db.stage_renewal(&id.device_id,&id.cert_serial,&csr,&cert_pem,&serial,expires)?;
-    Ok(Json(serde_json::json!({"cert_pem": cert_pem, "cert_expires_at": expires})))
+    s.db.stage_renewal(
+        &id.device_id,
+        &id.cert_serial,
+        &csr,
+        &cert_pem,
+        &serial,
+        expires,
+    )?;
+    Ok(Json(
+        serde_json::json!({"cert_pem": cert_pem, "cert_expires_at": expires}),
+    ))
 }
 
 // ---- transfers ----
@@ -382,20 +556,46 @@ async fn create_transfer(
     if req.size > 1 << 40 {
         return Err(Error::TooLarge("max file size 1 TiB".into()).into());
     }
-    if req.backup_source_id.is_some() { require_scope(&id,"photos")?; }
-    if let Some(target)=&req.target_device_id {
-        let d=s.db.device_by_id(target)?.ok_or_else(||Error::NotFound("recipient".into()))?;
-        if d.status!="active" || !d.has_scope("files") {return Err(Error::ForbiddenScope("recipient files".into()).into());}
+    if req.backup_source_id.is_some() {
+        require_scope(&id, "photos")?;
+    }
+    if let Some(target) = &req.target_device_id {
+        let d =
+            s.db.device_by_id(target)?
+                .ok_or_else(|| Error::NotFound("recipient".into()))?;
+        if d.status != "active" || !d.has_scope("files") {
+            return Err(Error::ForbiddenScope("recipient files".into()).into());
+        }
     }
     let engine = s.transfers.clone();
     let device_id = id.device_id.clone();
     let input = req.clone();
-    let mut resp = tokio::task::spawn_blocking(move ||engine.create(&device_id,&input)).await.map_err(|e|Error::Internal(e.to_string()))??;
-    if let (Some(source),Some(item),Some(file_id),Some(hash)) = (&req.backup_source_id,&req.client_item_id,&resp.existing_file_id,&req.root_hash) {
-        resp.backup_item_id = Some(s.photos.mark_transfer_verified(source,&id.device_id,item,file_id,hash,None)?);
+    let mut resp = tokio::task::spawn_blocking(move || engine.create(&device_id, &input))
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))??;
+    if let (Some(source), Some(item), Some(file_id), Some(hash)) = (
+        &req.backup_source_id,
+        &req.client_item_id,
+        &resp.existing_file_id,
+        &req.root_hash,
+    ) {
+        resp.backup_item_id = Some(s.photos.mark_transfer_verified(
+            source,
+            &id.device_id,
+            item,
+            file_id,
+            hash,
+            None,
+        )?);
     }
-    if let (Some(target),Some(file))=(&req.target_device_id,&resp.existing_file_id) {crate::relay::stage_file(&s,file,&id.device_id,target,None)?;}
-    let code = if resp.have.count() > 0 { StatusCode::OK } else { StatusCode::CREATED };
+    if let (Some(target), Some(file)) = (&req.target_device_id, &resp.existing_file_id) {
+        crate::relay::stage_file(&s, file, &id.device_id, target, None)?;
+    }
+    let code = if resp.have.count() > 0 {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
     Ok((code, Json(resp)))
 }
 
@@ -461,28 +661,66 @@ async fn complete_transfer(
 ) -> ApiResult<Json<CompleteResponse>> {
     let peer = ident(ext)?;
     require_scope(&peer, "transfer")?;
-    let owner:String={let c=s.db.lock()?;c.query_row("SELECT device_id FROM transfers WHERE id=?1",[&id],|r|r.get(0)).map_err(|_|Error::TransferGone)?};
-    if owner!=peer.device_id {return Err(Error::ForbiddenScope("transfer".into()).into());}
+    let owner: String = {
+        let c = s.db.lock()?;
+        c.query_row("SELECT device_id FROM transfers WHERE id=?1", [&id], |r| {
+            r.get(0)
+        })
+        .map_err(|_| Error::TransferGone)?
+    };
+    if owner != peer.device_id {
+        return Err(Error::ForbiddenScope("transfer".into()).into());
+    }
     let engine = s.transfers.clone();
     let id2 = id.clone();
     let mut resp = tokio::task::spawn_blocking(move || engine.complete(&id2, &req.root_hash))
         .await
         .map_err(|e| Error::Internal(e.to_string()))??;
-    let backup: (Option<String>,Option<String>) = {
+    let backup: (Option<String>, Option<String>) = {
         let c = s.db.lock()?;
-        c.query_row("SELECT backup_source_id,client_item_id FROM transfers WHERE id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|Error::Db(e.to_string()))?
+        c.query_row(
+            "SELECT backup_source_id,client_item_id FROM transfers WHERE id=?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| Error::Db(e.to_string()))?
     };
-    if let (Some(source),Some(item)) = backup {
-        resp.backup_item_id = Some(s.photos.mark_transfer_verified(&source,&peer.device_id,&item,&resp.file_id,&resp.hash,Some(&id))?);
+    if let (Some(source), Some(item)) = backup {
+        resp.backup_item_id = Some(s.photos.mark_transfer_verified(
+            &source,
+            &peer.device_id,
+            &item,
+            &resp.file_id,
+            &resp.hash,
+            Some(&id),
+        )?);
     }
-    let target:Option<String>={let c=s.db.lock()?;c.query_row("SELECT target_device_id FROM transfers WHERE id=?1",[&id],|r|r.get(0)).map_err(|e|Error::Db(e.to_string()))?};
-    if let Some(target)=target {crate::relay::stage_file(&s,&resp.file_id,&peer.device_id,&target,Some(&id))?;}
+    let target: Option<String> = {
+        let c = s.db.lock()?;
+        c.query_row(
+            "SELECT target_device_id FROM transfers WHERE id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::Db(e.to_string()))?
+    };
+    if let Some(target) = target {
+        crate::relay::stage_file(&s, &resp.file_id, &peer.device_id, &target, Some(&id))?;
+    }
     // Media hook: register metadata + enqueue thumbnails (TRD §8).
     if resp.rel_path.starts_with("Photos/") || resp.rel_path.starts_with("Videos/") {
         let path = s.storage.file_disk_path(&resp.file_id)?;
-        let mime = if resp.rel_path.starts_with("Photos/") { Some("image/*") } else { Some("video/*") };
+        let mime = if resp.rel_path.starts_with("Photos/") {
+            Some("image/*")
+        } else {
+            Some("video/*")
+        };
         if let Ok(meta) = hh_photos::meta::extract(&path, mime) {
-            let type_ = if resp.rel_path.starts_with("Photos/") { "photo" } else { "video" };
+            let type_ = if resp.rel_path.starts_with("Photos/") {
+                "photo"
+            } else {
+                "video"
+            };
             let _ = s.photos.register_media(&resp.file_id, type_, &meta);
         }
     }
@@ -522,7 +760,13 @@ async fn list_files(
 ) -> ApiResult<Json<Page<FileObject>>> {
     let peer = ident(ext)?;
     require_scope(&peer, "files")?;
-    Ok(Json(s.storage.list_files_page(q.category.as_deref(), q.q.as_deref(), q.cursor.as_deref(), q.sort.as_deref(), q.limit.unwrap_or(100))?))
+    Ok(Json(s.storage.list_files_page(
+        q.category.as_deref(),
+        q.q.as_deref(),
+        q.cursor.as_deref(),
+        q.sort.as_deref(),
+        q.limit.unwrap_or(100),
+    )?))
 }
 
 async fn get_file(
@@ -550,38 +794,84 @@ async fn file_content(
 }
 
 /// Streaming bounded-memory downloads, shared by local and mTLS routes.
-pub(crate) async fn stream_file(path: std::path::PathBuf, meta: &FileObject, headers: &HeaderMap) -> ApiResult<Response> {
-    use tokio::io::{AsyncReadExt,AsyncSeekExt};
+pub(crate) async fn stream_file(
+    path: std::path::PathBuf,
+    meta: &FileObject,
+    headers: &HeaderMap,
+) -> ApiResult<Response> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let mut file = tokio::fs::File::open(path).await.map_err(Error::from)?;
-    let range = headers.get("range").map(|r|r.to_str().ok().and_then(|v|parse_range(v,meta.size)));
-    if matches!(range,Some(None)) {
-        return Response::builder().status(StatusCode::RANGE_NOT_SATISFIABLE).header("content-range",format!("bytes */{}",meta.size))
-            .body(Body::empty()).map_err(|e|Error::Internal(e.to_string()).into());
+    let range = headers
+        .get("range")
+        .map(|r| r.to_str().ok().and_then(|v| parse_range(v, meta.size)));
+    if matches!(range, Some(None)) {
+        return Response::builder()
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header("content-range", format!("bytes */{}", meta.size))
+            .body(Body::empty())
+            .map_err(|e| Error::Internal(e.to_string()).into());
     }
-    let (start,len,status) = match range.flatten() { Some((a,b)) => (a,b-a+1,StatusCode::PARTIAL_CONTENT),None => (0,meta.size,StatusCode::OK) };
-    file.seek(std::io::SeekFrom::Start(start)).await.map_err(Error::from)?;
+    let (start, len, status) = match range.flatten() {
+        Some((a, b)) => (a, b - a + 1, StatusCode::PARTIAL_CONTENT),
+        None => (0, meta.size, StatusCode::OK),
+    };
+    file.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(Error::from)?;
     let body = Body::from_stream(tokio_util::io::ReaderStream::new(file.take(len)));
-    let filename = meta.name.replace(['"','\\','\r','\n'],"_");
-    let mut response = Response::builder().status(status).header("content-type",meta.mime.as_deref().unwrap_or("application/octet-stream"))
-        .header("content-length",len).header("accept-ranges","bytes").header("x-content-type-options","nosniff")
-        .header("content-security-policy","sandbox").header("content-disposition",format!("attachment; filename=\"{filename}\""));
-    if status == StatusCode::PARTIAL_CONTENT { response = response.header("content-range",format!("bytes {start}-{}/{}",start+len-1,meta.size)); }
-    response.body(body).map_err(|e|Error::Internal(e.to_string()).into())
+    let filename = meta.name.replace(['"', '\\', '\r', '\n'], "_");
+    let mut response = Response::builder()
+        .status(status)
+        .header(
+            "content-type",
+            meta.mime.as_deref().unwrap_or("application/octet-stream"),
+        )
+        .header("content-length", len)
+        .header("accept-ranges", "bytes")
+        .header("x-content-type-options", "nosniff")
+        .header("content-security-policy", "sandbox")
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{filename}\""),
+        );
+    if status == StatusCode::PARTIAL_CONTENT {
+        response = response.header(
+            "content-range",
+            format!("bytes {start}-{}/{}", start + len - 1, meta.size),
+        );
+    }
+    response
+        .body(body)
+        .map_err(|e| Error::Internal(e.to_string()).into())
 }
 
-fn parse_range(header: &str, size: u64) -> Option<(u64,u64)> {
-    if size == 0 { return None; }
+fn parse_range(header: &str, size: u64) -> Option<(u64, u64)> {
+    if size == 0 {
+        return None;
+    }
     let spec = header.strip_prefix("bytes=")?;
-    if spec.contains(',') { return None; }
-    let (a,b) = spec.split_once('-')?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (a, b) = spec.split_once('-')?;
     if a.is_empty() {
         let suffix: u64 = b.parse().ok()?;
-        if suffix == 0 { return None; }
-        return Some((size.saturating_sub(suffix),size-1));
+        if suffix == 0 {
+            return None;
+        }
+        return Some((size.saturating_sub(suffix), size - 1));
     }
     let start: u64 = a.parse().ok()?;
-    let end: u64 = if b.is_empty() {size-1} else { b.parse::<u64>().ok()?.min(size-1) };
-    if start >= size || start > end {None} else {Some((start,end))}
+    let end: u64 = if b.is_empty() {
+        size - 1
+    } else {
+        b.parse::<u64>().ok()?.min(size - 1)
+    };
+    if start >= size || start > end {
+        None
+    } else {
+        Some((start, end))
+    }
 }
 
 async fn file_manifest(
@@ -592,7 +882,9 @@ async fn file_manifest(
     let peer = ident(ext)?;
     require_scope(&peer, "files")?;
     let chunks = s.storage.file_manifest(&id)?;
-    Ok(Json(serde_json::json!({"file_id": id, "chunks": chunks.iter().map(|(i, h)| serde_json::json!({"idx": i, "hash": h})).collect::<Vec<_>>()})))
+    Ok(Json(
+        serde_json::json!({"file_id": id, "chunks": chunks.iter().map(|(i, h)| serde_json::json!({"idx": i, "hash": h})).collect::<Vec<_>>()}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -660,8 +952,12 @@ async fn library_summary(
 ) -> ApiResult<Json<hh_storage::LibrarySummary>> {
     let peer = ident(ext)?;
     require_scope(&peer, "files")?;
-    let storage=s.storage.clone();
-    Ok(Json(tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|e|Error::Internal(e.to_string()))??))
+    let storage = s.storage.clone();
+    Ok(Json(
+        tokio::task::spawn_blocking(move || storage.library_summary())
+            .await
+            .map_err(|e| Error::Internal(e.to_string()))??,
+    ))
 }
 
 // ---- photos & backup ----
@@ -685,13 +981,17 @@ async fn photos_timeline(
         let (ts, fid) = c.split_once(':')?;
         Some((ts.parse().ok()?, fid.to_string()))
     });
-    let month=match (q.year,q.month) {
-        (None,None)=>None,
-        (Some(y),Some(m)) if (1900..=2200).contains(&y) && (1..=12).contains(&m)=>Some((y,m)),
-        _=>return Err(Error::BadRequest("invalid gallery month".into()).into()),
+    let month = match (q.year, q.month) {
+        (None, None) => None,
+        (Some(y), Some(m)) if (1900..=2200).contains(&y) && (1..=12).contains(&m) => Some((y, m)),
+        _ => return Err(Error::BadRequest("invalid gallery month".into()).into()),
     };
-    let (items, next_cursor) = s.photos.timeline_month(cursor, q.limit.unwrap_or(100),month)?;
-    Ok(Json(serde_json::json!({"items": items, "next_cursor": next_cursor})))
+    let (items, next_cursor) = s
+        .photos
+        .timeline_month(cursor, q.limit.unwrap_or(100), month)?;
+    Ok(Json(
+        serde_json::json!({"items": items, "next_cursor": next_cursor}),
+    ))
 }
 
 async fn photos_years(
@@ -719,16 +1019,24 @@ async fn photo_thumb(
     match s.photos.thumb_path(&file_id, q.size.unwrap_or(256))? {
         Some(p) => {
             let bytes = match tokio::fs::read(&p).await {
-                Ok(bytes)=>bytes,
-                Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(Response::builder().status(StatusCode::NO_CONTENT).body(Body::empty()).unwrap()),
-                Err(e)=>return Err(Error::from(e).into()),
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::NO_CONTENT)
+                        .body(Body::empty())
+                        .unwrap())
+                }
+                Err(e) => return Err(Error::from(e).into()),
             };
             Ok(Response::builder()
                 .header("content-type", "image/jpeg")
                 .body(Body::from(bytes))
                 .unwrap())
         }
-        None => Ok(Response::builder().status(StatusCode::NO_CONTENT).body(Body::empty()).unwrap()),
+        None => Ok(Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .unwrap()),
     }
 }
 
@@ -745,7 +1053,11 @@ async fn backup_source_create(
 ) -> ApiResult<Json<hh_photos::backup::BackupSource>> {
     let peer = ident(ext)?;
     require_scope(&peer, "photos")?;
-    Ok(Json(s.photos.upsert_source(&peer.device_id, &req.kind, req.label.as_deref())?))
+    Ok(Json(s.photos.upsert_source(
+        &peer.device_id,
+        &req.kind,
+        req.label.as_deref(),
+    )?))
 }
 
 #[derive(Deserialize)]
@@ -763,7 +1075,8 @@ async fn backup_source_update(
 ) -> ApiResult<StatusCode> {
     let peer = ident(ext)?;
     require_scope(&peer, "photos")?;
-    s.photos.update_source(&id, req.enabled, req.wifi_only, req.charging_only)?;
+    s.photos
+        .update_source(&id, req.enabled, req.wifi_only, req.charging_only)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -785,9 +1098,12 @@ async fn backup_summary(
 ) -> ApiResult<Json<hh_photos::backup::BackupSummary>> {
     let peer = ident(ext)?;
     require_scope(&peer, "photos")?;
-    let photos=s.photos.clone();
-    Ok(Json(tokio::task::spawn_blocking(move ||photos.summary(&id))
-        .await.map_err(|e|Error::Internal(e.to_string()))??))
+    let photos = s.photos.clone();
+    Ok(Json(
+        tokio::task::spawn_blocking(move || photos.summary(&id))
+            .await
+            .map_err(|e| Error::Internal(e.to_string()))??,
+    ))
 }
 
 /// The caller's own backup sources (free-storage flow, W1.3).
@@ -813,7 +1129,10 @@ async fn backup_verified_items(
     let peer = ident(ext)?;
     require_scope(&peer, "photos")?;
     // Only the owning device may enumerate its verified items.
-    let owned = s.db.backup_sources_for_device(&peer.device_id)?.iter().any(|(sid, _)| *sid == id);
+    let owned =
+        s.db.backup_sources_for_device(&peer.device_id)?
+            .iter()
+            .any(|(sid, _)| *sid == id);
     if !owned {
         return Err(Error::ForbiddenScope("photos".into()).into());
     }
@@ -873,8 +1192,14 @@ async fn resolve_duplicates(
 ) -> ApiResult<StatusCode> {
     let peer = ident(ext)?;
     require_scope(&peer, "photos")?;
-    s.storage.resolve_duplicate_group(&group_id, &req.keep_file_id)?;
-    let _ = s.db.audit(Some(&peer.device_id), "resolve_duplicates", Some(&group_id), None);
+    s.storage
+        .resolve_duplicate_group(&group_id, &req.keep_file_id)?;
+    let _ = s.db.audit(
+        Some(&peer.device_id),
+        "resolve_duplicates",
+        Some(&group_id),
+        None,
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -962,11 +1287,12 @@ async fn run_second_copy(
     let peer = ident(ext)?;
     require_scope(&peer, "admin")?;
     let svc = s.storage.clone();
-    let (copied, failed, run) =
-        tokio::task::spawn_blocking(move || svc.run_second_copy())
-            .await
-            .map_err(|e| Error::Internal(e.to_string()))??;
-    Ok(Json(serde_json::json!({"copied": copied, "failed": failed, "run_id": run})))
+    let (copied, failed, run) = tokio::task::spawn_blocking(move || svc.run_second_copy())
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))??;
+    Ok(Json(
+        serde_json::json!({"copied": copied, "failed": failed, "run_id": run}),
+    ))
 }
 
 // ---- remote ----
@@ -1030,7 +1356,8 @@ async fn remote_power(
 ) -> ApiResult<StatusCode> {
     let peer = ident(ext)?;
     require_scope(&peer, "remote")?;
-    s.remote.power_action(&peer.device_id, &req.action, req.confirm)?;
+    s.remote
+        .power_action(&peer.device_id, &req.action, req.confirm)?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -1086,7 +1413,12 @@ async fn remote_wake(
             }
         }
     }
-    let _ = s.db.audit(Some(&peer.device_id), "remote_wake", Some(&format!("sent:{} failed:{}", sent.len(), failed.len())), None);
+    let _ = s.db.audit(
+        Some(&peer.device_id),
+        "remote_wake",
+        Some(&format!("sent:{} failed:{}", sent.len(), failed.len())),
+        None,
+    );
     Ok(Json(serde_json::json!({"sent": sent, "failed": failed})))
 }
 
@@ -1120,7 +1452,12 @@ async fn network_hotspot(
     })
     .await
     .map_err(|e| Error::Internal(e.to_string()))??;
-    let _ = s.db.audit(Some(&peer.device_id), "hotspot_toggle", Some(if enable { "on" } else { "off" }), None);
+    let _ = s.db.audit(
+        Some(&peer.device_id),
+        "hotspot_toggle",
+        Some(if enable { "on" } else { "off" }),
+        None,
+    );
     Ok(Json(result))
 }
 
@@ -1134,7 +1471,9 @@ async fn storage_encryption(
     let status = match &s.helper {
         Some(h) => {
             let h = h.clone();
-            tokio::task::spawn_blocking(move || h.bitlocker_status()).await.ok()
+            tokio::task::spawn_blocking(move || h.bitlocker_status())
+                .await
+                .ok()
         }
         None => None,
     };
@@ -1161,7 +1500,11 @@ async fn security_audit(
 ) -> ApiResult<Json<serde_json::Value>> {
     let peer = ident(ext)?;
     require_scope(&peer, "admin")?;
-    let (rows, total) = s.db.list_audit(q.device_id.as_deref(), q.limit.unwrap_or(100), q.offset.unwrap_or(0))?;
+    let (rows, total) = s.db.list_audit(
+        q.device_id.as_deref(),
+        q.limit.unwrap_or(100),
+        q.offset.unwrap_or(0),
+    )?;
     Ok(Json(serde_json::json!({
         "total": total,
         "items": rows.iter().map(|r| serde_json::json!({
@@ -1178,9 +1521,10 @@ async fn update_check(
 ) -> ApiResult<Json<crate::update::UpdateCheck>> {
     let _ = ident(ext)?;
     let db = s.db.clone();
-    let check = tokio::task::spawn_blocking(move || crate::update::check_from_settings(&db, HUB_VERSION))
-        .await
-        .map_err(|e| Error::Internal(e.to_string()))?;
+    let check =
+        tokio::task::spawn_blocking(move || crate::update::check_from_settings(&db, HUB_VERSION))
+            .await
+            .map_err(|e| Error::Internal(e.to_string()))?;
     Ok(Json(check))
 }
 
@@ -1200,34 +1544,109 @@ async fn screen_start(
 ) -> ApiResult<Json<serde_json::Value>> {
     let peer = ident(ext)?;
     require_scope(&peer, "remote")?;
-    let rating=s.hw.latest_audit()?.and_then(|v|v.get("rating_streaming").and_then(|r|r.as_str().map(String::from))).unwrap_or_else(||"limited".into());
-    let kind=req.direction.as_deref().unwrap_or("view");
-    if !["view","cast"].contains(&kind){return Err(Error::BadRequest("direction must be view or cast".into()).into());}
-    if !s.db.get_setting("screen.enabled")?.map(|v|v=="true").unwrap_or(s.cfg.features.screen) {return Err(Error::ForbiddenScope("screen disabled".into()).into());}
-    let svc=s.stream.clone();let device=peer.device_id.clone();let kind=kind.to_string();let preset=req.preset;
-    let (id,preset,answer)=tokio::task::spawn_blocking(move||svc.start_session(&device,&kind,preset,&rating,&req.offer_sdp)).await.map_err(|e|Error::Internal(e.to_string()))??;
-    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex".into()))?.insert(id.clone(),peer.device_id);
-    Ok(Json(serde_json::json!({"session_id":id,"preset":preset,"answer_sdp":answer,"transport":"helper"})))
+    let rating =
+        s.hw.latest_audit()?
+            .and_then(|v| {
+                v.get("rating_streaming")
+                    .and_then(|r| r.as_str().map(String::from))
+            })
+            .unwrap_or_else(|| "limited".into());
+    let kind = req.direction.as_deref().unwrap_or("view");
+    if !["view", "cast"].contains(&kind) {
+        return Err(Error::BadRequest("direction must be view or cast".into()).into());
+    }
+    if !s
+        .db
+        .get_setting("screen.enabled")?
+        .map(|v| v == "true")
+        .unwrap_or(s.cfg.features.screen)
+    {
+        return Err(Error::ForbiddenScope("screen disabled".into()).into());
+    }
+    let svc = s.stream.clone();
+    let device = peer.device_id.clone();
+    let kind = kind.to_string();
+    let preset = req.preset;
+    let (id, preset, answer) = tokio::task::spawn_blocking(move || {
+        svc.start_session(&device, &kind, preset, &rating, &req.offer_sdp)
+    })
+    .await
+    .map_err(|e| Error::Internal(e.to_string()))??;
+    s.screen_owners
+        .lock()
+        .map_err(|_| Error::Internal("screen mutex".into()))?
+        .insert(id.clone(), peer.device_id);
+    Ok(Json(
+        serde_json::json!({"session_id":id,"preset":preset,"answer_sdp":answer,"transport":"helper"}),
+    ))
 }
-async fn screen_touch(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>,Path(id):Path<String>)->ApiResult<StatusCode>{let peer=ident(ext)?;require_scope(&peer,"remote")?;s.stream.touch_session(&id,&peer.device_id)?;Ok(StatusCode::NO_CONTENT)}
-async fn screen_stop(State(s):State<AppState>,ext:Option<Extension<PeerIdentityExt>>,Path(id):Path<String>)->ApiResult<StatusCode>{
-    let peer=ident(ext)?;require_scope(&peer,"remote")?;
-    let owner=s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex".into()))?.get(&id).cloned();
-    if owner.as_deref()!=Some(&peer.device_id){return Err(Error::ForbiddenScope("screen owner".into()).into());}
-    let stream=s.stream.clone();let sid=id.clone();tokio::task::spawn_blocking(move||stream.stop_session(&sid)).await.map_err(|e|Error::Internal(e.to_string()))??;
-    s.screen_owners.lock().map_err(|_|Error::Internal("screen mutex".into()))?.remove(&id);Ok(StatusCode::NO_CONTENT)
+async fn screen_touch(
+    State(s): State<AppState>,
+    ext: Option<Extension<PeerIdentityExt>>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let peer = ident(ext)?;
+    require_scope(&peer, "remote")?;
+    s.stream.touch_session(&id, &peer.device_id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn screen_stop(
+    State(s): State<AppState>,
+    ext: Option<Extension<PeerIdentityExt>>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let peer = ident(ext)?;
+    require_scope(&peer, "remote")?;
+    let owner = s
+        .screen_owners
+        .lock()
+        .map_err(|_| Error::Internal("screen mutex".into()))?
+        .get(&id)
+        .cloned();
+    if owner.as_deref() != Some(&peer.device_id) {
+        return Err(Error::ForbiddenScope("screen owner".into()).into());
+    }
+    let stream = s.stream.clone();
+    let sid = id.clone();
+    tokio::task::spawn_blocking(move || stream.stop_session(&sid))
+        .await
+        .map_err(|e| Error::Internal(e.to_string()))??;
+    s.screen_owners
+        .lock()
+        .map_err(|_| Error::Internal("screen mutex".into()))?
+        .remove(&id);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn screen_capabilities(
     State(s): State<AppState>,
     ext: Option<Extension<PeerIdentityExt>>,
 ) -> ApiResult<Json<hh_stream::ScreenCapabilities>> {
-    let peer=ident(ext)?;require_scope(&peer,"remote")?;
-    let helper=s.helper.clone();
-    let caps=tokio::task::spawn_blocking(move||helper.ok_or_else(||Error::BadRequest("screen helper unavailable".into()))?.screen_capabilities()).await.map_err(|e|Error::Internal(e.to_string()))??;
-    let encoders=caps["encoders"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-    let max_preset=serde_json::from_value(caps["max_preset"].clone()).unwrap_or(hh_stream::Preset::Low);
-    Ok(Json(hh_stream::ScreenCapabilities{encoders,max_preset,hw_encode:caps["hw_encode"].as_bool().unwrap_or(false)}))
+    let peer = ident(ext)?;
+    require_scope(&peer, "remote")?;
+    let helper = s.helper.clone();
+    let caps = tokio::task::spawn_blocking(move || {
+        helper
+            .ok_or_else(|| Error::BadRequest("screen helper unavailable".into()))?
+            .screen_capabilities()
+    })
+    .await
+    .map_err(|e| Error::Internal(e.to_string()))??;
+    let encoders = caps["encoders"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let max_preset =
+        serde_json::from_value(caps["max_preset"].clone()).unwrap_or(hh_stream::Preset::Low);
+    Ok(Json(hh_stream::ScreenCapabilities {
+        encoders,
+        max_preset,
+        hw_encode: caps["hw_encode"].as_bool().unwrap_or(false),
+    }))
 }
 
 // ---- hardware & network ----
@@ -1248,10 +1667,13 @@ async fn hardware_audit_run(
     let peer = ident(ext)?;
     require_scope(&peer, "admin")?;
     let hw = s.hw.clone();
-    let helper=s.helper.clone();
-    let r = tokio::task::spawn_blocking(move || {let extra=helper.and_then(|h|h.system_info().ok());hw.run_audit_with_helper(extra.as_ref())})
-        .await
-        .map_err(|e| Error::Internal(e.to_string()))??;
+    let helper = s.helper.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        let extra = helper.and_then(|h| h.system_info().ok());
+        hw.run_audit_with_helper(extra.as_ref())
+    })
+    .await
+    .map_err(|e| Error::Internal(e.to_string()))??;
     Ok(Json(serde_json::json!({
         "id": r.id,
         "ratings": r.ratings,
@@ -1276,7 +1698,13 @@ mod api_contract_tests {
     fn rate_limited_response_includes_retry_after() {
         let response = ApiErr(Error::RateLimited).into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers().get(axum::http::header::RETRY_AFTER).unwrap(), "1");
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .unwrap(),
+            "1"
+        );
     }
 
     #[test]
@@ -1295,28 +1723,60 @@ mod transfer_authorization_tests {
     fn another_device_cannot_address_a_transfer() {
         let db = hh_db::Db::open_memory().unwrap();
         for device_id in ["owner", "other"] {
-            db.insert_device(&DeviceRow {
-                id: device_id.into(), name: device_id.into(), platform: "android".into(),
-                model: None, app_version: None, cert_serial: device_id.into(),
-                cert_expires_at: 0, scopes: vec!["transfer".into()], paired_at: 0,
-                last_seen_at: None, status: "active".into(),
-            }, "PEM", "PUB").unwrap();
+            db.insert_device(
+                &DeviceRow {
+                    id: device_id.into(),
+                    name: device_id.into(),
+                    platform: "android".into(),
+                    model: None,
+                    app_version: None,
+                    cert_serial: device_id.into(),
+                    cert_expires_at: 0,
+                    scopes: vec!["transfer".into()],
+                    paired_at: 0,
+                    last_seen_at: None,
+                    status: "active".into(),
+                },
+                "PEM",
+                "PUB",
+            )
+            .unwrap();
         }
-        db.insert_transfer("transfer-1", "owner", "send", "photo.jpg", 1,
-            None, None, 1, 1, None, None, "unused.part", i64::MAX).unwrap();
+        db.insert_transfer(
+            "transfer-1",
+            "owner",
+            "send",
+            "photo.jpg",
+            1,
+            None,
+            None,
+            1,
+            1,
+            None,
+            None,
+            "unused.part",
+            i64::MAX,
+        )
+        .unwrap();
         let identity = |device_id: &str| PeerIdentity {
-            device_id: device_id.into(), cert_serial: device_id.into(),
+            device_id: device_id.into(),
+            cert_serial: device_id.into(),
             scopes: vec!["transfer".into()],
         };
-        for path in ["/v1/transfers/transfer-1", "/v1/transfers/transfer-1/chunks/0",
-            "/v1/transfers/transfer-1/complete"] {
+        for path in [
+            "/v1/transfers/transfer-1",
+            "/v1/transfers/transfer-1/chunks/0",
+            "/v1/transfers/transfer-1/complete",
+        ] {
             assert!(authorize_transfer_path(&db, path, &identity("owner")).is_ok());
             let denial = authorize_transfer_path(&db, path, &identity("other")).unwrap_err();
             assert_eq!(denial.0.http_status(), 410);
             assert!(matches!(denial.0, Error::TransferGone));
         }
-        assert!(matches!(authorize_transfer_path(&db, "/v1/transfers/missing", &identity("owner")),
-            Err(ApiErr(Error::TransferGone))));
+        assert!(matches!(
+            authorize_transfer_path(&db, "/v1/transfers/missing", &identity("owner")),
+            Err(ApiErr(Error::TransferGone))
+        ));
         assert!(authorize_transfer_path(&db, "/v1/transfers", &identity("other")).is_ok());
     }
 }

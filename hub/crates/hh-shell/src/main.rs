@@ -1,7 +1,14 @@
 //! Native shell process entry point. Compositor surfaces are wired by the Linux session.
-use hh_shell::{apps, input_mode, ipc::ShellIpcClient, launcher::Launcher,
-    notifications::NotificationCenter, oobe::OobeState, quick_settings::QuickSettingsState,
-    status_bar::StatusBarState, window_adapter::{calculate_work_area, WindowManager}};
+use hh_shell::{
+    apps, input_mode,
+    ipc::ShellIpcClient,
+    launcher::Launcher,
+    notifications::NotificationCenter,
+    oobe::OobeState,
+    quick_settings::QuickSettingsState,
+    status_bar::StatusBarState,
+    window_adapter::{calculate_work_area, WindowManager},
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

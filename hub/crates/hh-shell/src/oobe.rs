@@ -4,7 +4,14 @@ use std::{fs, io, path::Path};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum OobeStep { Language, InputMode, Network, OwnerSecurity, DevicePairing, Complete }
+pub enum OobeStep {
+    Language,
+    InputMode,
+    Network,
+    OwnerSecurity,
+    DevicePairing,
+    Complete,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OobeState {
@@ -19,25 +26,37 @@ pub struct OobeState {
 
 impl Default for OobeState {
     fn default() -> Self {
-        Self { current_step: OobeStep::Language, selected_language: "en".into(),
-            selected_input_mode: "mouse".into(), network_configured: false,
-            owner_configured: false, completed: false, pairing_qr_ready: false }
+        Self {
+            current_step: OobeStep::Language,
+            selected_language: "en".into(),
+            selected_input_mode: "mouse".into(),
+            network_configured: false,
+            owner_configured: false,
+            completed: false,
+            pairing_qr_ready: false,
+        }
     }
 }
 
 impl OobeState {
     pub fn select_language(&mut self, language: &str) -> bool {
-        if !matches!(language, "en" | "hi") { return false; }
+        if !matches!(language, "en" | "hi") {
+            return false;
+        }
         self.selected_language = language.into();
         true
     }
     pub fn select_input_mode(&mut self, mode: &str) -> bool {
-        if !matches!(mode, "touch" | "mouse") { return false; }
+        if !matches!(mode, "touch" | "mouse") {
+            return false;
+        }
         self.selected_input_mode = mode.into();
         true
     }
     pub fn configure_owner(&mut self, secret: &str) -> bool {
-        if secret.chars().count() < 4 { return false; }
+        if secret.chars().count() < 4 {
+            return false;
+        }
         self.owner_configured = true;
         true
     }
@@ -50,7 +69,9 @@ impl OobeState {
             OobeStep::DevicePairing => OobeStep::Complete,
             step => step,
         };
-        if self.current_step == OobeStep::DevicePairing { self.pairing_qr_ready = true; }
+        if self.current_step == OobeStep::DevicePairing {
+            self.pairing_qr_ready = true;
+        }
         self.completed = self.current_step == OobeStep::Complete;
     }
     pub fn go_back(&mut self) {
@@ -65,12 +86,17 @@ impl OobeState {
         self.completed = false;
     }
     pub fn save_checkpoint(&self, path: &Path) -> io::Result<()> {
-        if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let temporary = path.with_extension("json.tmp");
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
-        { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
         let result = (|| -> io::Result<()> {
             use std::io::Write;
             let mut file = options.open(&temporary)?;
@@ -78,7 +104,9 @@ impl OobeState {
             file.sync_all()?;
             fs::rename(&temporary, path)
         })();
-        if result.is_err() { let _ = fs::remove_file(&temporary); }
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
         result
     }
     pub fn load_checkpoint(path: &Path) -> io::Result<Option<Self>> {
@@ -96,7 +124,9 @@ mod tests {
     #[test]
     fn transitions_require_owner_and_allow_offline() {
         let mut state = OobeState::default();
-        state.advance_step(); state.advance_step(); state.advance_step();
+        state.advance_step();
+        state.advance_step();
+        state.advance_step();
         assert_eq!(state.current_step, OobeStep::OwnerSecurity);
         state.advance_step();
         assert_eq!(state.current_step, OobeStep::OwnerSecurity);

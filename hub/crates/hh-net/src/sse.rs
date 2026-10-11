@@ -16,7 +16,10 @@ impl EventBus {
     }
 
     pub fn emit(&self, event: &str, data: serde_json::Value) {
-        let _ = self.tx.send(HubEvent { event: event.to_string(), data });
+        let _ = self.tx.send(HubEvent {
+            event: event.to_string(),
+            data,
+        });
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {

@@ -27,7 +27,9 @@ impl PhotoService {
                 )
                 .map_err(db_e)?;
             let rows = st
-                .query_map(params![max as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .query_map(params![max as i64], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
                 .map_err(db_e)?
                 .collect::<std::result::Result<Vec<(String, String, String)>, _>>()
                 .map_err(db_e)?;
@@ -89,11 +91,11 @@ impl PhotoService {
         if status != "ready" {
             return Ok(None); // client shows placeholder
         }
-        let path=match size {
+        let path = match size {
             256 => p256.map(PathBuf::from),
             _ => p1024.map(PathBuf::from),
         };
-        if path.as_ref().is_some_and(|path|!path.is_file()) {
+        if path.as_ref().is_some_and(|path| !path.is_file()) {
             c.execute("UPDATE media SET thumb_status='pending',thumb_256_path=NULL,thumb_1024_path=NULL WHERE file_id=?1",[file_id]).map_err(db_e)?;
             return Ok(None);
         }
@@ -117,31 +119,52 @@ impl std::fmt::Display for ThumbError {
     }
 }
 
-fn generate(src: &std::path::Path, thumbs_dir: &std::path::Path, file_id: &str, kind:&str) -> std::result::Result<(PathBuf, PathBuf, Option<u64>), ThumbError> {
-    if kind=="video" {return Err(ThumbError::Unsupported);}
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if matches!(ext.as_str(), "heic" | "heif" | "dng" | "cr2" | "nef" | "arw") {
+fn generate(
+    src: &std::path::Path,
+    thumbs_dir: &std::path::Path,
+    file_id: &str,
+    kind: &str,
+) -> std::result::Result<(PathBuf, PathBuf, Option<u64>), ThumbError> {
+    if kind == "video" {
+        return Err(ThumbError::Unsupported);
+    }
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if matches!(
+        ext.as_str(),
+        "heic" | "heif" | "dng" | "cr2" | "nef" | "arw"
+    ) {
         return Err(ThumbError::Unsupported); // honest placeholder (TRD §8)
     }
     let img = image::open(src).map_err(|e| match e {
-        image::ImageError::Unsupported(_)=>ThumbError::Unsupported,
-        other=>ThumbError::Other(other.to_string()),
+        image::ImageError::Unsupported(_) => ThumbError::Unsupported,
+        other => ThumbError::Other(other.to_string()),
     })?;
     std::fs::create_dir_all(thumbs_dir).map_err(|e| ThumbError::Retryable(e.to_string()))?;
 
     let out = |size: u32| -> std::result::Result<PathBuf, ThumbError> {
         let t = img.thumbnail(size, size);
         let path = thumbs_dir.join(format!("{file_id}_{size}.jpg"));
-        let temp = thumbs_dir.join(format!("{file_id}_{size}_{}.part",ulid::Ulid::new()));
-        let result=(|| {
-            let mut file=std::fs::File::create(&temp).map_err(|e|ThumbError::Retryable(e.to_string()))?;
-            t.write_to(&mut file,image::ImageFormat::Jpeg).map_err(|e|ThumbError::Retryable(e.to_string()))?;
-            file.sync_all().map_err(|e|ThumbError::Retryable(e.to_string()))?;
-            if path.exists() {std::fs::remove_file(&path).map_err(|e|ThumbError::Retryable(e.to_string()))?;}
-            std::fs::rename(&temp,&path).map_err(|e|ThumbError::Retryable(e.to_string()))?;
-            Ok::<(),ThumbError>(())
+        let temp = thumbs_dir.join(format!("{file_id}_{size}_{}.part", ulid::Ulid::new()));
+        let result = (|| {
+            let mut file =
+                std::fs::File::create(&temp).map_err(|e| ThumbError::Retryable(e.to_string()))?;
+            t.write_to(&mut file, image::ImageFormat::Jpeg)
+                .map_err(|e| ThumbError::Retryable(e.to_string()))?;
+            file.sync_all()
+                .map_err(|e| ThumbError::Retryable(e.to_string()))?;
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|e| ThumbError::Retryable(e.to_string()))?;
+            }
+            std::fs::rename(&temp, &path).map_err(|e| ThumbError::Retryable(e.to_string()))?;
+            Ok::<(), ThumbError>(())
         })();
-        if result.is_err() {let _=std::fs::remove_file(&temp);}
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
         result?;
         Ok(path)
     };

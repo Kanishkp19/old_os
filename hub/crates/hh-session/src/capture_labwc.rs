@@ -10,7 +10,10 @@ pub enum CaptureError {
 
 impl std::fmt::Display for CaptureError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "labwc portal/PipeWire capture backend is unavailable")
+        write!(
+            formatter,
+            "labwc portal/PipeWire capture backend is unavailable"
+        )
     }
 }
 
@@ -27,7 +30,9 @@ pub struct CaptureManager {
 }
 
 impl CaptureManager {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// No grant is issued without a real portal session and PipeWire node.
     pub fn grant_capture(&mut self, _app_id: &str) -> Result<String, CaptureError> {
@@ -49,7 +54,9 @@ impl CaptureManager {
         tracing::info!(revoked, "capture grants torn down for session lock");
     }
 
-    pub fn on_secure_prompt(&mut self) { self.on_session_lock(); }
+    pub fn on_secure_prompt(&mut self) {
+        self.on_session_lock();
+    }
 }
 
 #[cfg(test)]
@@ -59,8 +66,18 @@ mod tests {
     #[test]
     fn lock_clears_all_grants() {
         let mut manager = CaptureManager::new();
-        manager.active_captures.insert("one".into(), CaptureGrant { app_id: "app".into() });
-        manager.active_captures.insert("two".into(), CaptureGrant { app_id: "app".into() });
+        manager.active_captures.insert(
+            "one".into(),
+            CaptureGrant {
+                app_id: "app".into(),
+            },
+        );
+        manager.active_captures.insert(
+            "two".into(),
+            CaptureGrant {
+                app_id: "app".into(),
+            },
+        );
         manager.on_session_lock();
         assert!(manager.active_captures.is_empty());
         assert!(!manager.revoke_capture("one"));

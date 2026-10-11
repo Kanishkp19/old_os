@@ -5,12 +5,22 @@
 //! version bump of the `windows` crate is a mechanical fix.
 
 // ---- input injection (FR-7.1/7.2) ----
-static HELD_KEYS: once_cell::sync::Lazy<std::sync::Mutex<std::collections::BTreeSet<u16>>> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
+static HELD_KEYS: once_cell::sync::Lazy<std::sync::Mutex<std::collections::BTreeSet<u16>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
 pub fn release_input() -> Result<(), String> {
     let mut keys = HELD_KEYS.lock().map_err(|_| "input state unavailable")?;
     let mut failed = false;
-    for key in std::mem::take(&mut *keys) { if send_key(key, false).is_err() { keys.insert(key); failed = true; } }
-    if failed { Err("could not release remote keys".into()) } else { Ok(()) }
+    for key in std::mem::take(&mut *keys) {
+        if send_key(key, false).is_err() {
+            keys.insert(key);
+            failed = true;
+        }
+    }
+    if failed {
+        Err("could not release remote keys".into())
+    } else {
+        Ok(())
+    }
 }
 
 pub fn mouse_move(dx: i32, dy: i32) -> Result<(), String> {
@@ -109,7 +119,11 @@ pub fn key(key: &str, down: bool) -> Result<(), String> {
     let vk = vk_for_key(key).ok_or_else(|| format!("unsupported key {key:?}"))?;
     let mut held = HELD_KEYS.lock().map_err(|_| "input state unavailable")?;
     send_key(vk, down)?;
-    if down { held.insert(vk); } else { held.remove(&vk); }
+    if down {
+        held.insert(vk);
+    } else {
+        held.remove(&vk);
+    }
     Ok(())
 }
 
@@ -119,7 +133,11 @@ fn send_key(vk: u16, down: bool) -> Result<(), String> {
     inp.Anonymous.ki = KEYBDINPUT {
         wVk: VIRTUAL_KEY(vk),
         wScan: 0,
-        dwFlags: if down { KEYBD_EVENT_FLAGS(0) } else { KEYEVENTF_KEYUP },
+        dwFlags: if down {
+            KEYBD_EVENT_FLAGS(0)
+        } else {
+            KEYEVENTF_KEYUP
+        },
         time: 0,
         dwExtraInfo: 0,
     };
@@ -132,7 +150,9 @@ fn send_key(vk: u16, down: bool) -> Result<(), String> {
 }
 
 pub fn text(s: &str) -> Result<(), String> {
-    if s.chars().count() > 1000 { return Err("text input too long".into()); }
+    if s.chars().count() > 1000 {
+        return Err("text input too long".into());
+    }
     for scan in s.encode_utf16() {
         for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
             let mut inp = INPUT::default();
@@ -176,7 +196,11 @@ pub fn power(action: &str) -> Result<(), String> {
             ensure_shutdown_privilege()?;
             // SAFETY: documented Win32 power call.
             let ok = unsafe { SetSuspendState(BOOLEAN(0), BOOLEAN(0), BOOLEAN(0)) };
-            if ok.0 != 0 { Ok(()) } else { Err("sleep request failed".into()) }
+            if ok.0 != 0 {
+                Ok(())
+            } else {
+                Err("sleep request failed".into())
+            }
         }
         "restart" | "shutdown" => {
             ensure_shutdown_privilege()?;
@@ -185,7 +209,9 @@ pub fn power(action: &str) -> Result<(), String> {
                 _ => EWX_SHUTDOWN | EWX_FORCEIFHUNG,
             };
             // SAFETY: documented shutdown call; privilege adjusted above.
-            let ok = unsafe { ExitWindowsEx(flags, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER) };
+            let ok = unsafe {
+                ExitWindowsEx(flags, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER)
+            };
             ok.map_err(|e| format!("ExitWindowsEx: {e}"))
         }
         other => Err(format!("unknown power action {other:?}")),
@@ -197,11 +223,18 @@ fn ensure_shutdown_privilege() -> Result<(), String> {
     // LookupPrivilegeValueW → AdjustTokenPrivileges); handles closed after.
     unsafe {
         let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token)
-            .map_err(|e| format!("OpenProcessToken: {e}"))?;
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+        .map_err(|e| format!("OpenProcessToken: {e}"))?;
         let mut luid = LUID::default();
         let name = windows::core::w!("SeShutdownPrivilege");
-        if let Err(e) = LookupPrivilegeValueW(None, name, &mut luid) { let _ = CloseHandle(token); return Err(format!("LookupPrivilegeValueW: {e}")); }
+        if let Err(e) = LookupPrivilegeValueW(None, name, &mut luid) {
+            let _ = CloseHandle(token);
+            return Err(format!("LookupPrivilegeValueW: {e}"));
+        }
         let mut tp = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
             Privileges: [LUID_AND_ATTRIBUTES {
@@ -212,7 +245,9 @@ fn ensure_shutdown_privilege() -> Result<(), String> {
         let res = AdjustTokenPrivileges(token, false, Some(&mut tp), 0, None, None);
         let not_assigned = GetLastError() == ERROR_NOT_ALL_ASSIGNED;
         let _ = CloseHandle(token);
-        if not_assigned { return Err("shutdown privilege unavailable".into()); }
+        if not_assigned {
+            return Err("shutdown privilege unavailable".into());
+        }
         // ERROR_NOT_ALL_ASSIGNED means the privilege was missing — usually
         // because the helper was not started by the installer's user.
         match res {
@@ -263,16 +298,22 @@ fn wmi_has_camera() -> bool {
         #[serde(rename = "PNPClass")]
         pnp_class: Option<String>,
     }
-    let Some(conn) = wmi_connection() else { return false };
+    let Some(conn) = wmi_connection() else {
+        return false;
+    };
     let rows: Vec<PnPEntity> = conn
-        .raw_query("SELECT PNPClass FROM Win32_PnPEntity WHERE PNPClass='Camera' OR PNPClass='Image'")
+        .raw_query(
+            "SELECT PNPClass FROM Win32_PnPEntity WHERE PNPClass='Camera' OR PNPClass='Image'",
+        )
         .unwrap_or_default();
     !rows.is_empty()
 }
 
 fn wmi_connection() -> Option<wmi::WMIConnection> {
     // The wmi crate initializes COM on construction of COMLibrary.
-    wmi::COMLibrary::new().ok().and_then(|c| wmi::WMIConnection::new(c).ok())
+    wmi::COMLibrary::new()
+        .ok()
+        .and_then(|c| wmi::WMIConnection::new(c).ok())
 }
 
 fn netsh_wifi_standard() -> Option<String> {
@@ -293,26 +334,48 @@ fn netsh_wifi_standard() -> Option<String> {
 
 // ---- hotspot (M3, FR-8.3) — WinRT tethering ----
 
-pub fn hotspot(enable: bool, ssid: Option<&str>, passphrase: Option<&str>) -> Result<serde_json::Value, String> {
-    use windows::Networking::{Connectivity::NetworkInformation, NetworkOperators::{NetworkOperatorTetheringManager, TetheringOperationStatus}};
+pub fn hotspot(
+    enable: bool,
+    ssid: Option<&str>,
+    passphrase: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    use windows::Networking::{
+        Connectivity::NetworkInformation,
+        NetworkOperators::{NetworkOperatorTetheringManager, TetheringOperationStatus},
+    };
     use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
-    unsafe { RoInitialize(RO_INIT_MULTITHREADED).map_err(|e| format!("WinRT initialization: {e}"))?; }
+    unsafe {
+        RoInitialize(RO_INIT_MULTITHREADED).map_err(|e| format!("WinRT initialization: {e}"))?;
+    }
     struct Apartment;
-    impl Drop for Apartment { fn drop(&mut self) { unsafe { RoUninitialize(); } } }
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            unsafe {
+                RoUninitialize();
+            }
+        }
+    }
     let _apartment = Apartment;
 
     // WinRT async ops are driven to completion synchronously here; the helper
     // call is already off the service's async runtime. Typical latency < 2 s.
-    let profile = NetworkInformation::GetInternetConnectionProfile().map_err(|e| format!("network profile unavailable: {e}"))?;
+    let profile = NetworkInformation::GetInternetConnectionProfile()
+        .map_err(|e| format!("network profile unavailable: {e}"))?;
     let mgr = NetworkOperatorTetheringManager::CreateFromConnectionProfile(&profile)
         .map_err(|e| format!("tethering unavailable: {e}"))?;
 
     if let (Some(s), Some(p)) = (ssid, passphrase) {
-        if s.is_empty() || s.len() > 32 || !(8..=63).contains(&p.len()) { return Err("invalid hotspot name/password".into()); }
+        if s.is_empty() || s.len() > 32 || !(8..=63).contains(&p.len()) {
+            return Err("invalid hotspot name/password".into());
+        }
         {
-            let cfg = mgr.GetCurrentAccessPointConfiguration().map_err(|e| e.to_string())?;
-            cfg.SetSsid(&windows::core::HSTRING::from(s)).map_err(|e| e.to_string())?;
-            cfg.SetPassphrase(&windows::core::HSTRING::from(p)).map_err(|e| e.to_string())?;
+            let cfg = mgr
+                .GetCurrentAccessPointConfiguration()
+                .map_err(|e| e.to_string())?;
+            cfg.SetSsid(&windows::core::HSTRING::from(s))
+                .map_err(|e| e.to_string())?;
+            cfg.SetPassphrase(&windows::core::HSTRING::from(p))
+                .map_err(|e| e.to_string())?;
             mgr.ConfigureAccessPointAsync(&cfg)
                 .and_then(|op| op.get())
                 .map_err(|e| format!("ConfigureAccessPoint: {e}"))?;
@@ -320,12 +383,16 @@ pub fn hotspot(enable: bool, ssid: Option<&str>, passphrase: Option<&str>) -> Re
     }
 
     let op = if enable {
-        mgr.StartTetheringAsync().map_err(|e| format!("StartTethering: {e}"))?
+        mgr.StartTetheringAsync()
+            .map_err(|e| format!("StartTethering: {e}"))?
     } else {
-        mgr.StopTetheringAsync().map_err(|e| format!("StopTethering: {e}"))?
+        mgr.StopTetheringAsync()
+            .map_err(|e| format!("StopTethering: {e}"))?
     };
     let result = op.get().map_err(|e| format!("tethering op: {e}"))?;
-    if result.Status().map_err(|e| e.to_string())? != TetheringOperationStatus::Success { return Err("Windows rejected hotspot change".into()); }
+    if result.Status().map_err(|e| e.to_string())? != TetheringOperationStatus::Success {
+        return Err("Windows rejected hotspot change".into());
+    }
 
     let state = mgr
         .TetheringOperationalState()
@@ -358,10 +425,12 @@ pub fn bitlocker_status() -> Result<serde_json::Value, String> {
     }))
 }
 
-use windows::Win32::Foundation::{BOOLEAN, CloseHandle, GetLastError, HANDLE, LUID, ERROR_NOT_ALL_ASSIGNED};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, BOOLEAN, ERROR_NOT_ALL_ASSIGNED, HANDLE, LUID,
+};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
-    SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::System::Power::SetSuspendState;
 use windows::Win32::System::Shutdown::{
@@ -373,5 +442,5 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     KEYEVENTF_UNICODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
     MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY, MOUSE_EVENT_FLAGS,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };

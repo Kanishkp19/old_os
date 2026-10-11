@@ -32,6 +32,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hub
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libxdo-dev
       - run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: hub
 
@@ -44,6 +49,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hub
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libxdo-dev
       - run: cargo test --workspace
         working-directory: hub
 
@@ -51,12 +61,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Copy Cargo.lock for root audit-check
+        run: cp hub/Cargo.lock ./Cargo.lock
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      - run: |
-          cargo install cargo-deny --locked
-          cd hub && cargo deny check
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
+        working-directory: hub
 
   android:
     runs-on: ubuntu-latest
@@ -66,7 +78,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      # The runner already provides Android SDK at $ANDROID_HOME.
       # The repo ships no Gradle wrapper; provide a CLI-compatible Gradle.
       # AGP 8.5.2 needs Gradle >= 8.7.
       - uses: gradle/actions/setup-gradle@v4
@@ -82,6 +94,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hub
+      - name: Install Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libxdo-dev
       - run: cargo build --workspace
         working-directory: hub
       # Full sandbox e2e: boots the hub on loopback with a throwaway data dir,

@@ -25,7 +25,9 @@ pub fn sanitize_component(raw: &str) -> Result<String> {
     if s.chars().any(|c| {
         matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()
     }) {
-        return Err(Error::BadRequest(format!("illegal characters in name: {raw:?}")));
+        return Err(Error::BadRequest(format!(
+            "illegal characters in name: {raw:?}"
+        )));
     }
     // Trailing dots and spaces are stripped by Windows → ambiguity; reject.
     while s.ends_with('.') || s.ends_with(' ') {
@@ -93,7 +95,9 @@ pub fn jail_join(root: &Path, rel: &str) -> Result<PathBuf> {
         match existing.symlink_metadata() {
             Ok(_) => break,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                existing = existing.parent().ok_or_else(|| Error::BadRequest("invalid destination".into()))?;
+                existing = existing
+                    .parent()
+                    .ok_or_else(|| Error::BadRequest("invalid destination".into()))?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -131,7 +135,11 @@ pub fn category_dir(category: &str, taken_at_ms: Option<i64>) -> String {
     match category {
         "photo" | "video" => {
             let (y, m) = crate::time::year_month(taken_at_ms.unwrap_or_else(crate::time::now_ms));
-            let base = if category == "photo" { "Photos" } else { "Videos" };
+            let base = if category == "photo" {
+                "Photos"
+            } else {
+                "Videos"
+            };
             format!("{base}/{y:04}/{m:02}")
         }
         "document" => "Documents".into(),
@@ -190,7 +198,10 @@ mod tests {
     #[test]
     fn accepts_unicode_and_emoji() {
         assert_eq!(sanitize_component("शादी 📷.jpg").unwrap(), "शादी 📷.jpg");
-        assert_eq!(sanitize_rel_path("family/दीवाली/pic.jpg").unwrap(), "family/दीवाली/pic.jpg");
+        assert_eq!(
+            sanitize_rel_path("family/दीवाली/pic.jpg").unwrap(),
+            "family/दीवाली/pic.jpg"
+        );
     }
 
     #[test]

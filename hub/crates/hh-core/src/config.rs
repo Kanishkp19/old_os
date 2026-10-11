@@ -102,13 +102,21 @@ impl Config {
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
-        if let Some(parent)=path.parent(){std::fs::create_dir_all(parent)?;}
-        let text=serde_json::to_vec_pretty(self).map_err(|e|Error::Internal(format!("config encode: {e}")))?;
-        let temp=path.with_extension(format!("json-{}.tmp",ulid::Ulid::new()));
-        let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = serde_json::to_vec_pretty(self)
+            .map_err(|e| Error::Internal(format!("config encode: {e}")))?;
+        let temp = path.with_extension(format!("json-{}.tmp", ulid::Ulid::new()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
         use std::io::Write;
-        file.write_all(&text)?;file.sync_all()?;drop(file);
-        atomic_replace(&temp,path)?;
+        file.write_all(&text)?;
+        file.sync_all()?;
+        drop(file);
+        atomic_replace(&temp, path)?;
         Ok(())
     }
 
@@ -130,8 +138,9 @@ impl Config {
             Err(e) => Err(e.into()),
         }
     }
-    pub fn load_or_default(path: &std::path::Path) -> Result<Self> { Self::load_or_create(path,Self::default()) }
-
+    pub fn load_or_default(path: &std::path::Path) -> Result<Self> {
+        Self::load_or_create(path, Self::default())
+    }
 }
 
 fn fill_missing(saved: &mut serde_json::Value, defaults: serde_json::Value) {
@@ -149,16 +158,33 @@ fn fill_missing(saved: &mut serde_json::Value, defaults: serde_json::Value) {
     }
 }
 
-pub fn atomic_replace(source:&std::path::Path,destination:&std::path::Path)->Result<()> {
-    #[cfg(not(windows))] {std::fs::rename(source,destination)?;}
-    #[cfg(windows)] {
-        use std::os::windows::ffi::OsStrExt;
-        #[link(name="kernel32")] extern "system" {fn MoveFileExW(from:*const u16,to:*const u16,flags:u32)->i32;}
-        let a:Vec<u16>=source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let b:Vec<u16>=destination.as_os_str().encode_wide().chain(Some(0)).collect();
-        if unsafe{MoveFileExW(a.as_ptr(),b.as_ptr(),1|8)}==0 {return Err(std::io::Error::last_os_error().into());}
+pub fn atomic_replace(source: &std::path::Path, destination: &std::path::Path) -> Result<()> {
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(source, destination)?;
     }
-    if let Some(parent)=destination.parent(){if let Ok(dir)=std::fs::File::open(parent){let _=dir.sync_all();}}
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+        }
+        let a: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let b: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        if unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), 1 | 8) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    if let Some(parent) = destination.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -228,10 +254,12 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create test directory");
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"hub_name":"Existing Hub"}"#).expect("write old config");
-        let mut defaults = Config::default();
-        defaults.data_dir = dir.join("selected-data");
-        defaults.library_root = dir.join("selected-library");
-        defaults.log_dir = dir.join("selected-logs");
+        let defaults = Config {
+            data_dir: dir.join("selected-data"),
+            library_root: dir.join("selected-library"),
+            log_dir: dir.join("selected-logs"),
+            ..Config::default()
+        };
 
         let result = Config::load_or_create(&path, defaults.clone());
         std::fs::remove_dir_all(&dir).expect("remove test directory");

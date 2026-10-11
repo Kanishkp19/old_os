@@ -85,7 +85,8 @@ impl StorageService {
                      WHERE m.phash IS NOT NULL AND f.deleted_at IS NULL",
                 )
                 .map_err(db_e)?;
-            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            let rows = st
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .map_err(db_e)?
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(db_e)?;
@@ -162,11 +163,16 @@ impl StorageService {
         for g in &mut groups {
             let mut st = c.prepare("SELECT f.id,f.name FROM duplicate_members m JOIN files f ON f.id=m.file_id WHERE m.group_id=?1 AND f.deleted_at IS NULL").map_err(db_e)?;
             g.files = st
-                .query_map(params![g.id], |r| Ok(SimilarFile{id:r.get(0)?,name:r.get(1)?}))
+                .query_map(params![g.id], |r| {
+                    Ok(SimilarFile {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                    })
+                })
                 .map_err(db_e)?
                 .collect::<std::result::Result<Vec<SimilarFile>, _>>()
                 .map_err(db_e)?;
-            g.file_ids=g.files.iter().map(|f|f.id.clone()).collect();
+            g.file_ids = g.files.iter().map(|f| f.id.clone()).collect();
         }
         Ok(groups)
     }

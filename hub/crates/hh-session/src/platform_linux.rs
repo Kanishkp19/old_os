@@ -24,7 +24,9 @@ pub fn click(button: &str, count: u8) -> Result<(), String> {
         "middle" => MouseButton::Middle,
         _ => return Err(format!("unknown mouse button: {button}")),
     };
-    INPUT.click(button, count).map_err(|error| error.to_string())
+    INPUT
+        .click(button, count)
+        .map_err(|error| error.to_string())
 }
 
 pub fn scroll(dy: i32) -> Result<(), String> {
@@ -68,7 +70,11 @@ pub fn system_info() -> Result<serde_json::Value, String> {
     serde_json::to_value(report).map_err(|error| error.to_string())
 }
 
-pub fn hotspot(_enable: bool, _ssid: Option<&str>, _pass: Option<&str>) -> Result<serde_json::Value, String> {
+pub fn hotspot(
+    _enable: bool,
+    _ssid: Option<&str>,
+    _pass: Option<&str>,
+) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"supported": false, "reason": "Linux hotspot control is unavailable"}))
 }
 

@@ -39,28 +39,38 @@ impl StorageService {
 
         let mut created = 0;
         for hash in groups {
-            let candidates: Vec<(String,u64)> = {
+            let candidates: Vec<(String, u64)> = {
                 let c = self.db.lock()?;
                 let mut st = c
                     .prepare("SELECT id,size FROM files WHERE hash=?1 AND deleted_at IS NULL ORDER BY created_at")
                     .map_err(db_e)?;
                 let rows = st
-                    .query_map(params![hash], |r| Ok((r.get(0)?,r.get::<_,i64>(1)? as u64)))
+                    .query_map(params![hash], |r| {
+                        Ok((r.get(0)?, r.get::<_, i64>(1)? as u64))
+                    })
                     .map_err(db_e)?
-                    .collect::<std::result::Result<Vec<(String,u64)>, _>>()
+                    .collect::<std::result::Result<Vec<(String, u64)>, _>>()
                     .map_err(db_e)?;
                 rows
             };
             let mut file_ids = Vec::new();
             let mut size = 0;
             for (id, expected_size) in candidates {
-                let path = {let c=self.db.lock()?;crate::library::disk_path(&c,&id,false)?};
+                let path = {
+                    let c = self.db.lock()?;
+                    crate::library::disk_path(&c, &id, false)?
+                };
                 let file = std::fs::File::open(path)?;
-                if file.metadata()?.len() == expected_size && hh_transfer::hash_file(&file)?.eq_ignore_ascii_case(&hash) {
-                    size=expected_size;file_ids.push(id);
+                if file.metadata()?.len() == expected_size
+                    && hh_transfer::hash_file(&file)?.eq_ignore_ascii_case(&hash)
+                {
+                    size = expected_size;
+                    file_ids.push(id);
                 }
             }
-            if file_ids.len() < 2 { continue; }
+            if file_ids.len() < 2 {
+                continue;
+            }
             let reclaimable = size.saturating_mul(file_ids.len() as u64 - 1);
             let mut c = self.db.lock()?;
             let tx = c.transaction().map_err(db_e)?;
@@ -73,13 +83,30 @@ impl StorageService {
                 )
                 .ok();
             if let Some(existing) = &exists {
-                let mut st=tx.prepare("SELECT file_id FROM duplicate_members WHERE group_id=?1 ORDER BY file_id").map_err(db_e)?;
-                let mut old=st.query_map(params![existing],|r|r.get::<_,String>(0)).map_err(db_e)?
-                    .collect::<std::result::Result<Vec<_>,_>>().map_err(db_e)?;
+                let mut st = tx
+                    .prepare(
+                        "SELECT file_id FROM duplicate_members WHERE group_id=?1 ORDER BY file_id",
+                    )
+                    .map_err(db_e)?;
+                let mut old = st
+                    .query_map(params![existing], |r| r.get::<_, String>(0))
+                    .map_err(db_e)?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(db_e)?;
                 drop(st);
-                old.sort();let mut fresh=file_ids.clone();fresh.sort();
-                if old != fresh {tx.execute("UPDATE duplicate_groups SET status='dismissed' WHERE id=?1",params![existing]).map_err(db_e)?;}
-                else {tx.commit().map_err(db_e)?;continue;}
+                old.sort();
+                let mut fresh = file_ids.clone();
+                fresh.sort();
+                if old != fresh {
+                    tx.execute(
+                        "UPDATE duplicate_groups SET status='dismissed' WHERE id=?1",
+                        params![existing],
+                    )
+                    .map_err(db_e)?;
+                } else {
+                    tx.commit().map_err(db_e)?;
+                    continue;
+                }
             }
             {
                 let gid = ulid::Ulid::new().to_string();
@@ -136,7 +163,7 @@ impl StorageService {
 
     /// Keep `keep_file_id`, move all other members to trash (TRD §7.3).
     pub fn resolve_duplicate_group(&self, group_id: &str, keep_file_id: &str) -> Result<()> {
-        let (hash, members): (String, Vec<(String,u64)>) = {
+        let (hash, members): (String, Vec<(String, u64)>) = {
             let c = self.db.lock()?;
             let hash:String=c.query_row("SELECT hash FROM duplicate_groups WHERE id=?1 AND kind='exact' AND status='open'",params![group_id],|r|r.get(0))
                 .map_err(|_|hh_core::Error::NotFound(format!("open duplicate group {group_id}")))?;
@@ -144,36 +171,71 @@ impl StorageService {
                 .prepare("SELECT f.id,f.size FROM duplicate_members m JOIN files f ON f.id=m.file_id WHERE m.group_id=?1 AND f.deleted_at IS NULL AND f.hash=?2")
                 .map_err(db_e)?;
             let rows = st
-                .query_map(params![group_id,hash], |r| Ok((r.get(0)?,r.get::<_,i64>(1)? as u64)))
+                .query_map(params![group_id, hash], |r| {
+                    Ok((r.get(0)?, r.get::<_, i64>(1)? as u64))
+                })
                 .map_err(db_e)?
-                .collect::<std::result::Result<Vec<(String,u64)>, _>>()
+                .collect::<std::result::Result<Vec<(String, u64)>, _>>()
                 .map_err(db_e)?;
-            (hash,rows)
+            (hash, rows)
         };
-        if members.len()<2 || !members.iter().any(|(id,_)|id==keep_file_id) { return Err(hh_core::Error::BadRequest("keeper is not an active group member".into())); }
+        if members.len() < 2 || !members.iter().any(|(id, _)| id == keep_file_id) {
+            return Err(hh_core::Error::BadRequest(
+                "keeper is not an active group member".into(),
+            ));
+        }
         // Preflight every member before any destructive action.
-        for (fid,size) in &members {
-            let path={let c=self.db.lock()?;crate::library::disk_path(&c,fid,false)?};
-            let file=std::fs::File::open(path)?;
-            if file.metadata()?.len()!=*size || !hh_transfer::hash_file(&file)?.eq_ignore_ascii_case(&hash) {
-                return Err(hh_core::Error::Conflict("duplicate group changed; scan again".into()));
+        for (fid, size) in &members {
+            let path = {
+                let c = self.db.lock()?;
+                crate::library::disk_path(&c, fid, false)?
+            };
+            let file = std::fs::File::open(path)?;
+            if file.metadata()?.len() != *size
+                || !hh_transfer::hash_file(&file)?.eq_ignore_ascii_case(&hash)
+            {
+                return Err(hh_core::Error::Conflict(
+                    "duplicate group changed; scan again".into(),
+                ));
             }
         }
-        let mut c=self.db.lock()?;let tx=c.transaction().map_err(db_e)?;
-        for (fid,_) in &members {
-            if fid==keep_file_id {continue;}
-            crate::library::assert_mutable(&tx,fid)?;
+        let mut c = self.db.lock()?;
+        let tx = c.transaction().map_err(db_e)?;
+        for (fid, _) in &members {
+            if fid == keep_file_id {
+                continue;
+            }
+            crate::library::assert_mutable(&tx, fid)?;
         }
-        let when=now_ms();
-        for (fid,_) in &members {
-            if fid==keep_file_id {continue;}
-            if tx.execute("UPDATE files SET deleted_at=?2 WHERE id=?1 AND deleted_at IS NULL AND hash=?3",params![fid,when,hash]).map_err(db_e)?!=1 {
-                return Err(hh_core::Error::Conflict("duplicate group changed; scan again".into()));
+        let when = now_ms();
+        for (fid, _) in &members {
+            if fid == keep_file_id {
+                continue;
+            }
+            if tx
+                .execute(
+                    "UPDATE files SET deleted_at=?2 WHERE id=?1 AND deleted_at IS NULL AND hash=?3",
+                    params![fid, when, hash],
+                )
+                .map_err(db_e)?
+                != 1
+            {
+                return Err(hh_core::Error::Conflict(
+                    "duplicate group changed; scan again".into(),
+                ));
             }
             tx.execute("INSERT OR REPLACE INTO trash(file_id,trashed_at,trashed_by_device_id,purge_after) VALUES(?1,?2,NULL,?3)",params![fid,when,when+hh_core::TRASH_RETENTION_MS]).map_err(db_e)?;
-            tx.execute("INSERT INTO audit_log(ts,action,detail) VALUES(?1,'file_delete',?2)",params![when,fid]).map_err(db_e)?;
+            tx.execute(
+                "INSERT INTO audit_log(ts,action,detail) VALUES(?1,'file_delete',?2)",
+                params![when, fid],
+            )
+            .map_err(db_e)?;
         }
-        tx.execute("UPDATE duplicate_groups SET status='resolved' WHERE id=?1",params![group_id]).map_err(db_e)?;
+        tx.execute(
+            "UPDATE duplicate_groups SET status='resolved' WHERE id=?1",
+            params![group_id],
+        )
+        .map_err(db_e)?;
         tx.commit().map_err(db_e)?;
         Ok(())
     }

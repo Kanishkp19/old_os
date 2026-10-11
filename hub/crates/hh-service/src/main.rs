@@ -13,8 +13,8 @@
 //! - thumbnail pipeline, integrity scrub, SMART poll (6 h), transfer GC,
 //!   trash retention GC, free-space alerts.
 
-mod logging;
 mod local_security;
+mod logging;
 #[cfg(target_os = "linux")]
 mod systemd;
 use std::sync::Arc;
@@ -36,12 +36,12 @@ struct Args {
     #[arg(long)]
     console: bool,
     #[arg(long)]
-    backup_database:Option<std::path::PathBuf>,
+    backup_database: Option<std::path::PathBuf>,
     /// Export allowlisted service diagnostics without logs or identifiers.
     #[arg(long, conflicts_with = "backup_database")]
-    export_diagnostics:Option<std::path::PathBuf>,
+    export_diagnostics: Option<std::path::PathBuf>,
     #[arg(long)]
-    wake_only:bool,
+    wake_only: bool,
     /// Override data dir (default %ProgramData%\HomeHub).
     #[arg(long)]
     data_dir: Option<String>,
@@ -56,15 +56,28 @@ fn main() -> Result<()> {
     // pinned explicitly before any TLS config is built.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args = Args::parse();
-    if args.wake_only{return Ok(());}
-    if let Some(destination)=&args.export_diagnostics {return export_diagnostics(destination);}
+    if args.wake_only {
+        return Ok(());
+    }
+    if let Some(destination) = &args.export_diagnostics {
+        return export_diagnostics(destination);
+    }
     let mut defaults = Config::default();
-    if let Some(d)=&args.data_dir { defaults.data_dir=d.into();defaults.log_dir=defaults.data_dir.join("logs"); }
-    if let Some(destination)=&args.backup_database {return Db::snapshot(&defaults.db_path(),destination);}
-    let config_path=defaults.data_dir.join("config.json");
-    let mut cfg=Config::load_or_create(&config_path,defaults)?;
-    if let Some(d)=args.data_dir {cfg.data_dir=d.into();}
-    if let Some(l)=args.library_root {cfg.library_root=l.into();}
+    if let Some(d) = &args.data_dir {
+        defaults.data_dir = d.into();
+        defaults.log_dir = defaults.data_dir.join("logs");
+    }
+    if let Some(destination) = &args.backup_database {
+        return Db::snapshot(&defaults.db_path(), destination);
+    }
+    let config_path = defaults.data_dir.join("config.json");
+    let mut cfg = Config::load_or_create(&config_path, defaults)?;
+    if let Some(d) = args.data_dir {
+        cfg.data_dir = d.into();
+    }
+    if let Some(l) = args.library_root {
+        cfg.library_root = l.into();
+    }
     cfg.ensure_dirs()?;
     init_logging(&cfg)?;
 
@@ -84,33 +97,38 @@ fn main() -> Result<()> {
 }
 
 fn init_logging(cfg: &Config) -> Result<()> {
-    let writer=logging::BoundedLog::new(&cfg.log_dir)?;
+    let writer = logging::BoundedLog::new(&cfg.log_dir)?;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,hh_=debug".into()),
         )
-        .with_writer(move||writer.clone())
+        .with_writer(move || writer.clone())
         .with_ansi(false)
-        .try_init().map_err(|e|hh_core::Error::Internal(e.to_string()))?;
+        .try_init()
+        .map_err(|e| hh_core::Error::Internal(e.to_string()))?;
     // NOTE: never log tokens, keys, or file contents (AGENTS.md §2.7).
     Ok(())
 }
 
-fn export_diagnostics(destination:&std::path::Path)->Result<()> {
+fn export_diagnostics(destination: &std::path::Path) -> Result<()> {
     // An explicit allowlist keeps user-controlled names, paths, IDs, tokens,
     // file contents and raw logs out of exported diagnostics.
-    let payload=serde_json::json!({
+    let payload = serde_json::json!({
         "service_version":hh_core::HUB_VERSION,
         "platform":std::env::consts::OS,
         "architecture":std::env::consts::ARCH,
         "log_limits":{"files":logging::MAX_FILES,"bytes_per_file":logging::MAX_FILE_BYTES},
     });
-    let bytes=serde_json::to_vec_pretty(&payload).map_err(|e|hh_core::Error::Internal(e.to_string()))?;
+    let bytes =
+        serde_json::to_vec_pretty(&payload).map_err(|e| hh_core::Error::Internal(e.to_string()))?;
     use std::io::Write;
-    let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
-    if let Err(error)=file.write_all(&bytes).and_then(|_|file.sync_all()) {
-        let _=std::fs::remove_file(destination);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        let _ = std::fs::remove_file(destination);
         return Err(error.into());
     }
     Ok(())
@@ -129,11 +147,15 @@ async fn run_console(cfg: Config) -> Result<()> {
 
 /// Shared runtime: everything from DB open to the three listeners, with the
 /// stop signal injected so console and SCM service modes behave identically.
-async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>, ready: Option<tokio::sync::oneshot::Sender<()>>) -> Result<()> {
+async fn run_hub(
+    cfg: Config,
+    mut stop: tokio::sync::oneshot::Receiver<()>,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<()> {
     tracing::info!(version = hh_core::HUB_VERSION, "home hub starting");
 
     let db = Db::open(&cfg.db_path())?;
-    let cfg=hh_storage::StorageService::new(db.clone(),cfg).recover_library_moves()?;
+    let cfg = hh_storage::StorageService::new(db.clone(), cfg).recover_library_moves()?;
     cfg.ensure_dirs()?;
     let (hub_id, hub_name) = db.hub_identity()?;
     if hub_name == "Home Hub" {
@@ -149,66 +171,93 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>, read
     // builds auto-detect a `hh-session --mode socket` dev helper and keep
     // honest no-ops when neither is present.
     let helper = hh_remote::helper_client::HelperClient::detect().map(Arc::new);
-    let (input, power): (Arc<dyn hh_core::platform::InputControl>, Arc<dyn hh_core::platform::PowerControl>) =
-        match &helper {
-            Some(h) => {
-                match h.ping() {
-                    Ok(v) => tracing::info!(
-                        transport = h.transport_label(),
-                        helper = %v.get("helper").and_then(|x| x.as_str()).unwrap_or("?"),
-                        "session helper detected: input/power active"
-                    ),
-                    Err(e) => tracing::warn!(error = %e, "helper transport present but not answering; falling back to no-ops"),
+    let (input, power): (
+        Arc<dyn hh_core::platform::InputControl>,
+        Arc<dyn hh_core::platform::PowerControl>,
+    ) = match &helper {
+        Some(h) => {
+            match h.ping() {
+                Ok(v) => tracing::info!(
+                    transport = h.transport_label(),
+                    helper = %v.get("helper").and_then(|x| x.as_str()).unwrap_or("?"),
+                    "session helper detected: input/power active"
+                ),
+                Err(e) => {
+                    tracing::warn!(error = %e, "helper transport present but not answering; falling back to no-ops")
                 }
-                (h.clone(), h.clone())
             }
-            None => {
-                tracing::info!("no session helper detected; input/power will answer as unsupported");
-                (Arc::new(noop::Unsupported), Arc::new(noop::Unsupported))
-            }
-        };
+            (h.clone(), h.clone())
+        }
+        None => {
+            tracing::info!("no session helper detected; input/power will answer as unsupported");
+            (Arc::new(noop::Unsupported), Arc::new(noop::Unsupported))
+        }
+    };
     let remote = RemoteService::new(db.clone(), input, power, cfg.features.remote);
 
-    let state = AppState::new(db.clone(), cfg.clone(), ca.clone(), pairing, revocation, remote, helper);
+    let state = AppState::new(
+        db.clone(),
+        cfg.clone(),
+        ca.clone(),
+        pairing,
+        revocation,
+        remote,
+        helper,
+    );
 
     // Startup reconciliation: orphan .part cleanup (AGENTS.md §6).
     state.transfers.reconcile_on_startup()?;
     state.storage.recover_storage_jobs()?;
 
     // LAN addresses for QR payload hints.
-    let address_state=state.clone();
+    let address_state = state.clone();
     tokio::spawn(async move {
-        let mut refresh=tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut refresh = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             refresh.tick().await;
-            if let Ok(net)=address_state.hw.network_info() {
-                let addrs=net.interfaces.iter().flat_map(|i|i.ips.iter())
-                    .filter_map(|ip|ip.parse::<std::net::IpAddr>().ok())
-                    .filter(|ip|hh_net::is_lan_ip(*ip))
-                    .map(|ip|format!("{ip}:{}",hh_core::PAIRING_PORT)).collect();
-                if let Ok(mut w)=address_state.lan_addrs.write(){*w=addrs;}
+            if let Ok(net) = address_state.hw.network_info() {
+                let addrs = net
+                    .interfaces
+                    .iter()
+                    .flat_map(|i| i.ips.iter())
+                    .filter_map(|ip| ip.parse::<std::net::IpAddr>().ok())
+                    .filter(|ip| hh_net::is_lan_ip(*ip))
+                    .map(|ip| format!("{ip}:{}", hh_core::PAIRING_PORT))
+                    .collect();
+                if let Ok(mut w) = address_state.lan_addrs.write() {
+                    *w = addrs;
+                }
             }
-            if let Err(e)=address_state.hw.refresh_wake_interfaces(){tracing::warn!(error=%e,"network interface inventory failed");}
+            if let Err(e) = address_state.hw.refresh_wake_interfaces() {
+                tracing::warn!(error=%e,"network interface inventory failed");
+            }
         }
     });
 
     // Discovery: mDNS + broadcast fallback (NW-01/02).
     let fp = ca.fingerprint()?;
     let (_hub_id2, hub_name2) = db.hub_identity()?;
-    let mdns_id=hub_id.clone();let mdns_name=hub_name2.clone();let mdns_fp=fp.clone();
+    let mdns_id = hub_id.clone();
+    let mdns_name = hub_name2.clone();
+    let mdns_fp = fp.clone();
     tokio::spawn(async move {
-        let mut advertisement=None;
+        let mut advertisement = None;
         loop {
             if advertisement.is_none() {
-                match hh_net::mdns::MdnsAdvertisement::start(&mdns_id,&mdns_name,&mdns_fp,false) {
-                    Ok(guard)=>advertisement=Some(guard),
-                    Err(e)=>tracing::warn!(error=%e,"mDNS unavailable; retrying"),
+                match hh_net::mdns::MdnsAdvertisement::start(&mdns_id, &mdns_name, &mdns_fp, false)
+                {
+                    Ok(guard) => advertisement = Some(guard),
+                    Err(e) => tracing::warn!(error=%e,"mDNS unavailable; retrying"),
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
-    tokio::spawn(hh_net::mdns::broadcast_responder(hub_id.clone(), hub_name2.clone(), fp));
+    tokio::spawn(hh_net::mdns::broadcast_responder(
+        hub_id.clone(),
+        hub_name2.clone(),
+        fp,
+    ));
 
     // TLS configs.
     let mtls_cfg = hh_net::tls::server_config_mtls(&ca, state.revocation.clone())?;
@@ -219,26 +268,37 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>, read
 
     // Servers.
     let api = hh_net::serve::serve_api(state.clone(), tokio_rustls::TlsAcceptor::from(mtls_cfg));
-    let pairing_srv = hh_net::serve::serve_pairing(state.clone(), tokio_rustls::TlsAcceptor::from(pair_cfg));
+    let pairing_srv =
+        hh_net::serve::serve_pairing(state.clone(), tokio_rustls::TlsAcceptor::from(pair_cfg));
     let dash_token = hh_net::dashboard::new_token();
     // Persist for same-user local clients (tray, scripts). Loopback-only
     // listener + user-profile ACL keep this a local secret.
-    let token_path=cfg.data_dir.join("dashboard_token");
+    let token_path = cfg.data_dir.join("dashboard_token");
     {
         use std::io::Write;
         #[cfg(unix)]
-        let write_path = cfg.data_dir.join(format!(".dashboard_token-{}", std::process::id()));
+        let write_path = cfg
+            .data_dir
+            .join(format!(".dashboard_token-{}", std::process::id()));
         #[cfg(windows)]
         let write_path = token_path.clone();
-        let mut options=std::fs::OpenOptions::new();options.write(true);
-        #[cfg(unix)] options.create_new(true);
-        #[cfg(windows)] options.create(true).truncate(true);
-        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
-        let mut file=options.open(&write_path)?;
-        local_security::protect_admin_token(&cfg.data_dir,&write_path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true);
+        #[cfg(unix)]
+        options.create_new(true);
+        #[cfg(windows)]
+        options.create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&write_path)?;
+        local_security::protect_admin_token(&cfg.data_dir, &write_path)?;
         file.write_all(dash_token.as_bytes())?;
         file.sync_all()?;
-        #[cfg(unix)] {
+        #[cfg(unix)]
+        {
             std::fs::rename(&write_path, &token_path)?;
             std::fs::File::open(&cfg.data_dir)?.sync_all()?;
         }
@@ -246,7 +306,9 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>, read
     let dashboard = hh_net::serve::serve_dashboard(state.clone(), dash_token);
 
     tracing::info!("hub ready: api :47800, dashboard http://127.0.0.1:47801, pairing :47802");
-    if let Some(ready) = ready { let _ = ready.send(()); }
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     tokio::select! {
         r = api => { tracing::error!("api server exited: {r:?}"); }
         r = pairing_srv => { tracing::error!("pairing server exited: {r:?}"); }
@@ -260,26 +322,96 @@ async fn run_hub(cfg: Config, mut stop: tokio::sync::oneshot::Receiver<()>, read
 }
 
 fn spawn_workers(state: AppState) {
-    {let s=state.clone();tokio::spawn(async move {loop {tokio::time::sleep(std::time::Duration::from_secs(1)).await;let service=s.stream.clone();let db=s.db.clone();let expired=tokio::task::spawn_blocking(move||{
-        for session in service.active_sessions(){let allowed=db.device_by_id(&session.device_id).ok().flatten().is_some_and(|d|d.status=="active"&&d.has_scope("remote"))&&db.get_setting("sharing.paused").ok().flatten().as_deref()!=Some("true");if !allowed{let _=service.stop_session(&session.id);}}
-        let mut closed=service.reconcile_closed_sessions()?;closed.extend(service.expire_idle_sessions(45_000)?);Ok::<_,hh_core::Error>(closed)
-    }).await;if let Ok(Ok(ids))=expired {if let Ok(mut owners)=s.screen_owners.lock(){for id in ids {owners.remove(&id);}}}}});}
+    {
+        let s = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let service = s.stream.clone();
+                let db = s.db.clone();
+                let expired = tokio::task::spawn_blocking(move || {
+                    for session in service.active_sessions() {
+                        let allowed = db
+                            .device_by_id(&session.device_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|d| d.status == "active" && d.has_scope("remote"))
+                            && db.get_setting("sharing.paused").ok().flatten().as_deref()
+                                != Some("true");
+                        if !allowed {
+                            let _ = service.stop_session(&session.id);
+                        }
+                    }
+                    let mut closed = service.reconcile_closed_sessions()?;
+                    closed.extend(service.expire_idle_sessions(45_000)?);
+                    Ok::<_, hh_core::Error>(closed)
+                })
+                .await;
+                if let Ok(Ok(ids)) = expired {
+                    if let Ok(mut owners) = s.screen_owners.lock() {
+                        for id in ids {
+                            owners.remove(&id);
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     {
-        let s=state.clone();
+        let s = state.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                let interval=s.db.get_setting("second_copy.interval_minutes").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(1440).clamp(1,43200)*60*1000;
-                let target=s.db.get_setting("second_copy.root").ok().flatten().filter(|v|!v.is_empty()).map(std::path::PathBuf::from).or_else(||s.cfg.second_copy_root.clone());
-                let due=s.storage.last_second_copy_age_ms().ok().flatten().map(|age|age>=interval).unwrap_or(true);
-                let now=hh_core::time::now_ms();
-                let last_attempt=s.db.get_setting("second_copy.last_attempt").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(0);
-                if target.as_ref().is_some_and(|path|path.is_dir()) && due && now.saturating_sub(last_attempt)>=15*60*1000 && s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false) {
-                    let _=s.db.set_setting("second_copy.last_attempt",&now.to_string());
-                    let storage=s.storage.clone();
-                    match tokio::task::spawn_blocking(move||storage.start_maintenance("second_copy")).await {
-                        Ok(Ok(_))=>{},Ok(Err(error))=>tracing::warn!(%error,"scheduled second copy failed"),Err(error)=>tracing::warn!(%error,"second copy worker failed"),
+                let interval =
+                    s.db.get_setting("second_copy.interval_minutes")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(1440)
+                        .clamp(1, 43200)
+                        * 60
+                        * 1000;
+                let target =
+                    s.db.get_setting("second_copy.root")
+                        .ok()
+                        .flatten()
+                        .filter(|v| !v.is_empty())
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| s.cfg.second_copy_root.clone());
+                let due = s
+                    .storage
+                    .last_second_copy_age_ms()
+                    .ok()
+                    .flatten()
+                    .map(|age| age >= interval)
+                    .unwrap_or(true);
+                let now = hh_core::time::now_ms();
+                let last_attempt =
+                    s.db.get_setting("second_copy.last_attempt")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(0);
+                if target.as_ref().is_some_and(|path| path.is_dir())
+                    && due
+                    && now.saturating_sub(last_attempt) >= 15 * 60 * 1000
+                    && s.db
+                        .list_transfers(None, Some("open"))
+                        .map(|v| v.is_empty())
+                        .unwrap_or(false)
+                {
+                    let _ =
+                        s.db.set_setting("second_copy.last_attempt", &now.to_string());
+                    let storage = s.storage.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        storage.start_maintenance("second_copy")
+                    })
+                    .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => tracing::warn!(%error,"scheduled second copy failed"),
+                        Err(error) => tracing::warn!(%error,"second copy worker failed"),
                     }
                 }
             }
@@ -303,10 +435,33 @@ fn spawn_workers(state: AppState) {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                let hours=s.db.get_setting("scrub.interval_hours").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(24).clamp(1,720);
-                let now=hh_core::time::now_ms();let last=s.db.get_setting("scrub.last_scheduled").ok().flatten().and_then(|v|v.parse::<i64>().ok()).unwrap_or(0);
-                if now-last>=hours*3600*1000&&s.db.list_transfers(None,Some("open")).map(|v|v.is_empty()).unwrap_or(false){
-                    let storage=s.storage.clone();if matches!(tokio::task::spawn_blocking(move||storage.start_scheduled_scrub()).await,Ok(Ok(_))){let _=s.db.set_setting("scrub.last_scheduled",&now.to_string());}
+                let hours =
+                    s.db.get_setting("scrub.interval_hours")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(24)
+                        .clamp(1, 720);
+                let now = hh_core::time::now_ms();
+                let last =
+                    s.db.get_setting("scrub.last_scheduled")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(0);
+                if now - last >= hours * 3600 * 1000
+                    && s.db
+                        .list_transfers(None, Some("open"))
+                        .map(|v| v.is_empty())
+                        .unwrap_or(false)
+                {
+                    let storage = s.storage.clone();
+                    if matches!(
+                        tokio::task::spawn_blocking(move || storage.start_scheduled_scrub()).await,
+                        Ok(Ok(_))
+                    ) {
+                        let _ = s.db.set_setting("scrub.last_scheduled", &now.to_string());
+                    }
                 }
             }
         });
@@ -332,10 +487,18 @@ fn spawn_workers(state: AppState) {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                let transfers=s.transfers.clone();
-                if let Err(error)=tokio::task::spawn_blocking(move||transfers.reconcile_on_startup()).await {tracing::warn!(%error,"transfer reconciliation worker failed");}
-                let storage=s.storage.clone();
-                if let Err(error)=tokio::task::spawn_blocking(move||storage.purge_expired_trash()).await {tracing::warn!(%error,"trash retention worker failed");}
+                let transfers = s.transfers.clone();
+                if let Err(error) =
+                    tokio::task::spawn_blocking(move || transfers.reconcile_on_startup()).await
+                {
+                    tracing::warn!(%error,"transfer reconciliation worker failed");
+                }
+                let storage = s.storage.clone();
+                if let Err(error) =
+                    tokio::task::spawn_blocking(move || storage.purge_expired_trash()).await
+                {
+                    tracing::warn!(%error,"trash retention worker failed");
+                }
             }
         });
     }
@@ -379,36 +542,46 @@ mod windows_service {
         // The SCM stop/shutdown controls resolve the shared runtime's stop
         // signal, exactly like Ctrl+C in console mode.
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let stop_tx=std::sync::Mutex::new(Some(stop_tx));
+        let stop_tx = std::sync::Mutex::new(Some(stop_tx));
         let handler = move |control: ServiceControl| -> ServiceControlHandlerResult {
             match control {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
-                    if let Ok(mut tx)=stop_tx.lock(){if let Some(tx)=tx.take(){let _=tx.send(());}}
+                    if let Ok(mut tx) = stop_tx.lock() {
+                        if let Some(tx) = tx.take() {
+                            let _ = tx.send(());
+                        }
+                    }
                     ServiceControlHandlerResult::NoError
                 }
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         };
-        let status_handle = service_control_handler::register("HomeHub", handler)
-            .map_err(|e| e.to_string())?;
+        let status_handle =
+            service_control_handler::register("HomeHub", handler).map_err(|e| e.to_string())?;
 
-        let report = |state: ServiceState, controls: ServiceControlAccept, exit: u32, checkpoint: u32| {
-            status_handle
-                .set_service_status(ServiceStatus {
-                    service_type: ServiceType::OWN_PROCESS,
-                    current_state: state,
-                    controls_accepted: controls,
-                    exit_code: ServiceExitCode::Win32(exit),
-                    checkpoint,
-                    wait_hint: Duration::from_secs(30),
-                    process_id: None,
-                })
-                .map_err(|e| e.to_string())
-        };
+        let report =
+            |state: ServiceState, controls: ServiceControlAccept, exit: u32, checkpoint: u32| {
+                status_handle
+                    .set_service_status(ServiceStatus {
+                        service_type: ServiceType::OWN_PROCESS,
+                        current_state: state,
+                        controls_accepted: controls,
+                        exit_code: ServiceExitCode::Win32(exit),
+                        checkpoint,
+                        wait_hint: Duration::from_secs(30),
+                        process_id: None,
+                    })
+                    .map_err(|e| e.to_string())
+            };
 
         // START_PENDING → RUNNING → (run_hub) → STOPPED.
-        report(ServiceState::StartPending, ServiceControlAccept::empty(), 0, 0)?;
+        report(
+            ServiceState::StartPending,
+            ServiceControlAccept::empty(),
+            0,
+            0,
+        )?;
         // Logging and data dirs were initialized in main() before dispatch.
         let cfg = SERVICE_CFG.get().cloned().unwrap_or_default();
 
@@ -416,7 +589,12 @@ mod windows_service {
             .enable_all()
             .build()
             .map_err(|e| format!("tokio runtime: {e}"))?;
-        report(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN, 0, 0)?;
+        report(
+            ServiceState::Running,
+            ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            0,
+            0,
+        )?;
         let result = rt.block_on(crate::run_hub(cfg, stop_rx, None));
         report(ServiceState::Stopped, ServiceControlAccept::empty(), 0, 0)?;
         result.map_err(|e| e.to_string())

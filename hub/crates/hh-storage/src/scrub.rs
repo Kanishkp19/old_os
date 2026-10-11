@@ -11,8 +11,14 @@ use crate::{db_e, StorageService};
 impl StorageService {
     /// Scrub up to `max_files` least-recently-verified files.
     /// Returns (checked, mismatched).
-    pub fn scrub_once(&self,max_files:u32)->Result<(u32,u32)>{self.scrub_with_job(max_files,None)}
-    pub(crate) fn scrub_with_job(&self,max_files:u32,job_id:Option<&str>)->Result<(u32,u32)> {
+    pub fn scrub_once(&self, max_files: u32) -> Result<(u32, u32)> {
+        self.scrub_with_job(max_files, None)
+    }
+    pub(crate) fn scrub_with_job(
+        &self,
+        max_files: u32,
+        job_id: Option<&str>,
+    ) -> Result<(u32, u32)> {
         let candidates: Vec<(String, String, String)> = {
             let c = self.db.lock()?;
             let mut st = c
@@ -25,7 +31,11 @@ impl StorageService {
                 .map_err(db_e)?;
             let rows = st
                 .query_map(params![max_files as i64], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
                 })
                 .map_err(db_e)?
                 .collect::<std::result::Result<Vec<_>, _>>()
@@ -35,27 +45,39 @@ impl StorageService {
 
         let mut checked = 0;
         let mut mismatched = 0;
-        let total=candidates.len();
-        for (index,(id, rel, expected)) in candidates.into_iter().enumerate() {
-            if let Some(job)=job_id {
-                if self.cancelled(job)?{return Err(hh_core::Error::Conflict("cancelled".into()));}
-                self.job_progress(job,"running",total,index,None)?;
-                while !self.db.list_transfers(None,Some("open"))?.is_empty() {
-                    if self.cancelled(job)?{return Err(hh_core::Error::Conflict("cancelled".into()));}
+        let total = candidates.len();
+        for (index, (id, rel, expected)) in candidates.into_iter().enumerate() {
+            if let Some(job) = job_id {
+                if self.cancelled(job)? {
+                    return Err(hh_core::Error::Conflict("cancelled".into()));
+                }
+                self.job_progress(job, "running", total, index, None)?;
+                while !self.db.list_transfers(None, Some("open"))?.is_empty() {
+                    if self.cancelled(job)? {
+                        return Err(hh_core::Error::Conflict("cancelled".into()));
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(2));
                 }
             }
-            let c=self.db.lock()?;
-            let path=crate::library::disk_path(&c,&id,false)?;
+            let c = self.db.lock()?;
+            let path = crate::library::disk_path(&c, &id, false)?;
             drop(c);
             let outcome = match std::fs::File::open(&path) {
                 Ok(f) => hh_transfer::hash_file(&f),
                 Err(e) => {
-                    let kind=if e.kind()==std::io::ErrorKind::NotFound {"missing"} else {"read_error"};
+                    let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                        "missing"
+                    } else {
+                        "read_error"
+                    };
                     self.record_integrity_event(Some(&id), kind, Some(&rel))?;
                     self.db.set_condition_alert(Some("critical"),"INTEGRITY_FAILURE",
                         "A Home file is missing or unreadable. Check Storage for integrity events and repair from a verified copy.")?;
-                    if kind=="missing" {if let Err(error)=self.repair_from_copy(&id,&path,&expected){tracing::warn!(file_id=%id,%error,"missing-file repair did not succeed");}}
+                    if kind == "missing" {
+                        if let Err(error) = self.repair_from_copy(&id, &path, &expected) {
+                            tracing::warn!(file_id=%id,%error,"missing-file repair did not succeed");
+                        }
+                    }
                     mismatched += 1;
                     continue;
                 }
@@ -82,7 +104,9 @@ impl StorageService {
                     )?;
                     self.db.set_condition_alert(Some("critical"),"INTEGRITY_FAILURE",
                         "A Home file failed its integrity check. Check Storage and repair from a verified copy.")?;
-                    if let Err(error)=self.repair_from_copy(&id,&path,&expected){tracing::warn!(file_id=%id,%error,"integrity repair did not succeed");}
+                    if let Err(error) = self.repair_from_copy(&id, &path, &expected) {
+                        tracing::warn!(file_id=%id,%error,"integrity repair did not succeed");
+                    }
                 }
                 Err(e) => {
                     mismatched += 1;
@@ -91,47 +115,79 @@ impl StorageService {
                         "A Home file could not be read during an integrity check. Check Storage and the drive.")?;
                 }
             }
-            if job_id.is_some(){std::thread::sleep(std::time::Duration::from_millis(50));}
+            if job_id.is_some() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
         Ok((checked, mismatched))
     }
 
-    fn repair_from_copy(&self,id:&str,path:&std::path::Path,expected:&str)->Result<bool> {
-        let copies:Vec<(String,String)>={
-            let c=self.db.lock()?;
+    fn repair_from_copy(&self, id: &str, path: &std::path::Path, expected: &str) -> Result<bool> {
+        let copies: Vec<(String, String)> = {
+            let c = self.db.lock()?;
             // An Android cleanup lease or pending relay keeps its source pinned.
-            if crate::library::assert_mutable(&c,id).is_err(){return Ok(false);}
+            if crate::library::assert_mutable(&c, id).is_err() {
+                return Ok(false);
+            }
             let mut st=c.prepare("SELECT r.path,s.rel_path FROM second_copy_files s JOIN storage_roots r ON r.id=s.target_root_id WHERE s.file_id=?1 AND s.hash=?2 AND r.is_active=1").map_err(db_e)?;
-            let rows=st.query_map(params![id,expected],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_e)?;
-            rows.collect::<std::result::Result<_,_>>().map_err(db_e)?
+            let rows = st
+                .query_map(params![id, expected], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(db_e)?;
+            rows.collect::<std::result::Result<_, _>>().map_err(db_e)?
         };
-        for (root,rel) in copies {
-            let temp=path.with_file_name(format!(".hh-repair-{id}-{}",ulid::Ulid::new()));
-            let repair=(||->Result<()> {
-                let src=hh_core::paths::jail_join(std::path::Path::new(&root),&rel)?;
-                crate::verified_copy(&src,&temp,expected)?;
-                let c=self.db.lock()?;
-                crate::library::assert_mutable(&c,id)?;
-                if crate::library::disk_path(&c,id,false)?!=path {return Err(hh_core::Error::Conflict("file moved during repair".into()));}
-                if path.exists(){crate::atomic_replace(&temp,path)?;}else{crate::publish_file(&temp,path)?;}
-                c.execute("UPDATE files SET last_verified_at=?2 WHERE id=?1",params![id,now_ms()]).map_err(db_e)?;
+        for (root, rel) in copies {
+            let temp = path.with_file_name(format!(".hh-repair-{id}-{}", ulid::Ulid::new()));
+            let repair = (|| -> Result<()> {
+                let src = hh_core::paths::jail_join(std::path::Path::new(&root), &rel)?;
+                crate::verified_copy(&src, &temp, expected)?;
+                let c = self.db.lock()?;
+                crate::library::assert_mutable(&c, id)?;
+                if crate::library::disk_path(&c, id, false)? != path {
+                    return Err(hh_core::Error::Conflict("file moved during repair".into()));
+                }
+                if path.exists() {
+                    crate::atomic_replace(&temp, path)?;
+                } else {
+                    crate::publish_file(&temp, path)?;
+                }
+                c.execute(
+                    "UPDATE files SET last_verified_at=?2 WHERE id=?1",
+                    params![id, now_ms()],
+                )
+                .map_err(db_e)?;
                 Ok(())
             })();
-            if repair.is_err() && path.exists(){let _=std::fs::remove_file(&temp);}
+            if repair.is_err() && path.exists() {
+                let _ = std::fs::remove_file(&temp);
+            }
             match repair {
-                Ok(())=>{self.record_integrity_event(Some(id),"repaired_from_copy",None)?;return Ok(true);},
-                Err(error)=>tracing::warn!(file_id=%id,%error,"second-copy repair failed"),
+                Ok(()) => {
+                    self.record_integrity_event(Some(id), "repaired_from_copy", None)?;
+                    return Ok(true);
+                }
+                Err(error) => tracing::warn!(file_id=%id,%error,"second-copy repair failed"),
             }
         }
         Ok(false)
     }
 
-    fn record_integrity_event(&self, file_id: Option<&str>, kind: &str, detail: Option<&str>) -> Result<()> {
+    fn record_integrity_event(
+        &self,
+        file_id: Option<&str>,
+        kind: &str,
+        detail: Option<&str>,
+    ) -> Result<()> {
         let c = self.db.lock()?;
         c.execute(
             "INSERT INTO integrity_events (id, file_id, kind, detected_at, detail)
              VALUES (?1,?2,?3,?4,?5)",
-            params![ulid::Ulid::new().to_string(), file_id, kind, now_ms(), detail],
+            params![
+                ulid::Ulid::new().to_string(),
+                file_id,
+                kind,
+                now_ms(),
+                detail
+            ],
         )
         .map_err(db_e)?;
         Ok(())

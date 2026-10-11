@@ -50,11 +50,17 @@ pub fn router(app: AppState, token: String) -> Router {
         .route("/api/transfers", get(transfers))
         .route("/api/diagnostics", get(diagnostics))
         .route("/api/update", get(update))
-        .route("/api/second-copy", get(second_copy_get).post(second_copy_set))
+        .route(
+            "/api/second-copy",
+            get(second_copy_get).post(second_copy_set),
+        )
         .route("/api/similar", get(similar))
         .merge(crate::admin::router())
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), local_authorize))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            local_authorize,
+        ))
         .with_state(state)
 }
 
@@ -84,35 +90,82 @@ async fn index() -> impl IntoResponse {
 }
 
 fn allowed_host(value: &str) -> bool {
-    matches!(value,"127.0.0.1:47801" | "localhost:47801")
+    matches!(value, "127.0.0.1:47801" | "localhost:47801")
 }
 fn allowed_origin(value: &str) -> bool {
-    matches!(value,"http://127.0.0.1:47801" | "http://localhost:47801")
+    matches!(value, "http://127.0.0.1:47801" | "http://localhost:47801")
 }
-async fn local_authorize(State(st): State<DashboardState>, req: axum::extract::Request, next: axum::middleware::Next) -> Result<Response,StatusCode> {
+async fn local_authorize(
+    State(st): State<DashboardState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<Response, StatusCode> {
     let headers = req.headers();
-    if !headers.get("host").and_then(|v|v.to_str().ok()).is_some_and(allowed_host) { return Err(StatusCode::FORBIDDEN); }
-    if headers.get("origin").and_then(|v|v.to_str().ok()).is_some_and(|o|!allowed_origin(o)) { return Err(StatusCode::FORBIDDEN); }
-    if headers.get("sec-fetch-site").and_then(|v|v.to_str().ok()).is_some_and(|v|v == "cross-site") { return Err(StatusCode::FORBIDDEN); }
+    if !headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(allowed_host)
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if headers
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|o| !allowed_origin(o))
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == "cross-site")
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     if req.uri().path().starts_with("/api/") {
-        check_token(&st,headers)?;
-        if !matches!(*req.method(),axum::http::Method::GET | axum::http::Method::HEAD) {
-            let explicit = headers.get("x-hh-local").and_then(|v|v.to_str().ok()).is_some_and(|v|v == st.token);
-            let csrf = headers.get("x-hh-csrf").and_then(|v|v.to_str().ok()).is_some_and(|v|v == st.token);
-            let origin = headers.get("origin").and_then(|v|v.to_str().ok()).is_some_and(allowed_origin);
-            if !explicit && !(origin && csrf) { return Err(StatusCode::FORBIDDEN); }
+        check_token(&st, headers)?;
+        if !matches!(
+            *req.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD
+        ) {
+            let explicit = headers
+                .get("x-hh-local")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v == st.token);
+            let csrf = headers
+                .get("x-hh-csrf")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v == st.token);
+            let origin = headers
+                .get("origin")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(allowed_origin);
+            if !explicit && !(origin && csrf) {
+                return Err(StatusCode::FORBIDDEN);
+            }
         }
     }
     let mut response = next.run(req).await;
-    response.headers_mut().insert("x-content-type-options",axum::http::HeaderValue::from_static("nosniff"));
-    response.headers_mut().insert("referrer-policy",axum::http::HeaderValue::from_static("no-referrer"));
+    response.headers_mut().insert(
+        "x-content-type-options",
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    response.headers_mut().insert(
+        "referrer-policy",
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
     if !req_path_is_attachment(&response) {
         response.headers_mut().insert("content-security-policy",axum::http::HeaderValue::from_static("default-src 'self'; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"));
     }
-    response.headers_mut().insert("cache-control",axum::http::HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        "cache-control",
+        axum::http::HeaderValue::from_static("no-store"),
+    );
     Ok(response)
 }
-fn req_path_is_attachment(response: &Response) -> bool { response.headers().contains_key("content-disposition") }
+fn req_path_is_attachment(response: &Response) -> bool {
+    response.headers().contains_key("content-disposition")
+}
 
 async fn js() -> impl IntoResponse {
     ([("content-type", "text/javascript")], APP_JS)
@@ -122,13 +175,31 @@ async fn css() -> impl IntoResponse {
     ([("content-type", "text/css")], STYLE_CSS)
 }
 
-async fn overview(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn overview(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let (hub_id, name) = st.app.db.hub_identity().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let storage=st.app.storage.clone();
-    let sum=tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    let devices = st.app.db.list_devices().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let active = st.app.db.list_transfers(None, Some("open")).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (hub_id, name) = st
+        .app
+        .db
+        .hub_identity()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let storage = st.app.storage.clone();
+    let sum = tokio::task::spawn_blocking(move || storage.library_summary())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let devices = st
+        .app
+        .db
+        .list_devices()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let active = st
+        .app
+        .db
+        .list_transfers(None, Some("open"))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
         "hub_id": hub_id,
         "name": name,
@@ -143,17 +214,30 @@ async fn overview(State(st): State<DashboardState>, headers: HeaderMap) -> Resul
     })))
 }
 
-async fn devices(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn devices(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let devices = st.app.db.list_devices().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let devices = st
+        .app
+        .db
+        .list_devices()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
         "items": devices.iter().map(|d| d.to_api()).collect::<Vec<_>>()
     })))
 }
 
-async fn pair_open(State(st): State<DashboardState>, headers: HeaderMap) -> Result<StatusCode, StatusCode> {
+async fn pair_open(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
     check_token(&st, &headers)?;
-    st.app.pairing.open_window().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    st.app
+        .pairing
+        .open_window()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -163,11 +247,27 @@ struct QrQ {
     format: Option<String>,
 }
 
-async fn pair_qr(State(st): State<DashboardState>, headers: HeaderMap, Query(_q): Query<QrQ>) -> Result<Response, StatusCode> {
+async fn pair_qr(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+    Query(_q): Query<QrQ>,
+) -> Result<Response, StatusCode> {
     check_token(&st, &headers)?;
-    let (hub_id, name) = st.app.db.hub_identity().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let window = st.app.pairing.current_window().map_err(|_| StatusCode::CONFLICT)?;
-    let fp = st.app.ca.fingerprint().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (hub_id, name) = st
+        .app
+        .db
+        .hub_identity()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let window = st
+        .app
+        .pairing
+        .current_window()
+        .map_err(|_| StatusCode::CONFLICT)?;
+    let fp = st
+        .app
+        .ca
+        .fingerprint()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let addrs: Vec<String> = st
         .app
         .lan_addrs
@@ -175,7 +275,7 @@ async fn pair_qr(State(st): State<DashboardState>, headers: HeaderMap, Query(_q)
         .map(|a| a.clone())
         .unwrap_or_default();
     let payload = hh_auth::pairing::build_qr_payload(&hub_id, &window.token, &fp, &addrs, &name);
-    let payload=format!("{payload}&fp_sha256={}",st.app.ca.full_fingerprint());
+    let payload = format!("{payload}&fp_sha256={}", st.app.ca.full_fingerprint());
     let svg = hh_auth::pairing::qr_svg(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let secs = st.app.pairing.seconds_remaining();
     let code = window.manual_code.clone();
@@ -184,18 +284,31 @@ async fn pair_qr(State(st): State<DashboardState>, headers: HeaderMap, Query(_q)
         "manual_code": code,
         "expires_in": secs,
     });
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "application/json")
-        .header("x-qr-svg", base64::engine::general_purpose::STANDARD.encode(svg))
+        .header(
+            "x-qr-svg",
+            base64::engine::general_purpose::STANDARD.encode(svg),
+        )
         .body(body.to_string().into())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-async fn storage(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn storage(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let storage=st.app.storage.clone();
-    let sum=tokio::task::spawn_blocking(move||storage.library_summary()).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    let health = st.app.storage.health_summary().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let storage = st.app.storage.clone();
+    let sum = tokio::task::spawn_blocking(move || storage.library_summary())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let health = st
+        .app
+        .storage
+        .health_summary()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
         "categories": sum.categories,
         "free_bytes": sum.free_bytes,
@@ -209,9 +322,16 @@ async fn storage(State(st): State<DashboardState>, headers: HeaderMap) -> Result
     })))
 }
 
-async fn alerts(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn alerts(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let c = st.app.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let c = st
+        .app
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut stmt = c
         .prepare("SELECT id, severity, code, message, created_at FROM alerts WHERE resolved_at IS NULL AND acknowledged_at IS NULL ORDER BY created_at DESC")
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -232,10 +352,30 @@ async fn alerts(State(st): State<DashboardState>, headers: HeaderMap) -> Result<
 }
 
 #[derive(Deserialize)]
-struct FilesQuery { category:Option<String>,q:Option<String>,cursor:Option<String>,sort:Option<String>,limit:Option<u32> }
-async fn files(State(st): State<DashboardState>, headers: HeaderMap, Query(q):Query<FilesQuery>) -> Result<Json<serde_json::Value>, StatusCode> {
+struct FilesQuery {
+    category: Option<String>,
+    q: Option<String>,
+    cursor: Option<String>,
+    sort: Option<String>,
+    limit: Option<u32>,
+}
+async fn files(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+    Query(q): Query<FilesQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let page=st.app.storage.list_files_page(q.category.as_deref(),q.q.as_deref(),q.cursor.as_deref(),q.sort.as_deref(),q.limit.unwrap_or(100)).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let page = st
+        .app
+        .storage
+        .list_files_page(
+            q.category.as_deref(),
+            q.q.as_deref(),
+            q.cursor.as_deref(),
+            q.sort.as_deref(),
+            q.limit.unwrap_or(100),
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!(page)))
 }
 
@@ -245,9 +385,21 @@ async fn file_content_dash(
     Path(id): Path<String>,
 ) -> Result<Response, StatusCode> {
     check_token(&st, &headers)?;
-    let meta = st.app.storage.get_file(&id).map_err(|_| StatusCode::NOT_FOUND)?;
-    let path = st.app.storage.file_disk_path(&id).map_err(|_| StatusCode::NOT_FOUND)?;
-    crate::routes::stream_file(path,&meta,&headers).await.map_err(|e|StatusCode::from_u16(e.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+    let meta = st
+        .app
+        .storage
+        .get_file(&id)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let path = st
+        .app
+        .storage
+        .file_disk_path(&id)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    crate::routes::stream_file(path, &meta, &headers)
+        .await
+        .map_err(|e| {
+            StatusCode::from_u16(e.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        })
 }
 
 async fn file_thumb_dash(
@@ -258,11 +410,11 @@ async fn file_thumb_dash(
     check_token(&st, &headers)?;
     if let Ok(Some(path)) = st.app.photos.thumb_path(&id, 256) {
         if let Ok(bytes) = tokio::fs::read(&path).await {
-            return Ok(Response::builder()
+            return Response::builder()
                 .header("content-type", "image/jpeg")
                 .header("cache-control", "public, max-age=86400")
                 .body(Body::from(bytes))
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
     Err(StatusCode::NOT_FOUND)
@@ -270,12 +422,20 @@ async fn file_thumb_dash(
 
 // ---- W1.4: security activity ----
 
-async fn activity(State(st): State<DashboardState>, headers: HeaderMap, Query(q): Query<ActivityQ>) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn activity(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+    Query(q): Query<ActivityQ>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
     let (rows, total) = st
         .app
         .db
-        .list_audit(q.device_id.as_deref(), q.limit.unwrap_or(50), q.offset.unwrap_or(0))
+        .list_audit(
+            q.device_id.as_deref(),
+            q.limit.unwrap_or(50),
+            q.offset.unwrap_or(0),
+        )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let names: std::collections::HashMap<String, String> = st
         .app
@@ -305,9 +465,16 @@ struct ActivityQ {
 
 // ---- W1.7: transfers with measured-rate ETA ----
 
-async fn transfers(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn transfers(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let rows = st.app.db.list_transfers(None, None).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rows = st
+        .app
+        .db
+        .list_transfers(None, None)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let names: std::collections::HashMap<String, String> = st
         .app
         .db
@@ -326,7 +493,10 @@ async fn transfers(State(st): State<DashboardState>, headers: HeaderMap) -> Resu
                 let elapsed = (now - t.created_at).max(1) as f64 / 1000.0;
                 let rate = t.bytes_verified as f64 / elapsed;
                 if rate > 1024.0 && t.size > t.bytes_verified {
-                    (rate, Some(((t.size - t.bytes_verified) as f64 / rate) as i64))
+                    (
+                        rate,
+                        Some(((t.size - t.bytes_verified) as f64 / rate) as i64),
+                    )
                 } else if t.size <= t.bytes_verified {
                     (rate, Some(0))
                 } else {
@@ -355,21 +525,24 @@ async fn transfers(State(st): State<DashboardState>, headers: HeaderMap) -> Resu
 
 // ---- W1.5: diagnostics export (opt-in, privacy-scoped) ----
 
-async fn diagnostics(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Response, StatusCode> {
+async fn diagnostics(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     check_token(&st, &headers)?;
     let app = st.app.clone();
     let blob = tokio::task::spawn_blocking(move || hh_service_diagnostics(&app))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let ts = hh_core::time::now_ms();
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "application/json")
         .header(
             "content-disposition",
             format!("attachment; filename=\"homehub-diagnostics-{ts}.json\""),
         )
         .body(Body::from(blob.to_string()))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Privacy-scoped diagnostics (TRD §13, AGENTS.md §2.7): versions, counters,
@@ -378,8 +551,16 @@ async fn diagnostics(State(st): State<DashboardState>, headers: HeaderMap) -> Re
 fn hh_service_diagnostics(app: &AppState) -> serde_json::Value {
     let uptime_ms = hh_core::time::now_ms() - app.started_at_ms;
     let devices = app.db.list_devices().map(|d| d.len()).unwrap_or(0);
-    let open_transfers = app.db.list_transfers(None, Some("open")).map(|t| t.len()).unwrap_or(0);
-    let total_transfers = app.db.list_transfers(None, None).map(|t| t.len()).unwrap_or(0);
+    let open_transfers = app
+        .db
+        .list_transfers(None, Some("open"))
+        .map(|t| t.len())
+        .unwrap_or(0);
+    let total_transfers = app
+        .db
+        .list_transfers(None, None)
+        .map(|t| t.len())
+        .unwrap_or(0);
     let (_, audit_total) = app.db.list_audit(None, 1, 0).unwrap_or((vec![], 0));
     let last_audit = app
         .hw
@@ -390,7 +571,7 @@ fn hh_service_diagnostics(app: &AppState) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null);
     // Export bounded counters and action names only. Raw log details may
     // contain filenames or peer-provided metadata and are never exported.
-    let log_tail:Vec<String>=Vec::new();
+    let log_tail: Vec<String> = Vec::new();
     serde_json::json!({
         "generated_at": hh_core::time::now_ms(),
         "privacy_note": "Contains no file names or file contents; library and data paths are scrubbed from logs.",
@@ -414,19 +595,24 @@ fn hh_service_diagnostics(app: &AppState) -> serde_json::Value {
 
 // ---- W2.6: update channel for the tray/dashboard ----
 
-async fn update(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn update(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
     let db = st.app.db.clone();
-    let check = tokio::task::spawn_blocking(move || crate::update::check_from_settings(&db, hh_core::HUB_VERSION))
-        .await
-        .unwrap_or(crate::update::UpdateCheck {
-            available: false,
-            current_version: hh_core::HUB_VERSION.into(),
-            latest_version: None,
-            url: None,
-            sha256: None,
-            reason: Some("check_failed".into()),
-        });
+    let check = tokio::task::spawn_blocking(move || {
+        crate::update::check_from_settings(&db, hh_core::HUB_VERSION)
+    })
+    .await
+    .unwrap_or(crate::update::UpdateCheck {
+        available: false,
+        current_version: hh_core::HUB_VERSION.into(),
+        latest_version: None,
+        url: None,
+        sha256: None,
+        reason: Some("check_failed".into()),
+    });
     Ok(Json(serde_json::json!({
         "available": check.available,
         "current_version": check.current_version,
@@ -443,7 +629,10 @@ struct SecondCopySet {
     interval_hours: u32,
 }
 
-async fn second_copy_get(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn second_copy_get(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
     let interval: u32 = st
         .app
@@ -461,22 +650,43 @@ async fn second_copy_get(State(st): State<DashboardState>, headers: HeaderMap) -
     })))
 }
 
-async fn second_copy_set(State(st): State<DashboardState>, headers: HeaderMap, Json(req): Json<SecondCopySet>) -> Result<StatusCode, StatusCode> {
+async fn second_copy_set(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+    Json(req): Json<SecondCopySet>,
+) -> Result<StatusCode, StatusCode> {
     check_token(&st, &headers)?;
-    if !(1..=720).contains(&req.interval_hours) { return Err(StatusCode::BAD_REQUEST); }
+    if !(1..=720).contains(&req.interval_hours) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     st.app
         .db
-        .set_setting("second_copy.interval_minutes", &(req.interval_hours * 60).to_string())
+        .set_setting(
+            "second_copy.interval_minutes",
+            &(req.interval_hours * 60).to_string(),
+        )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let _ = st.app.db.audit(None, "second_copy_schedule", Some(&req.interval_hours.to_string()), None);
+    let _ = st.app.db.audit(
+        None,
+        "second_copy_schedule",
+        Some(&req.interval_hours.to_string()),
+        None,
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
 // ---- W2.3: similar photos for the dashboard ----
 
-async fn similar(State(st): State<DashboardState>, headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn similar(
+    State(st): State<DashboardState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     check_token(&st, &headers)?;
-    let groups = st.app.storage.list_similar().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let groups = st
+        .app
+        .storage
+        .list_similar()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut out: Vec<serde_json::Value> = vec![];
     for g in groups {
         let mut members: Vec<serde_json::Value> = vec![];

@@ -20,9 +20,13 @@ impl NotificationCenter {
         self.active_banners.retain(|item| item.id != record.id);
         self.shown_at.retain(|(id, _)| id != &record.id);
         self.history.retain(|item| item.id != record.id);
-        if !record.is_dismissed && (!self.dnd_active || record.level == NotificationLevel::Critical) {
+        if !record.is_dismissed && (!self.dnd_active || record.level == NotificationLevel::Critical)
+        {
             if self.active_banners.len() == MAX_BANNERS {
-                let index = self.active_banners.iter().position(|item| item.level != NotificationLevel::Critical);
+                let index = self
+                    .active_banners
+                    .iter()
+                    .position(|item| item.level != NotificationLevel::Critical);
                 if let Some(index) = index {
                     let removed = self.active_banners.remove(index);
                     self.shown_at.retain(|(id, _)| id != &removed.id);
@@ -35,17 +39,24 @@ impl NotificationCenter {
         }
         self.history.push(record);
         while self.history.len() > MAX_HISTORY {
-            let index = self.history.iter().position(|item| item.level != NotificationLevel::Critical || item.is_dismissed);
+            let index = self
+                .history
+                .iter()
+                .position(|item| item.level != NotificationLevel::Critical || item.is_dismissed);
             self.history.remove(index.unwrap_or(0));
         }
     }
 
     pub fn expire_banners(&mut self) {
         self.shown_at.retain(|(id, shown)| {
-            self.active_banners.iter().any(|item| item.id == *id &&
-                (item.level == NotificationLevel::Critical || shown.elapsed() < BANNER_LIFETIME))
+            self.active_banners.iter().any(|item| {
+                item.id == *id
+                    && (item.level == NotificationLevel::Critical
+                        || shown.elapsed() < BANNER_LIFETIME)
+            })
         });
-        self.active_banners.retain(|item| self.shown_at.iter().any(|(id, _)| id == &item.id));
+        self.active_banners
+            .retain(|item| self.shown_at.iter().any(|(id, _)| id == &item.id));
     }
 
     pub fn dismiss_banner(&mut self, id: &str) {
@@ -57,16 +68,21 @@ impl NotificationCenter {
     }
 
     pub fn clear_all(&mut self) {
-        self.active_banners.retain(|item| item.level == NotificationLevel::Critical && !item.is_dismissed);
-        self.shown_at.retain(|(id, _)| self.active_banners.iter().any(|item| item.id == *id));
-        self.history.retain(|item| item.level == NotificationLevel::Critical && !item.is_dismissed);
+        self.active_banners
+            .retain(|item| item.level == NotificationLevel::Critical && !item.is_dismissed);
+        self.shown_at
+            .retain(|(id, _)| self.active_banners.iter().any(|item| item.id == *id));
+        self.history
+            .retain(|item| item.level == NotificationLevel::Critical && !item.is_dismissed);
     }
 
     pub fn toggle_dnd(&mut self) -> bool {
         self.dnd_active = !self.dnd_active;
         if self.dnd_active {
-            self.active_banners.retain(|item| item.level == NotificationLevel::Critical);
-            self.shown_at.retain(|(id, _)| self.active_banners.iter().any(|item| item.id == *id));
+            self.active_banners
+                .retain(|item| item.level == NotificationLevel::Critical);
+            self.shown_at
+                .retain(|(id, _)| self.active_banners.iter().any(|item| item.id == *id));
         }
         self.dnd_active
     }
@@ -76,13 +92,22 @@ impl NotificationCenter {
 mod tests {
     use super::*;
     fn notice(id: &str, level: NotificationLevel) -> NotificationRecord {
-        NotificationRecord { id: id.into(), title: id.into(), message: String::new(),
-            level, timestamp: 0, app_id: None, is_dismissed: false }
+        NotificationRecord {
+            id: id.into(),
+            title: id.into(),
+            message: String::new(),
+            level,
+            timestamp: 0,
+            app_id: None,
+            is_dismissed: false,
+        }
     }
     #[test]
     fn banner_limit_and_history_bound() {
         let mut center = NotificationCenter::default();
-        for index in 0..55 { center.post_notification(notice(&index.to_string(), NotificationLevel::Info)); }
+        for index in 0..55 {
+            center.post_notification(notice(&index.to_string(), NotificationLevel::Info));
+        }
         assert_eq!(center.active_banners.len(), 3);
         assert_eq!(center.history.len(), 50);
     }

@@ -3,8 +3,8 @@
 use hh_core::error::Result;
 use hh_core::platform::{DiskInfo, HardwareReport};
 use hh_core::time::now_ms;
-use serde::Serialize;
 use rusqlite::OptionalExtension;
+use serde::Serialize;
 use sysinfo::{Disks, Networks, System};
 
 use crate::{db_e, HwService};
@@ -55,7 +55,9 @@ pub fn collect() -> Result<HardwareReport> {
     let has_avx = false;
 
     Ok(HardwareReport {
-        cpu_model: cpu.map(|c| c.brand().to_string()).unwrap_or_else(|| "unknown".into()),
+        cpu_model: cpu
+            .map(|c| c.brand().to_string())
+            .unwrap_or_else(|| "unknown".into()),
         cpu_cores: sys.physical_core_count().unwrap_or(1) as u32,
         has_avx,
         ram_bytes: sys.total_memory(),
@@ -79,9 +81,17 @@ pub fn collect() -> Result<HardwareReport> {
 
 /// Rating rules from TRD §11.
 pub fn rate(report: &HardwareReport) -> Ratings {
-    let storage = if report.disks.iter().any(|d| d.size_bytes >= 250 * 1024 * 1024 * 1024) {
+    let storage = if report
+        .disks
+        .iter()
+        .any(|d| d.size_bytes >= 250 * 1024 * 1024 * 1024)
+    {
         "excellent"
-    } else if report.disks.iter().any(|d| d.size_bytes >= 120 * 1024 * 1024 * 1024) {
+    } else if report
+        .disks
+        .iter()
+        .any(|d| d.size_bytes >= 120 * 1024 * 1024 * 1024)
+    {
         "good"
     } else {
         "limited"
@@ -94,9 +104,7 @@ pub fn rate(report: &HardwareReport) -> Ratings {
         _ => "limited",
     };
 
-    let streaming = if !report.hw_encoders.is_empty()
-        && matches!(photo_backup, "excellent")
-    {
+    let streaming = if !report.hw_encoders.is_empty() && matches!(photo_backup, "excellent") {
         "excellent"
     } else if report.cpu_cores >= 4 {
         "good"
@@ -115,7 +123,11 @@ pub fn rate(report: &HardwareReport) -> Ratings {
     Ratings {
         storage,
         photo_backup,
-        file_sharing: if photo_backup == "limited" { "limited" } else { "good" },
+        file_sharing: if photo_backup == "limited" {
+            "limited"
+        } else {
+            "good"
+        },
         streaming,
         local_ai,
     }
@@ -127,12 +139,16 @@ impl HwService {
         self.run_audit_with_helper(None)
     }
 
-    pub fn run_audit_with_helper(&self,extra:Option<&serde_json::Value>) -> Result<AuditResult> {
+    pub fn run_audit_with_helper(&self, extra: Option<&serde_json::Value>) -> Result<AuditResult> {
         let mut report = collect()?;
-        if let Some(extra)=extra {
-            report.battery_health_pct=extra["battery_health_pct"].as_u64().and_then(|v|u32::try_from(v).ok());
-            report.has_camera=extra["has_camera"].as_bool().unwrap_or(false);
-            if let Some(standard)=extra["wifi_standard"].as_str(){report.wifi_standard=Some(standard.to_owned());}
+        if let Some(extra) = extra {
+            report.battery_health_pct = extra["battery_health_pct"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok());
+            report.has_camera = extra["has_camera"].as_bool().unwrap_or(false);
+            if let Some(standard) = extra["wifi_standard"].as_str() {
+                report.wifi_standard = Some(standard.to_owned());
+            }
         }
         let ratings = rate(&report);
         let supported_status = self.compat_status(&report)?;
@@ -146,13 +162,24 @@ impl HwService {
             rusqlite::params![
                 id,
                 now_ms(),
-                serde_json::to_string(&report).map_err(|e| hh_core::Error::Internal(e.to_string()))?,
-                ratings.storage, ratings.photo_backup, ratings.file_sharing,
-                ratings.streaming, ratings.local_ai, supported_status
+                serde_json::to_string(&report)
+                    .map_err(|e| hh_core::Error::Internal(e.to_string()))?,
+                ratings.storage,
+                ratings.photo_backup,
+                ratings.file_sharing,
+                ratings.streaming,
+                ratings.local_ai,
+                supported_status
             ],
         )
         .map_err(db_e)?;
-        Ok(AuditResult { id, taken_at: now_ms(), report, ratings, supported_status })
+        Ok(AuditResult {
+            id,
+            taken_at: now_ms(),
+            report,
+            ratings,
+            supported_status,
+        })
     }
 
     pub fn latest_audit(&self) -> Result<Option<serde_json::Value>> {
@@ -165,7 +192,17 @@ impl HwService {
             )
             .optional().map_err(db_e)?;
         match row {
-            Some((id,taken_at,report,storage,photo_backup,file_sharing,streaming,local_ai,supported_status)) => Ok(Some(serde_json::json!({
+            Some((
+                id,
+                taken_at,
+                report,
+                storage,
+                photo_backup,
+                file_sharing,
+                streaming,
+                local_ai,
+                supported_status,
+            )) => Ok(Some(serde_json::json!({
                 "id":id,"taken_at":taken_at,"report":serde_json::from_str::<serde_json::Value>(&report).map_err(|e|hh_core::Error::Db(e.to_string()))?,
                 "ratings":{"storage":storage,"photo_backup":photo_backup,"file_sharing":file_sharing,"streaming":streaming,"local_ai":local_ai},"supported_status":supported_status
             }))),

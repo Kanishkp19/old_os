@@ -14,7 +14,8 @@ pub struct MdnsAdvertisement {
 
 impl MdnsAdvertisement {
     pub fn start(hub_id: &str, name: &str, ca_fp: &str, pairing_open: bool) -> Result<Self> {
-        let daemon = ServiceDaemon::new().map_err(|e| hh_core::Error::Internal(format!("mdns: {e}")))?;
+        let daemon =
+            ServiceDaemon::new().map_err(|e| hh_core::Error::Internal(format!("mdns: {e}")))?;
         let host = format!("{}.local.", hostname::short());
         let props = [
             ("id", hub_id),
@@ -23,16 +24,9 @@ impl MdnsAdvertisement {
             ("fp", ca_fp),
             ("pair", if pairing_open { "1" } else { "0" }),
         ];
-        let info = ServiceInfo::new(
-            MDNS_SERVICE_TYPE,
-            name,
-            &host,
-            "",
-            API_PORT,
-            &props[..],
-        )
-        .map_err(|e| hh_core::Error::Internal(format!("mdns service: {e}")))?
-        .enable_addr_auto();
+        let info = ServiceInfo::new(MDNS_SERVICE_TYPE, name, &host, "", API_PORT, &props[..])
+            .map_err(|e| hh_core::Error::Internal(format!("mdns service: {e}")))?
+            .enable_addr_auto();
         let fullname = info.get_fullname().to_string();
         daemon
             .register(info)
@@ -54,11 +48,7 @@ impl Drop for MdnsAdvertisement {
 
 /// UDP broadcast fallback responder (NW-02). Listens for `HHDISCOVER1` and
 /// replies with the JSON descriptor.
-pub async fn broadcast_responder(
-    hub_id: String,
-    name: String,
-    fp: String,
-) -> Result<()> {
+pub async fn broadcast_responder(hub_id: String, name: String, fp: String) -> Result<()> {
     let sock = tokio::net::UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)).await?;
     let mut buf = [0u8; 256];
     loop {

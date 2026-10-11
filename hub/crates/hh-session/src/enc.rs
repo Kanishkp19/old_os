@@ -14,12 +14,18 @@ pub struct RgbaFrame {
 
 impl RgbaFrame {
     pub fn new(width: usize, height: usize) -> Self {
-        Self { width, height, data: vec![0; width * height * 4] }
+        Self {
+            width,
+            height,
+            data: vec![0; width * height * 4],
+        }
     }
 
     /// Preserve aspect ratio while downscaling to an even encoder size.
     pub fn scaled_to(&self, target_w: usize, target_h: usize) -> RgbaFrame {
-        let ratio = (target_w as f64 / self.width.max(1) as f64).min(target_h as f64 / self.height.max(1) as f64).min(1.0);
+        let ratio = (target_w as f64 / self.width.max(1) as f64)
+            .min(target_h as f64 / self.height.max(1) as f64)
+            .min(1.0);
         let w = (((self.width as f64 * ratio) as usize) / 2 * 2).max(2);
         let h = (((self.height as f64 * ratio) as usize) / 2 * 2).max(2);
         let mut out = RgbaFrame::new(w, h);
@@ -40,8 +46,8 @@ impl RgbaFrame {
     pub fn to_i420(&self) -> I420Frame {
         let w = self.width;
         let h = self.height;
-        let cw = (w + 1) / 2;
-        let ch = (h + 1) / 2;
+        let cw = w.div_ceil(2);
+        let ch = h.div_ceil(2);
         let mut y = vec![0u8; w * h];
         let mut u = vec![0u8; cw * ch];
         let mut v = vec![0u8; cw * ch];
@@ -49,7 +55,11 @@ impl RgbaFrame {
             for col in 0..w {
                 let (r, g, b) = {
                     let p = (row * w + col) * 4;
-                    (self.data[p] as u32, self.data[p + 1] as u32, self.data[p + 2] as u32)
+                    (
+                        self.data[p] as u32,
+                        self.data[p + 1] as u32,
+                        self.data[p + 2] as u32,
+                    )
                 };
                 // BT.601 limited-range-ish (matches common expectations)
                 let yy = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
@@ -59,10 +69,13 @@ impl RgbaFrame {
                     for yy in row..=(row + 1).min(h - 1) {
                         for xx in col..=(col + 1).min(w - 1) {
                             let p = (yy * w + xx) * 4;
-                            for c in 0..3 { rgb[c] += self.data[p + c] as i32; }
+                            for (c, item) in rgb.iter_mut().enumerate() {
+                                *item += self.data[p + c] as i32;
+                            }
                         }
                     }
-                    let samples = ((row + 1).min(h - 1) - row + 1) * ((col + 1).min(w - 1) - col + 1);
+                    let samples =
+                        ((row + 1).min(h - 1) - row + 1) * ((col + 1).min(w - 1) - col + 1);
                     let [r4, g4, b4] = rgb.map(|c| c / samples as i32);
                     let cb = ((-38 * r4 - 74 * g4 + 112 * b4 + 128) >> 8) + 128;
                     let cr = ((112 * r4 - 94 * g4 - 18 * b4 + 128) >> 8) + 128;
@@ -72,7 +85,13 @@ impl RgbaFrame {
                 }
             }
         }
-        I420Frame { width: w, height: h, y, u, v }
+        I420Frame {
+            width: w,
+            height: h,
+            y,
+            u,
+            v,
+        }
     }
 }
 
@@ -115,13 +134,18 @@ pub fn decode_frame(packet: &[u8]) -> Result<I420Frame, String> {
     let (width, height) = yuv.dimensions();
     let (sy, su, sv) = yuv.strides();
     let compact = |plane: &[u8], stride: usize, w: usize, h: usize| -> Vec<u8> {
-        plane.chunks(stride).take(h).flat_map(|row| row[..w].iter().copied()).collect()
+        plane
+            .chunks(stride)
+            .take(h)
+            .flat_map(|row| row[..w].iter().copied())
+            .collect()
     };
     Ok(I420Frame {
-        width, height,
+        width,
+        height,
         y: compact(yuv.y(), sy, width, height),
-        u: compact(yuv.u(), su, (width + 1) / 2, (height + 1) / 2),
-        v: compact(yuv.v(), sv, (width + 1) / 2, (height + 1) / 2),
+        u: compact(yuv.u(), su, width.div_ceil(2), height.div_ceil(2)),
+        v: compact(yuv.v(), sv, width.div_ceil(2), height.div_ceil(2)),
     })
 }
 
@@ -130,7 +154,7 @@ impl YUVSource for I420Frame {
         (self.width, self.height)
     }
     fn strides(&self) -> (usize, usize, usize) {
-        (self.width, (self.width + 1) / 2, (self.width + 1) / 2)
+        (self.width, self.width.div_ceil(2), self.width.div_ceil(2))
     }
     fn y(&self) -> &[u8] {
         &self.y
@@ -147,7 +171,7 @@ impl YUVSource for I420Frame {
 pub fn i420_to_rgba(f: &I420Frame) -> RgbaFrame {
     let w = f.width;
     let h = f.height;
-    let cw = (w + 1) / 2;
+    let cw = w.div_ceil(2);
     let mut out = RgbaFrame::new(w, h);
     for row in 0..h {
         for col in 0..w {
@@ -222,21 +246,41 @@ mod tests {
 
 /// Pack validated even I420 planes into the NV12 layout required by MF.
 pub fn i420_to_nv12(frame: &I420Frame) -> Result<Vec<u8>, String> {
-    if frame.width == 0 || frame.height == 0 || frame.width % 2 != 0 || frame.height % 2 != 0 || frame.width > 1920 || frame.height > 1920 || frame.width * frame.height > 1920 * 1088 {
+    if frame.width == 0
+        || frame.height == 0
+        || !frame.width.is_multiple_of(2)
+        || !frame.height.is_multiple_of(2)
+        || frame.width > 1920
+        || frame.height > 1920
+        || frame.width * frame.height > 1920 * 1088
+    {
         return Err("invalid NV12 frame dimensions".into());
     }
     let pixels = frame.width * frame.height;
-    if frame.y.len() != pixels || frame.u.len() != pixels / 4 || frame.v.len() != pixels / 4 { return Err("invalid I420 planes".into()); }
-    let mut nv12 = Vec::with_capacity(pixels * 3 / 2); nv12.extend_from_slice(&frame.y);
-    for (u, v) in frame.u.iter().zip(&frame.v) { nv12.push(*u); nv12.push(*v); }
+    if frame.y.len() != pixels || frame.u.len() != pixels / 4 || frame.v.len() != pixels / 4 {
+        return Err("invalid I420 planes".into());
+    }
+    let mut nv12 = Vec::with_capacity(pixels * 3 / 2);
+    nv12.extend_from_slice(&frame.y);
+    for (u, v) in frame.u.iter().zip(&frame.v) {
+        nv12.push(*u);
+        nv12.push(*v);
+    }
     Ok(nv12)
 }
 #[cfg(test)]
 mod nv12_tests {
     use super::*;
-    #[test] fn packs_luma_then_interleaved_chroma() {
-        let frame = I420Frame { width: 2, height: 2, y: vec![1,2,3,4], u: vec![5], v: vec![6] };
-        assert_eq!(i420_to_nv12(&frame).unwrap(), vec![1,2,3,4,5,6]);
+    #[test]
+    fn packs_luma_then_interleaved_chroma() {
+        let frame = I420Frame {
+            width: 2,
+            height: 2,
+            y: vec![1, 2, 3, 4],
+            u: vec![5],
+            v: vec![6],
+        };
+        assert_eq!(i420_to_nv12(&frame).unwrap(), vec![1, 2, 3, 4, 5, 6]);
         let invalid = I420Frame { u: vec![], ..frame };
         assert!(i420_to_nv12(&invalid).is_err());
     }

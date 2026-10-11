@@ -21,16 +21,16 @@ pub mod dispatch;
 pub mod enc;
 pub mod server;
 
-#[cfg(windows)]
-pub mod platform_win;
 #[cfg(target_os = "linux")]
 pub mod platform_linux;
+#[cfg(windows)]
+pub mod platform_win;
 
 #[cfg(all(windows, feature = "screen"))]
 mod capture;
+pub mod h264;
 #[cfg(all(windows, feature = "screen"))]
 mod mf_encoder;
-pub mod h264;
 
 #[cfg(all(feature = "screen", windows))]
 pub mod screen;
@@ -38,14 +38,23 @@ pub mod screen;
 pub mod screen {
     //! Not compiled with the `screen` feature: same protocol surface, calls
     //! fail honestly instead of silently doing nothing.
-    pub fn handle_offer(_id: &str, _sdp: &str, _preset: &str, _kind: &str) -> Result<serde_json::Value, String> {
+    pub fn handle_offer(
+        _id: &str,
+        _sdp: &str,
+        _preset: &str,
+        _kind: &str,
+    ) -> Result<serde_json::Value, String> {
         Err("screen host not compiled into this helper build".into())
     }
     pub fn add_ice(_id: &str, _candidate: &str) -> Result<(), String> {
         Err("screen host not compiled into this helper build".into())
     }
-    pub fn capabilities() -> serde_json::Value { serde_json::json!({"available":false,"encoders":[],"hw_encode":false,"audio":false}) }
-    pub fn stop_session(_id: &str) -> Result<(), String> { Ok(()) }
+    pub fn capabilities() -> serde_json::Value {
+        serde_json::json!({"available":false,"encoders":[],"hw_encode":false,"audio":false})
+    }
+    pub fn stop_session(_id: &str) -> Result<(), String> {
+        Ok(())
+    }
     pub fn stop() -> Result<(), String> {
         Ok(())
     }
@@ -61,7 +70,9 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async move {
         match cli.mode.as_str() {
             "socket" => {
@@ -107,11 +118,19 @@ pub fn execute(req: &HelperRequest) -> HelperResponse {
 
 /// Convenience for responses with payload data (screen answer, system info…).
 pub fn ok_data(data: serde_json::Value) -> HelperResponse {
-    HelperResponse { ok: true, error: None, data: Some(data) }
+    HelperResponse {
+        ok: true,
+        error: None,
+        data: Some(data),
+    }
 }
 
 pub fn err(msg: impl Into<String>) -> HelperResponse {
-    HelperResponse { ok: false, error: Some(msg.into()), data: None }
+    HelperResponse {
+        ok: false,
+        error: Some(msg.into()),
+        data: None,
+    }
 }
 
 #[cfg(test)]
@@ -137,7 +156,10 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             let r = execute(&HelperRequest::MouseMove { dx: 10, dy: -3 });
-            assert!(!r.ok, "remote input must stay blocked until owner authorization");
+            assert!(
+                !r.ok,
+                "remote input must stay blocked until owner authorization"
+            );
             assert!(r.error.unwrap().contains("secure surface"));
             let status = execute(&HelperRequest::BitlockerStatus);
             assert_eq!(status.data.unwrap()["supported"], false);
@@ -146,7 +168,11 @@ mod tests {
         {
             // On Windows the op executes for real; just check it apexes ok.
             let r = execute(&HelperRequest::MouseMove { dx: 0, dy: 0 });
-            assert!(r.ok, "mousemove on Windows session should succeed: {:?}", r.error);
+            assert!(
+                r.ok,
+                "mousemove on Windows session should succeed: {:?}",
+                r.error
+            );
         }
     }
 

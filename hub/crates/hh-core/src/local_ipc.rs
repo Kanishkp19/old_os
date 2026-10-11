@@ -69,11 +69,17 @@ pub enum LocalOp {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AppLaunchReq { pub app_id: String }
+pub struct AppLaunchReq {
+    pub app_id: String,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum NotificationLevel { Info, Warning, Critical }
+pub enum NotificationLevel {
+    Info,
+    Warning,
+    Critical,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NotificationRecord {
@@ -87,7 +93,9 @@ pub struct NotificationRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NotificationDismissReq { pub id: String }
+pub struct NotificationDismissReq {
+    pub id: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct QuickSettingsUpdate {
@@ -194,13 +202,17 @@ fn validate_ulid(id: &str) -> Result<(), LocalIpcError> {
 fn validate_file_batch(id: &str, file_ids: &[String]) -> Result<(), LocalIpcError> {
     validate_ulid(id)?;
     if file_ids.is_empty() || file_ids.len() > 100 {
-        return Err(LocalIpcError::InvalidInput("album batch must contain 1–100 file IDs".into()));
+        return Err(LocalIpcError::InvalidInput(
+            "album batch must contain 1–100 file IDs".into(),
+        ));
     }
     let mut unique = HashSet::with_capacity(file_ids.len());
     for file_id in file_ids {
         validate_ulid(file_id)?;
         if !unique.insert(file_id) {
-            return Err(LocalIpcError::InvalidInput("duplicate file ID in album batch".into()));
+            return Err(LocalIpcError::InvalidInput(
+                "duplicate file ID in album batch".into(),
+            ));
         }
     }
     Ok(())
@@ -220,7 +232,9 @@ impl AlbumsItemsRemoveReq {
 
 pub fn validate_album_name(name: &str) -> Result<String, LocalIpcError> {
     if name.chars().any(char::is_control) {
-        return Err(LocalIpcError::InvalidInput("album name contains control characters".into()));
+        return Err(LocalIpcError::InvalidInput(
+            "album name contains control characters".into(),
+        ));
     }
     let normalized: String = name.trim().nfc().collect();
     let characters = normalized.chars().count();
@@ -229,7 +243,9 @@ pub fn validate_album_name(name: &str) -> Result<String, LocalIpcError> {
         || normalized.len() > 480
         || normalized.chars().any(char::is_control)
     {
-        return Err(LocalIpcError::InvalidInput("album name must be 1–120 non-control characters and at most 480 UTF-8 bytes".into()));
+        return Err(LocalIpcError::InvalidInput(
+            "album name must be 1–120 non-control characters and at most 480 UTF-8 bytes".into(),
+        ));
     }
     Ok(normalized)
 }
@@ -262,14 +278,35 @@ mod tests {
 
     #[test]
     fn shell_dtos_round_trip_json_and_frames() {
-        let launch = AppLaunchReq { app_id: "photos".into() };
-        let notice = NotificationRecord { id: "n1".into(), title: "Disk".into(),
-            message: "Needs attention".into(), level: NotificationLevel::Critical,
-            timestamp: 42, app_id: Some("files".into()), is_dismissed: false };
-        assert_eq!(serde_json::from_value::<AppLaunchReq>(serde_json::to_value(&launch).unwrap()).unwrap(), launch);
-        assert_eq!(serde_json::from_value::<NotificationRecord>(serde_json::to_value(&notice).unwrap()).unwrap(), notice);
-        assert_eq!(decode_frame::<AppLaunchReq>(&encode_frame(&launch).unwrap()).unwrap(), launch);
-        assert_eq!(decode_frame::<NotificationRecord>(&encode_frame(&notice).unwrap()).unwrap(), notice);
+        let launch = AppLaunchReq {
+            app_id: "photos".into(),
+        };
+        let notice = NotificationRecord {
+            id: "n1".into(),
+            title: "Disk".into(),
+            message: "Needs attention".into(),
+            level: NotificationLevel::Critical,
+            timestamp: 42,
+            app_id: Some("files".into()),
+            is_dismissed: false,
+        };
+        assert_eq!(
+            serde_json::from_value::<AppLaunchReq>(serde_json::to_value(&launch).unwrap()).unwrap(),
+            launch
+        );
+        assert_eq!(
+            serde_json::from_value::<NotificationRecord>(serde_json::to_value(&notice).unwrap())
+                .unwrap(),
+            notice
+        );
+        assert_eq!(
+            decode_frame::<AppLaunchReq>(&encode_frame(&launch).unwrap()).unwrap(),
+            launch
+        );
+        assert_eq!(
+            decode_frame::<NotificationRecord>(&encode_frame(&notice).unwrap()).unwrap(),
+            notice
+        );
     }
 
     #[test]
@@ -280,9 +317,15 @@ mod tests {
             payload: serde_json::json!({"limit": 25}),
         };
         let frame = encode_frame(&request).unwrap();
-        assert_eq!(u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize, frame.len() - 4);
+        assert_eq!(
+            u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
+            frame.len() - 4
+        );
         assert_eq!(decode_frame::<LocalIpcRequest>(&frame).unwrap(), request);
-        assert_eq!(serde_json::to_value(LocalOp::AlbumsItemsAdd).unwrap(), "albums_items_add");
+        assert_eq!(
+            serde_json::to_value(LocalOp::AlbumsItemsAdd).unwrap(),
+            "albums_items_add"
+        );
         assert!(decode_frame::<LocalIpcRequest>(&frame[..3]).is_err());
         assert!(decode_frame::<LocalIpcRequest>(&[0, 16, 0, 1]).is_err());
         let mut trailing = frame;
@@ -314,7 +357,10 @@ mod tests {
     fn album_batch_rejects_paths_duplicates_and_oversize() {
         let id = ulid::Ulid::new().to_string();
         let file_id = ulid::Ulid::new().to_string();
-        let mut request = AlbumsItemsAddReq { id, file_ids: vec![file_id.clone()] };
+        let mut request = AlbumsItemsAddReq {
+            id,
+            file_ids: vec![file_id.clone()],
+        };
         assert!(request.validate().is_ok());
         request.file_ids.push(file_id);
         assert!(request.validate().is_err());

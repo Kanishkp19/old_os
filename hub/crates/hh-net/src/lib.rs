@@ -7,8 +7,8 @@
 //!
 //! Source IPs are restricted to LAN ranges (SECURITY §7, threat T13).
 
-pub mod dashboard;
 pub mod admin;
+pub mod dashboard;
 pub mod mdns;
 pub mod pair_server;
 pub mod ratelimit;
@@ -50,7 +50,7 @@ pub struct AppState {
     pub stream: StreamService,
     pub events: EventBus,
     pub rate_limiter: Arc<crate::ratelimit::RateLimiter>,
-    pub screen_owners: Arc<std::sync::Mutex<std::collections::HashMap<String,String>>>,
+    pub screen_owners: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     pub started_at_ms: i64,
     /// LAN addresses for QR payload `a=` hints (refreshed on network change).
     pub lan_addrs: Arc<std::sync::RwLock<Vec<String>>>,
@@ -64,7 +64,12 @@ impl AppState {
     /// Close only the revoked device's screen sessions. The helper fallback
     /// targets the same session, so other devices keep their streams.
     pub fn stop_device_screens(&self, device_id: &str) {
-        for session in self.stream.active_sessions().into_iter().filter(|s| s.device_id == device_id) {
+        for session in self
+            .stream
+            .active_sessions()
+            .into_iter()
+            .filter(|s| s.device_id == device_id)
+        {
             if let Err(error) = self.stream.stop_session(&session.id) {
                 tracing::warn!(session_id = %session.id, %error, "screen stop after revocation failed");
                 if let Some(helper) = &self.helper {
@@ -73,7 +78,9 @@ impl AppState {
                     }
                 }
             }
-            if let Ok(mut owners) = self.screen_owners.lock() { owners.remove(&session.id); }
+            if let Ok(mut owners) = self.screen_owners.lock() {
+                owners.remove(&session.id);
+            }
         }
     }
 
@@ -93,7 +100,10 @@ impl AppState {
             storage: StorageService::new(db.clone(), cfg.clone()),
             photos: PhotoService::new(db.clone(), cfg.clone()),
             hw: HwService::new(db.clone(), cfg.clone()),
-            stream: match &helper {Some(h)=>StreamService::with_db(db.clone()).with_helper((**h).clone()),None=>StreamService::with_db(db.clone())},
+            stream: match &helper {
+                Some(h) => StreamService::with_db(db.clone()).with_helper((**h).clone()),
+                None => StreamService::with_db(db.clone()),
+            },
             events: EventBus::new(tx),
             rate_limiter: Arc::new(crate::ratelimit::RateLimiter::default()),
             screen_owners: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -113,9 +123,7 @@ impl AppState {
 /// LAN-only source check (SECURITY §7): RFC1918, link-local, IPv6 ULA.
 pub fn is_lan_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_link_local() || v4.is_loopback()
-        }
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
         IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
     }
 }
@@ -146,7 +154,7 @@ pub mod serve {
     pub async fn serve_api(state: AppState, acceptor: TlsAcceptor) -> Result<()> {
         let listener = TcpListener::bind(("0.0.0.0", API_PORT)).await?;
         tracing::info!(port = API_PORT, "mTLS API listening");
-        let connections=std::sync::Arc::new(tokio::sync::Semaphore::new(128));
+        let connections = std::sync::Arc::new(tokio::sync::Semaphore::new(128));
         loop {
             let (tcp, peer) = match listener.accept().await {
                 Ok(x) => x,
@@ -161,19 +169,31 @@ pub mod serve {
                 drop(tcp);
                 continue;
             }
-            let permit=match connections.clone().try_acquire_owned(){Ok(p)=>p,Err(_)=>{drop(tcp);continue;}};
+            let permit = match connections.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    drop(tcp);
+                    continue;
+                }
+            };
             let acceptor = acceptor.clone();
             let state = state.clone();
             tokio::spawn(async move {
-                let _permit=permit;
-                let tls = match tokio::time::timeout(std::time::Duration::from_secs(10),acceptor.accept(tcp)).await {
-                    Ok(result)=>match result {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::warn!(error = ?e, "mTLS accept failed");
-                        return;
-                    }
-                    },Err(_)=>return,
+                let _permit = permit;
+                let tls = match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    acceptor.accept(tcp),
+                )
+                .await
+                {
+                    Ok(result) => match result {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(error = ?e, "mTLS accept failed");
+                            return;
+                        }
+                    },
+                    Err(_) => return,
                 };
                 // Resolve device identity from the peer certificate.
                 let identity = tls
@@ -188,14 +208,21 @@ pub mod serve {
                             .device_by_id(&device_id)
                             .ok()
                             .flatten()
-                            .filter(|d| d.status == "active" && state.db.device_accepts_serial(&device_id,&serial).unwrap_or(false))
+                            .filter(|d| {
+                                d.status == "active"
+                                    && state
+                                        .db
+                                        .device_accepts_serial(&device_id, &serial)
+                                        .unwrap_or(false)
+                            })
                             .map(|d| crate::tls::PeerIdentity {
                                 device_id,
                                 cert_serial: serial,
                                 scopes: d.scopes,
                             })
                     });
-                let watch_identity=identity.clone();let watch_db=state.db.clone();
+                let watch_identity = identity.clone();
+                let watch_db = state.db.clone();
                 let router = crate::routes::router(state.clone());
                 let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
                     let identity = identity.clone();
@@ -209,8 +236,8 @@ pub mod serve {
                     }
                 });
                 let io = TokioIo::new(tls);
-                let builder=hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
-                let connection=builder.serve_connection_with_upgrades(io,svc);
+                let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+                let connection = builder.serve_connection_with_upgrades(io, svc);
                 tokio::select! {
                     _=connection=>{},
                     _=async move {loop {tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -226,7 +253,7 @@ pub mod serve {
     pub async fn serve_pairing(state: AppState, acceptor: TlsAcceptor) -> Result<()> {
         let listener = TcpListener::bind(("0.0.0.0", PAIRING_PORT)).await?;
         tracing::info!(port = PAIRING_PORT, "pairing endpoint listening");
-        let connections=std::sync::Arc::new(tokio::sync::Semaphore::new(32));
+        let connections = std::sync::Arc::new(tokio::sync::Semaphore::new(32));
         loop {
             let (tcp, peer) = match listener.accept().await {
                 Ok(x) => x,
@@ -239,16 +266,28 @@ pub mod serve {
                 drop(tcp);
                 continue;
             }
-            let permit=match connections.clone().try_acquire_owned(){Ok(p)=>p,Err(_)=>{drop(tcp);continue;}};
+            let permit = match connections.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    drop(tcp);
+                    continue;
+                }
+            };
             let acceptor = acceptor.clone();
             let state = state.clone();
             tokio::spawn(async move {
-                let _permit=permit;
-                let tls = match tokio::time::timeout(std::time::Duration::from_secs(10),acceptor.accept(tcp)).await {
-                    Ok(result)=>match result {
-                    Ok(t) => t,
+                let _permit = permit;
+                let tls = match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    acceptor.accept(tcp),
+                )
+                .await
+                {
+                    Ok(result) => match result {
+                        Ok(t) => t,
+                        Err(_) => return,
+                    },
                     Err(_) => return,
-                    },Err(_)=>return,
                 };
                 let router = crate::pair_server::router(state);
                 let svc = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
@@ -267,7 +306,10 @@ pub mod serve {
     pub async fn serve_dashboard(state: AppState, token: String) -> Result<()> {
         let router = crate::dashboard::router(state, token);
         let listener = TcpListener::bind(("127.0.0.1", DASHBOARD_PORT)).await?;
-        tracing::info!(port = DASHBOARD_PORT, "dashboard listening on loopback only");
+        tracing::info!(
+            port = DASHBOARD_PORT,
+            "dashboard listening on loopback only"
+        );
         axum::serve(listener, router).await?;
         Ok(())
     }

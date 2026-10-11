@@ -16,7 +16,11 @@
 //!   (non-Windows without the dev socket); the hub then keeps its no-op
 //!   platform controls, which answer with honest "unsupported" errors.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(not(unix))]
+#[allow(unused_imports)]
+use std::io::{BufRead, Read};
 use std::time::Duration;
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -38,6 +42,7 @@ enum Transport {
     #[cfg_attr(not(windows), allow(dead_code))] // constructed on Windows only
     Pipe,
     /// Unix dev socket at an absolute path.
+    #[cfg_attr(not(unix), allow(dead_code))]
     UnixSocket(String),
 }
 
@@ -285,6 +290,7 @@ fn helper_down() -> Error {
     Error::Internal("session helper not running (start hh-session)".into())
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn read_response(reader: &mut impl BufRead) -> Result<HelperResponse> {
     let mut line = String::new();
     reader

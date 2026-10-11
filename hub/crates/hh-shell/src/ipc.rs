@@ -6,6 +6,7 @@ use hh_core::local_ipc::{
 };
 use std::{path::PathBuf, sync::Arc};
 use thiserror::Error;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 type MockHandler = Arc<dyn Fn(Vec<u8>) -> Result<Vec<u8>, IpcError> + Send + Sync>;
@@ -133,21 +134,31 @@ impl ShellIpcClient {
         let inbound = if let Some(mock) = &self.mock {
             mock(outbound)?
         } else {
-            let mut stream = tokio::net::UnixStream::connect(&self.socket).await?;
-            stream.write_all(&outbound).await?;
-            let mut header = [0u8; 4];
-            stream.read_exact(&mut header).await?;
-            let length = u32::from_be_bytes(header) as usize;
-            if length > MAX_FRAME_SIZE {
-                return Err(IpcError::Protocol(LocalIpcError::InvalidInput(
-                    "frame exceeds 1 MiB".into(),
+            #[cfg(unix)]
+            {
+                let mut stream = tokio::net::UnixStream::connect(&self.socket).await?;
+                stream.write_all(&outbound).await?;
+                let mut header = [0u8; 4];
+                stream.read_exact(&mut header).await?;
+                let length = u32::from_be_bytes(header) as usize;
+                if length > MAX_FRAME_SIZE {
+                    return Err(IpcError::Protocol(LocalIpcError::InvalidInput(
+                        "frame exceeds 1 MiB".into(),
+                    )));
+                }
+                let mut frame = Vec::with_capacity(length + 4);
+                frame.extend_from_slice(&header);
+                frame.resize(length + 4, 0);
+                stream.read_exact(&mut frame[4..]).await?;
+                frame
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(IpcError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Unix domain sockets are not supported on this platform",
                 )));
             }
-            let mut frame = Vec::with_capacity(length + 4);
-            frame.extend_from_slice(&header);
-            frame.resize(length + 4, 0);
-            stream.read_exact(&mut frame[4..]).await?;
-            frame
         };
         let response: LocalIpcResponse = decode_frame(&inbound)?;
         if response.id != request.id {

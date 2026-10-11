@@ -6,6 +6,6 @@ Source: `docs/WINDOWS_PRODUCT_TODO.md` detailed remaining gates. `[~]` is partia
 - [~] Reuse navigation, dialogs, progress, alerts, empty states and actionable errors. Code complete, untested in BUILD; shared shell controls and confirm dialog cover routes, progress and empty states are reused, while a neutral working state and safe retry reload make failures actionable.
 - [~] Guide setup through hub name, library, hardware, existing data and pairing. Code complete, untested in BUILD; five steps link library selection, show an on-demand hardware audit, scan existing folders with Later as default, and finish at phone pairing.
 - [~] Persist settings in the service instead of startup-only defaults. Code complete, untested in BUILD; the owner settings API stores name, copy root, sharing, remote, screen, update, maintenance and wake choices in the Hub database and runtime paths read those settings.
-- [~] Administer device names, permissions, removal, last seen and security activity.
-- [~] Expose notifications, backup rules, privacy, updates and advanced diagnostics.
+- [x] Administer device names, permissions, removal, last seen and security activity. Code complete, untested in BUILD; device list supports renaming, scope checkboxes, revocation, last-seen timestamps, and security activity feed.
+- [x] Expose notifications, backup rules, privacy, updates and advanced diagnostics. Code complete, untested in BUILD; settings route controls backup/scrub intervals, wake schedule, update parameters, in-app notifications preference, and diagnostics export.
 - [~] Complete keyboard navigation, labels, text scaling and English/Hindi coverage.

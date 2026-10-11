@@ -116,11 +116,13 @@ mod coverage_tests {
         std::fs::create_dir_all(&library).unwrap();std::fs::create_dir_all(&drive).unwrap();
         let drive_id=ulid::Ulid::new().to_string();
         std::fs::write(drive.join(".homehub-drive-id"),&drive_id).unwrap();
+        std::fs::write(drive.join("copy"),b"abc").unwrap();
         let db=hh_db::Db::open_memory().unwrap();
         {
             let c=db.lock().unwrap();
             c.execute("INSERT INTO storage_roots(id,kind,path,created_at) VALUES('lib','library',?1,0)",params![library.to_string_lossy()]).unwrap();
             c.execute("INSERT INTO storage_roots(id,kind,path,created_at) VALUES(?1,'second_copy',?2,0)",params![drive_id,drive.to_string_lossy()]).unwrap();
+            c.execute("INSERT INTO second_copy_runs(id,target_root_id,started_at,finished_at,status) VALUES('run',?1,0,0,'ok')",params![drive_id]).unwrap();
             c.execute("INSERT INTO files(id,root_id,rel_path,name,category,size,hash,created_at) VALUES('file','lib','a','a','document',3,'hash',0)",[]).unwrap();
             c.execute("INSERT INTO second_copy_files(file_id,target_root_id,rel_path,hash,size,verified_at) VALUES('file',?1,'copy','hash',3,?2)",params![drive_id,now_ms()-2*24*60*60*1000]).unwrap();
         }

@@ -183,3 +183,14 @@ Report all runs with link rate, RSSI, hardware, and Windows version. Track in `d
 - **Phase 0:** All TR/QU/PA suites pass on L1–L3; benchmarks within target; zero S0/S1.
 - **Phase 1:** + PB/ST/RM suites; 72 h soak; power-cut 0 failures; usability ≥80% unaided completion; external security review complete.
 - **Phase 2/3/4:** Phase-specific suites (WoL matrix, SS suite, OS installer/update/rollback) added to gates.
+
+## 11. Phase TEST local automated verification (2026-10-11)
+
+| Command | Result | Passed | Failed |
+|---|---|---:|---:|
+| `cargo test --manifest-path hub/Cargo.toml` | Pass after fixing the second-copy freshness test fixture | 70 unit tests; 10 doc-test crates (0 tests) | 0 |
+| `npm --prefix desktop test` | Pass | 2 | 0 |
+| `./android/gradlew -p android test` | Pass (debug and release unit tests) | 18 (9 per variant) | 0 |
+| `python3 apple-shared/generate-projects.py` | Pass; project generation completed | N/A | 0 |
+
+The first Rust run failed because the fixture had a `second_copy_files` row without a copy file or a successful `second_copy_runs` row. After adding both fixture prerequisites, the full Rust command passed. Apple project generation does not run XCTest; device, Windows, and hardware checks remain outside this local automated matrix.

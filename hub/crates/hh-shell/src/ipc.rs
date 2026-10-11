@@ -1,4 +1,5 @@
 //! Bounded framed client for the owner-only local broker.
+#[cfg_attr(not(unix), allow(unused_imports))]
 use hh_core::local_ipc::{
     decode_frame, encode_frame, AppLaunchReq, LocalIpcError, LocalIpcRequest, LocalIpcResponse,
     LocalOp, NotificationDismissReq, NotificationRecord, QuickSettingsUpdate, ShellSnapshot,
@@ -24,6 +25,7 @@ pub enum IpcError {
 }
 
 pub struct ShellIpcClient {
+    #[cfg_attr(not(unix), allow(dead_code))]
     socket: PathBuf,
     mock: Option<MockHandler>,
 }

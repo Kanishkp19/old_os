@@ -68,6 +68,7 @@ impl Db {
             params![destination.to_string_lossy().as_ref()],
         )
         .map_err(db_err)?;
+        #[cfg(unix)]
         std::fs::File::open(destination)?.sync_all()?;
         Ok(())
     }
@@ -180,6 +181,7 @@ impl Db {
         // SQLite takes a consistent snapshot including committed WAL pages.
         c.execute("VACUUM INTO ?1", params![bak.to_string_lossy().as_ref()])
             .map_err(db_err)?;
+        #[cfg(unix)]
         std::fs::File::open(&bak)?.sync_all()?;
         drop(c);
         // prune older backups, keep last 3

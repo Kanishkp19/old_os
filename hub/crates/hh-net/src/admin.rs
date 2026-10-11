@@ -34,7 +34,6 @@ pub fn router() -> Router<DashboardState> {
         .route("/api/photos/timeline",get(timeline))
         .route("/api/photos/years",get(years))
         .route("/api/duplicates",get(duplicates))
-        .route("/api/similar",get(similar))
         .route("/api/duplicates/scan",post(duplicate_scan))
         .route("/api/duplicates/{id}/resolve",post(duplicate_resolve))
         .route("/api/import/scan",post(import_scan))
@@ -174,7 +173,6 @@ async fn purge(State(st):State<DashboardState>,Path(id):Path<String>)->AdminResu
 async fn timeline(State(st):State<DashboardState>,Query(q):Query<TimelineReq>)->AdminResult<Json<Value>>{let cursor=q.cursor.and_then(|v|v.split_once(':').and_then(|(ts,id)|Some((ts.parse().ok()?,id.to_owned()))));let month=match(q.year,q.month){(None,None)=>None,(Some(y),Some(m)) if (1900..=2200).contains(&y)&&(1..=12).contains(&m)=>Some((y,m)),_=>return Err(Error::BadRequest("invalid gallery month".into()).into())};let (items,next_cursor)=st.app.photos.timeline_month(cursor,q.limit.unwrap_or(100).clamp(1,500),month)?;Ok(Json(json!({"items":items,"next_cursor":next_cursor})))}
 async fn years(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.photos.years()?)))}
 async fn duplicates(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.storage.list_duplicates()?)))}
-async fn similar(State(st):State<DashboardState>)->AdminResult<Json<Value>>{Ok(Json(json!(st.app.storage.list_similar()?)))}
 #[derive(Deserialize)]struct ResolveReq{keep_file_id:String}
 async fn duplicate_resolve(State(st):State<DashboardState>,Path(id):Path<String>,Json(req):Json<ResolveReq>)->AdminResult<StatusCode>{st.app.storage.resolve_duplicate_group(&id,&req.keep_file_id)?;Ok(StatusCode::NO_CONTENT)}
 #[derive(Deserialize)]struct ImportReq{paths:Vec<String>,mode:Option<String>}

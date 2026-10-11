@@ -9,7 +9,7 @@ set -uo pipefail
 HUB_DIR="$(cd "$(dirname "$0")/../hub" && pwd)"
 TOOLS="$HUB_DIR/target/debug/hh-tools"
 SVC="$HUB_DIR/target/debug/hh-service"
-DATA="${1:-/tmp/hh-e2e}"
+DATA="${1:-$(mktemp -d "${TMPDIR:-/tmp}/hh-e2e.XXXXXX")}"
 DASH=http://127.0.0.1:47801
 HUB=127.0.0.1:47800
 SQLITE="sqlite3"
@@ -19,11 +19,23 @@ ok()   { echo "PASS  $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL  $1"; fail=$((fail+1)); }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected [$3] got [$2])"; fi; }
 
-cleanup() { [ -n "${HUB_PID:-}" ] && kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; }
+cleanup() { if [ -n "${HUB_PID:-}" ]; then kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; fi; }
 trap cleanup EXIT
 
 # ---------- 1. Boot the hub ----------
-rm -rf "$DATA"; mkdir -p "$DATA"
+if [ -d "$DATA" ] && [ -n "$(ls -A "$DATA")" ]; then
+  bad "sandbox data dir is not empty: $DATA"
+  exit 1
+fi
+mkdir -p "$DATA"
+if curl -fsS --max-time 1 -o /dev/null "$DASH/" 2>/dev/null; then
+  bad "dashboard loopback port 47801 is already in use"
+  exit 1
+fi
+if [ ! -x "$SVC" ] || [ ! -x "$TOOLS" ]; then
+  bad "missing hh-service or hh-tools debug binary"
+  exit 1
+fi
 "$SVC" --console --data-dir "$DATA" --library-root "$DATA/lib" >"$DATA/stdout.log" 2>&1 &
 HUB_PID=$!
 for i in $(seq 1 30); do
@@ -32,13 +44,13 @@ for i in $(seq 1 30); do
 done
 curl -s -o /dev/null "$DASH/" && ok "hub boots: dashboard reachable on loopback" || { bad "hub boot"; tail -5 "$DATA/stdout.log"; exit 1; }
 check "db created with WAL sidecars" "$(ls "$DATA"/hub.db-wal >/dev/null 2>&1 && echo yes)" "yes"
+check "SQLite journal mode is WAL" "$(sqlite3 "file:$DATA/hub.db?mode=ro" 'PRAGMA journal_mode')" "wal"
 check "CA + server certs created" "$(ls "$DATA"/ca.cert.pem "$DATA"/server.cert.pem >/dev/null 2>&1 && echo yes)" "yes"
 
 # ---------- 2. Pair a fake device through the dashboard API ----------
-PAGE=$(curl -s "$DASH/")
-# index.html embeds the per-start session secret as `window.HH_TOKEN="<token>"`.
-TOKEN=$(printf '%s' "$PAGE" | sed -n 's/.*window\.HH_TOKEN="\([^"]*\)".*/\1/p' | head -1)
-[ -n "$TOKEN" ] || { bad "dashboard token extraction"; exit 1; }
+# Same-user scripts read the per-start secret from the private data directory.
+TOKEN=$(cat "$DATA/dashboard_token" 2>/dev/null)
+[ -n "$TOKEN" ] || { bad "dashboard token read"; exit 1; }
 H="-H x-hh-local:$TOKEN"
 
 curl -s $H -X POST "$DASH/api/pair/open" -o /dev/null
@@ -127,6 +139,7 @@ HEALTH=$(curl -s --cacert "$DATA/id/ca.pem" --cert "$DATA/id/cert.pem" --key "$D
 printf '%s' "$HEALTH" | jq -e '.disks' >/dev/null && ok "storage health endpoint serves disk view" || bad "storage health"
 DASHOV=$(curl -s $H "$DASH/api/overview")
 check "dashboard overview shows 1 device" "$(printf '%s' "$DASHOV" | jq -r .devices)" "1"
+check "SQLite integrity after transfers" "$(sqlite3 "file:$DATA/hub.db?mode=ro" 'PRAGMA integrity_check')" "ok"
 
 # ---------- 7. M5 metrics.sql runs against a real hub DB ----------
 M=$($SQLITE "file:$DATA/hub.db?mode=ro" < "$(dirname "$0")/../docs/m5/metrics.sql" 2>&1)

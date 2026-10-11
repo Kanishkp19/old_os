@@ -85,6 +85,7 @@ fn peer_is_installed(pid: u32, binary: &str, service: bool) -> bool {
 }
 /// Authenticate the client as the exact installed LocalSystem service.
 pub fn verify_service_client(pipe: Handle) -> bool {
+    if current_pipe_name() != active_pipe_name() { return false; }
     let mut pid = 0;
     unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) != 0 && pid != 0 && peer_is_installed(pid, "hh-service.exe", true) }
 }

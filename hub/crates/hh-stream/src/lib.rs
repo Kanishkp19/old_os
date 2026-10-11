@@ -41,17 +41,28 @@ impl Preset {
 
     /// Cap the answer SDP's declared bandwidth to the negotiated preset.
     fn apply_to_sdp(offer: &str, preset: Preset) -> String {
-        offer
-            .lines()
-            .map(|line| {
-                if line.starts_with("b=AS:") {
-                    format!("b=AS:{}", preset.bitrate_bps() / 1000)
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\r\n")
+        let cap = format!("b=AS:{}", preset.bitrate_bps() / 1000);
+        let mut lines = Vec::new();
+        let mut video = false;
+        let mut capped = false;
+        for line in offer.lines().map(str::trim_end) {
+            if video && !capped && (line.starts_with("a=") || line.starts_with("m=")) {
+                lines.push(cap.clone());
+                capped = true;
+            }
+            if line.starts_with("m=") {
+                video = line.starts_with("m=video ");
+                capped = false;
+            }
+            if line.starts_with("b=AS:") {
+                lines.push(cap.clone());
+                if video { capped = true; }
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+        if video && !capped { lines.push(cap); }
+        lines.join("\r\n")
     }
 }
 
@@ -334,19 +345,20 @@ impl StreamService {
         let removed = {
             let mut state = self.state.lock().map_err(|_| Error::Internal("stream lock poisoned".into()))?;
             if state.sessions.is_empty() { return Ok(Vec::new()); }
-            let capabilities = helper.screen_capabilities()?;
-            let active = capabilities.get("current_sessions").and_then(serde_json::Value::as_array).ok_or_else(|| Error::Internal("invalid helper session status".into()))?;
-            if active.len() > 1 { return Err(Error::Internal("invalid helper session count".into())); }
+            // An unreachable or malformed helper cannot keep a media lease alive.
+            let active = helper.screen_capabilities().ok()
+                .and_then(|v| v.get("current_sessions").and_then(serde_json::Value::as_array).cloned())
+                .filter(|sessions| sessions.len() <= 1 && sessions.iter().all(serde_json::Value::is_string))
+                .unwrap_or_default();
             let closed: Vec<_> = state.sessions.keys().filter(|id| !active.iter().any(|v| v.as_str() == Some(id.as_str()))).cloned().collect();
             closed.into_iter().filter_map(|id| state.sessions.remove(&id).map(|session| (id, session))).collect::<Vec<_>>()
         };
-        let mut closed = Vec::new(); let mut first_error = None;
+        let mut closed = Vec::new();
         for (id, mut session) in removed {
-            let ended = session.peer.close().and(self.db_record_end(&id));
-            if let Err(error) = ended { if first_error.is_none() { first_error = Some(error); } }
+            let _ = session.peer.close(); // the helper may already be gone
+            self.db_record_end(&id)?;
             closed.push(id);
         }
-        if let Some(error) = first_error { return Err(error); }
         Ok(closed)
     }
 
@@ -472,6 +484,8 @@ mod tests {
         assert!(matches!(max_preset_for_rating("excellent"), Some(Preset::High)));
         assert!(matches!(max_preset_for_rating("limited"), Some(Preset::Low)));
         assert!(max_preset_for_rating("not_recommended").is_none());
+        assert!(Preset::apply_to_sdp("v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendonly", Preset::Low)
+            .contains("m=video 9 UDP/TLS/RTP/SAVPF 96\r\nb=AS:2000\r\na=sendonly"));
     }
 
     #[test]

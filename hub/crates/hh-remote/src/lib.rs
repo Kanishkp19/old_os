@@ -67,6 +67,13 @@ impl RemoteService {
         Ok(())
     }
 
+    fn check_device(&self, device_id: &str) -> Result<()> {
+        if !self.db.device_by_id(device_id)?.is_some_and(|d| d.status == "active" && d.has_scope("remote")) {
+            return Err(Error::ForbiddenScope("remote".into()));
+        }
+        Ok(())
+    }
+
     /// Sliding-window rate limiter; returns RateLimited when exceeded.
     fn rate_check(&self) -> Result<()> {
         let now = now_ms() as u64;
@@ -84,6 +91,7 @@ impl RemoteService {
 
     pub fn handle_input(&self, device_id: &str, raw: &str) -> Result<()> {
         self.check_enabled()?;
+        self.check_device(device_id)?;
         self.rate_check()?;
         if raw.len() > 8192 { return Err(Error::TooLarge("remote input message".into())); }
         let msg: InputMsg = serde_json::from_str(raw)
@@ -115,8 +123,12 @@ impl RemoteService {
     /// Power actions require explicit confirm and are audited (API_SPEC §8).
     pub fn power_action(&self, device_id: &str, action: &str, confirm: bool) -> Result<()> {
         self.check_enabled()?;
+        self.check_device(device_id)?;
         if !confirm {
             return Err(Error::BadRequest("power actions require confirm:true".into()));
+        }
+        if !matches!(action, "sleep" | "restart" | "shutdown") {
+            return Err(Error::BadRequest("unknown power action".into()));
         }
         self.db.audit(Some(device_id), "power_action", Some(action), None)?;
         match action {
@@ -129,6 +141,7 @@ impl RemoteService {
 
     pub fn media_key(&self, device_id: &str, key: &str) -> Result<()> {
         self.check_enabled()?;
+        self.check_device(device_id)?;
         self.rate_check()?;
         let k = match key {
             "play_pause" => MediaKey::PlayPause,
@@ -144,6 +157,8 @@ impl RemoteService {
     }
 
     pub fn record_session(&self, device_id: &str, kind: &str) -> Result<String> {
+        self.check_enabled()?;
+        self.check_device(device_id)?;
         let id = ulid::Ulid::new().to_string();
         let c = self.db.lock()?;
         c.execute(

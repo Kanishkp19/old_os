@@ -232,7 +232,8 @@ fn read_response(reader: &mut impl BufRead) -> Result<HelperResponse> {
 impl HelperResponse {
     fn into_data(self) -> Result<serde_json::Value> {
         match (self.ok, self.error) {
-            (true, _) => Ok(self.data.unwrap_or(serde_json::json!({}))),
+            (true, None) => Ok(self.data.unwrap_or(serde_json::json!({}))),
+            (true, Some(_)) => Err(Error::Internal("inconsistent helper response".into())),
             (false, Some(e)) => Err(Error::Internal(e)),
             (false, None) => Err(Error::Internal("helper op failed".into())),
         }

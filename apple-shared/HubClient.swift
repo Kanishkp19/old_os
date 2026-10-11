@@ -57,13 +57,16 @@ final class HubClient {
     private let connection: PinnedSession
     init(_ trust: HubTrust) throws {
         guard let origin = Endpoint.parse(trust.lastAddr, port: 47800) else { throw HubError.security }
+        let ca = try IdentityStore.certificate(trust.caCertPem)
+        guard IdentityStore.fingerprint(ca) == trust.caFingerprint else { throw HubError.security }
         self.trust = trust
-        connection = PinnedSession(origin: origin, ca: try IdentityStore.certificate(trust.caCertPem), identity: try IdentityStore.identity(tag: trust.keyTag))
+        connection = PinnedSession(origin: origin, ca: ca, identity: try IdentityStore.identity(tag: trust.keyTag))
     }
     deinit { connection.close() }
     func request(_ path: String, method: String = "GET", json: Any? = nil, data: Data? = nil, hash: String? = nil) async throws -> Data {
-        guard path.hasPrefix("/v1/"), let origin = Endpoint.parse(trust.lastAddr, port: 47800),
-              let url = URL(string: path, relativeTo: origin)?.absoluteURL, url.host == origin.host, url.port == origin.port else { throw HubError.security }
+        guard path.hasPrefix("/v1/"), !path.contains(".."), let origin = Endpoint.parse(trust.lastAddr, port: 47800),
+              let url = URL(string: path, relativeTo: origin)?.absoluteURL, url.host == origin.host, url.port == origin.port,
+              url.path.hasPrefix("/v1/") else { throw HubError.security }
         var request = URLRequest(url: url); request.httpMethod = method
         if let json { request.httpBody = try JSONSerialization.data(withJSONObject: json); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if let data { request.httpBody = data; request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type") }

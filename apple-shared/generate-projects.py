@@ -16,6 +16,10 @@ def quote(s):
 def identifier(s):
     return hashlib.sha256(s.encode()).hexdigest()[:24].upper()
 
+def write_if_changed(path, body):
+    if not path.exists() or path.read_text() != body:
+        path.write_text(body)
+
 def project(platform):
     folder = ROOT / platform
     main = 'HomeHubMac' if platform == 'macos' else 'HomeHub'
@@ -33,6 +37,8 @@ def project(platform):
         return quote(v)
     refs = {}
     def file(path, kind=None):
+        if not (folder / path).is_file():
+            raise FileNotFoundError(folder / path)
         if path not in refs:
             if kind is None: kind = 'sourcecode.swift' if path.endswith('.swift') else 'text.html'
             refs[path] = add('file:' + path, 'PBXFileReference', path=path, sourceTree='<group>', lastKnownFileType=kind)
@@ -48,8 +54,11 @@ def project(platform):
         if target.endswith('Tests'): continue
         children = []
         for language in ['en','hi']:
+            localized = f'{target}/Resources/{language}.lproj/Localizable.strings'
+            if not (folder / localized).is_file():
+                raise FileNotFoundError(folder / localized)
             children.append(raw(add('locale:'+target+language, 'PBXFileReference', name=language,
-                path=f'{target}/Resources/{language}.lproj/Localizable.strings', sourceTree='<group>', lastKnownFileType='text.plist.strings')))
+                path=localized, sourceTree='<group>', lastKnownFileType='text.plist.strings')))
         localization[target] = add('strings:'+target, 'PBXVariantGroup', name='Localizable.strings', sourceTree='<group>', children=children)
     target_ids = {t: identifier(platform + ':target:' + t) for t in targets}
     project_id = identifier(platform + ':project')
@@ -88,6 +97,9 @@ def project(platform):
             base.update(GENERATE_INFOPLIST_FILE='YES',TEST_HOST='$(BUILT_PRODUCTS_DIR)/'+main+'.app/'+('Contents/MacOS/' if platform == 'macos' else '')+main,BUNDLE_LOADER='$(TEST_HOST)')
         else:
             base.update(INFOPLIST_FILE=target+'/Info.plist',CODE_SIGN_ENTITLEMENTS=target+'/'+target+'.entitlements')
+            for required in (base['INFOPLIST_FILE'], base['CODE_SIGN_ENTITLEMENTS']):
+                if not (folder / required).is_file():
+                    raise FileNotFoundError(folder / required)
             if share: base.update(APPLICATION_EXTENSION_API_ONLY='YES',SKIP_INSTALL='YES')
         configs=[]
         for config in ['Debug','Release']:
@@ -104,12 +116,12 @@ def project(platform):
     body='// !$*UTF8*$!\n{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {\n'
     body+='\n'.join(f'{uid} = {serialize(obj)};' for uid,obj in objects.items())
     body+='\n}; rootObject = '+project_id+'; }\n'
-    (path/'project.pbxproj').write_text(body)
+    write_if_changed(path/'project.pbxproj', body)
     scheme_dir=path/'xcshareddata/xcschemes'; scheme_dir.mkdir(parents=True,exist_ok=True)
     def reference(t): return f'<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{target_ids[t]}" BuildableName="{t}.app" BlueprintName="{t}" ReferencedContainer="container:{main}.xcodeproj"/>'
     scheme=f'''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion="1600" version="1.3"><BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">{reference(main)}</BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration="Debug"><Testables><TestableReference skipped="NO">{reference(main+'Tests').replace(main+'Tests.app',main+'Tests.xctest')}</TestableReference></Testables></TestAction><LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" allowLocationSimulation="YES"><BuildableProductRunnable runnableDebuggingMode="0">{reference(main)}</BuildableProductRunnable></LaunchAction><ProfileAction buildConfiguration="Release"><BuildableProductRunnable runnableDebuggingMode="0">{reference(main)}</BuildableProductRunnable></ProfileAction><AnalyzeAction buildConfiguration="Debug"/><ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/></Scheme>'''
-    (scheme_dir/(main+'.xcscheme')).write_text(scheme)
+    write_if_changed(scheme_dir/(main+'.xcscheme'), scheme)
 
 if __name__ == '__main__':
     project('macos'); project('ios')

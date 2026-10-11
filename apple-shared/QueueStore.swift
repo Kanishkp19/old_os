@@ -47,7 +47,7 @@ struct QueueStore {
     func enqueue(url: URL, hubId: String, clientItemId: String? = nil, kind: String = "send", sourceId: String? = nil,
                  targetDeviceId: String? = nil, takenAt: Int64? = nil, displayName: String? = nil) throws -> QueueItem {
         guard !hubId.isEmpty else { throw HubError.invalid("connect_first") }
-        if let clientItemId, let existing = try all().first(where: { $0.hubId == hubId && $0.clientItemId == clientItemId && $0.state != .failedPerm }) { return existing }
+        if let clientItemId, let existing = try all().first(where: { $0.hubId == hubId && $0.clientItemId == clientItemId && $0.state != .failedPerm && !(kind == "backup" && $0.state == .done) }) { return existing }
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else { throw HubError.invalid("choose_file") }
@@ -75,7 +75,7 @@ struct QueueStore {
         guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
     func retry(_ item: QueueItem) throws {
-        var updated = item; updated.state = .queued; updated.nextAttemptAt = nil; updated.lastError = nil
+        var updated = item; updated.state = .queued; updated.attempts = 0; updated.nextAttemptAt = nil; updated.lastError = nil
         try save(updated)
     }
 }

@@ -67,7 +67,7 @@ class QueueRepository @Inject constructor(
     }
     suspend fun enqueuePersisted(uris: List<Uri>, kind: String, backupSourceId: String? = null) = withContext(Dispatchers.IO) {
         val trust = trustStore.load() ?: error("Connect to your Home first")
-        for (uri0 in uris) {
+        try { for (uri0 in uris) {
             var uri = uri0
             // ACTION_SEND grants are temporary. Preserve a private snapshot when
             // the provider cannot grant durable access; backup uses MediaStore.
@@ -89,8 +89,7 @@ class QueueRepository @Inject constructor(
                 }
             }
             enqueueOne(trust.hubId, uri, SourceReader.meta(context, uri), kind, backupSourceId)
-        }
-        scheduleUpload()
+        } } finally { scheduleUpload() }
     }
     private suspend fun enqueueOne(hubId: String, uri: Uri, meta: SourceMeta, kind: String, backupSourceId: String?) {
         val now = System.currentTimeMillis()

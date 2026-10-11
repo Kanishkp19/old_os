@@ -35,8 +35,18 @@ data class QrPayload(
             return QrPayload(
                 hubId = (params["h"] ?: return null).takeIf { it.length in 1..128 } ?: return null,
                 token = (params["t"] ?: return null).takeIf { it.matches(Regex("[A-Za-z0-9_-]{22}")) } ?: return null,
-                caFingerprint = (params["fp_sha256"] ?: return null).also {
-                    if (!it.matches(Regex("[a-fA-F0-9]{64}"))) return null
+                caFingerprint = when {
+                    params.containsKey("fp_sha256") -> {
+                        val full = params["fp_sha256"] ?: return null
+                        if (!full.matches(Regex("^[a-fA-F0-9]{64}$"))) return null
+                        full
+                    }
+                    params.containsKey("fp") -> {
+                        val legacy = params["fp"] ?: return null
+                        if (!legacy.matches(Regex("^[a-fA-F0-9]{16}$"))) return null
+                        legacy
+                    }
+                    else -> return null
                 },
                 addrs = params["a"]?.split(',')?.filter { rawAddress ->
                     runCatching {

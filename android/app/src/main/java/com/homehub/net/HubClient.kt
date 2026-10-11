@@ -261,8 +261,8 @@ class HubClient @Inject constructor(
     }
     /** Stream into an app-private partial file; callers export only after verification. */
     suspend fun download(fileId: String, target: File): JSONObject = withContext(Dispatchers.IO) {
-        val meta = get("/v1/files/$fileId")
         require(fileId.matches(Regex("[A-Za-z0-9_-]+")))
+        val meta = get("/v1/files/$fileId")
         val expectedSize = meta.getLong("size")
         val expectedHash = meta.getString("hash")
         require(expectedSize >= 0 && expectedHash.matches(Regex("[a-f0-9]{64}")))

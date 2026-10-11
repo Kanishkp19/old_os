@@ -1,6 +1,7 @@
 //! Bounded framed client for the owner-only local broker.
-use hh_core::local_ipc::{decode_frame, encode_frame, LocalIpcError, LocalIpcRequest,
-    LocalIpcResponse, LocalOp, ShellSnapshot, MAX_FRAME_SIZE};
+use hh_core::local_ipc::{decode_frame, encode_frame, AppLaunchReq, LocalIpcError,
+    LocalIpcRequest, LocalIpcResponse, LocalOp, NotificationDismissReq,
+    NotificationRecord, QuickSettingsUpdate, ShellSnapshot, MAX_FRAME_SIZE};
 use std::{path::PathBuf, sync::Arc};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,8 +14,6 @@ pub enum IpcError {
     #[error(transparent)] Protocol(#[from] LocalIpcError),
     #[error(transparent)] Json(#[from] serde_json::Error),
     #[error("broker operation failed: {0}")] Broker(String),
-    #[error("app launch is not supported by the current local IPC contract")]
-    LaunchUnsupported,
 }
 
 pub struct ShellIpcClient { socket: PathBuf, mock: Option<MockHandler> }
@@ -40,9 +39,38 @@ impl ShellIpcClient {
         Ok(serde_json::from_value(data)?)
     }
 
-    pub async fn request_app_launch(&self, _app_id: &str) -> Result<(), IpcError> {
-        // LocalOp currently has no launch variant. Never overload an unrelated operation.
-        Err(IpcError::LaunchUnsupported)
+    pub async fn request_app_launch(&self, app_id: &str) -> Result<(), IpcError> {
+        self.request_unit(LocalOp::AppLaunch, serde_json::to_value(AppLaunchReq { app_id: app_id.into() })?).await
+    }
+
+    pub async fn request_notifications_list(&self) -> Result<Vec<NotificationRecord>, IpcError> {
+        let response = self.exchange(LocalIpcRequest { id: "notifications-list".into(),
+            op: LocalOp::NotificationsList, payload: serde_json::json!({}) }).await?;
+        Self::check_response(&response)?;
+        let data = response.data.ok_or_else(|| IpcError::Broker("missing notifications".into()))?;
+        Ok(serde_json::from_value(data)?)
+    }
+
+    pub async fn request_notification_dismiss(&self, id: &str) -> Result<(), IpcError> {
+        self.request_unit(LocalOp::NotificationDismiss,
+            serde_json::to_value(NotificationDismissReq { id: id.into() })?).await
+    }
+
+    pub async fn request_quick_settings_set(&self, update: &QuickSettingsUpdate) -> Result<(), IpcError> {
+        self.request_unit(LocalOp::QuickSettingsSet, serde_json::to_value(update)?).await
+    }
+
+    async fn request_unit(&self, op: LocalOp, payload: serde_json::Value) -> Result<(), IpcError> {
+        let response = self.exchange(LocalIpcRequest { id: format!("shell-{}", serde_json::to_value(op)?.as_str().unwrap_or("request")),
+            op, payload }).await?;
+        Self::check_response(&response)
+    }
+
+    fn check_response(response: &LocalIpcResponse) -> Result<(), IpcError> {
+        if response.ok { Ok(()) } else {
+            Err(IpcError::Broker(response.error.as_ref().map_or_else(
+                || "unknown broker error".into(), ToString::to_string)))
+        }
     }
 
     async fn exchange(&self, request: LocalIpcRequest) -> Result<LocalIpcResponse, IpcError> {
@@ -86,6 +114,18 @@ mod tests {
                 data: Some(serde_json::to_value(&snapshot)?), error: None })?)
         }));
         assert_eq!(client.request_shell_snapshot().await.unwrap(), expected);
-        assert!(matches!(client.request_app_launch("photos").await, Err(IpcError::LaunchUnsupported)));
+    }
+
+    #[tokio::test]
+    async fn framed_app_launch_round_trip() {
+        let client = ShellIpcClient::with_mock(Arc::new(|frame| {
+            let request: LocalIpcRequest = decode_frame(&frame)?;
+            assert_eq!(request.op, LocalOp::AppLaunch);
+            assert_eq!(serde_json::from_value::<AppLaunchReq>(request.payload)?,
+                AppLaunchReq { app_id: "photos".into() });
+            Ok(encode_frame(&LocalIpcResponse { id: request.id, ok: true,
+                data: None, error: None })?)
+        }));
+        client.request_app_launch("photos").await.unwrap();
     }
 }

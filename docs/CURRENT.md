@@ -25,7 +25,7 @@ Implement the native shell overlay features (Notifications, Quick Settings, OOBE
 - `npm --prefix desktop test`
 
 ## Status
-- Status: P4.3a IN PROGRESS
+- Status: P4.3a COMPLETE (macOS acceptance checks passed)
 - Gate: G4 (Isolation, Lock Screen, Notifications & Capture Baseline)
 - Blockers: Wayland guest smoke and external PipeWire/portal capture validation remain pending Linux build host
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §5.2, §5.4, §6](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md), [PHASE4_UI_UX_DESIGN.md §2.2, §3, §4](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_UI_UX_DESIGN.md)

@@ -43,6 +43,11 @@ pub enum LocalIpcError {
 #[serde(rename_all = "snake_case")]
 pub enum LocalOp {
     ShellSnapshot,
+    AppLaunch,
+    NotificationsList,
+    NotificationDismiss,
+    NotificationClearAll,
+    QuickSettingsSet,
     AlbumsList,
     AlbumsCreate,
     AlbumsUpdate,
@@ -61,6 +66,36 @@ pub enum LocalOp {
     OwnerLock,
     PreferencesGet,
     PreferencesSet,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppLaunchReq { pub app_id: String }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationLevel { Info, Warning, Critical }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationRecord {
+    pub id: String,
+    pub title: String,
+    pub message: String,
+    pub level: NotificationLevel,
+    pub timestamp: i64,
+    pub app_id: Option<String>,
+    pub is_dismissed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationDismissReq { pub id: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct QuickSettingsUpdate {
+    pub wifi_enabled: Option<bool>,
+    pub volume_pct: Option<u8>,
+    pub is_muted: Option<bool>,
+    pub brightness_pct: Option<u8>,
+    pub dnd_active: Option<bool>,
 }
 
 /// Encode one JSON message with a four-byte big-endian length prefix.
@@ -224,6 +259,18 @@ pub struct BackupSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_dtos_round_trip_json_and_frames() {
+        let launch = AppLaunchReq { app_id: "photos".into() };
+        let notice = NotificationRecord { id: "n1".into(), title: "Disk".into(),
+            message: "Needs attention".into(), level: NotificationLevel::Critical,
+            timestamp: 42, app_id: Some("files".into()), is_dismissed: false };
+        assert_eq!(serde_json::from_value::<AppLaunchReq>(serde_json::to_value(&launch).unwrap()).unwrap(), launch);
+        assert_eq!(serde_json::from_value::<NotificationRecord>(serde_json::to_value(&notice).unwrap()).unwrap(), notice);
+        assert_eq!(decode_frame::<AppLaunchReq>(&encode_frame(&launch).unwrap()).unwrap(), launch);
+        assert_eq!(decode_frame::<NotificationRecord>(&encode_frame(&notice).unwrap()).unwrap(), notice);
+    }
 
     #[test]
     fn request_frame_round_trip_and_bounds() {

@@ -1,35 +1,33 @@
-# Phase 4 — Active Slice: P4.3c (System Power Coordinator, Suspend/Resume mTLS Continuity & Local Assets Foundation)
+# Phase 4 — Active Slice: P4.4a (Isolated Web Runner & Sandboxed Browser Controller Foundation)
 
 ## Goal
-Implement system power management, connection shutdown/drain handles before sleep, wake revocation, and local OS assets foundation:
-1. Implement `hub/crates/hh-service/src/power.rs` (system power coordinator, logind sleep inhibition, wake/lock revocation for remote input and screen sharing per §4.1).
-2. Update `hub/crates/hh-service/src/main.rs` to wire the power coordinator and graceful sleep shutdown.
-3. Update `hub/crates/hh-net/src/lib.rs` to track active mTLS connection shutdown handles to drain/close before sleep.
-4. Create `tools/image-builder/tests/suspend-resume.sh` (validation test for sleep inhibition, wake revocation, and safe queue recovery).
-5. Define `desktop/assets/os/manifest.json` and `desktop/assets/os/LICENSES.md` for nine apps and bundled fonts (Roboto, Noto Sans Devanagari).
-6. Implement `desktop/scripts/check-os-assets.mjs` and add `"assets:check"` to `desktop/package.json`.
+Implement the standalone unprivileged web-runner foundation, bounded IPC controller protocol, download quarantine manager, and browser isolation test:
+1. Create `desktop/web-runner/Cargo.toml` (standalone unprivileged web runner crate).
+2. Implement `desktop/web-runner/src/main.rs` (runner process entry point with `--app-id`, `--profile-dir`, `--socket`).
+3. Implement `desktop/web-runner/src/control.rs` (bounded IPC controller protocol for tab lifecycle, origin sanitization, and shutdown).
+4. Implement `desktop/web-runner/src/downloads.rs` (quarantine download manager ensuring untrusted downloads are isolated pending user confirmation).
+5. Update `desktop/src-tauri/src/browser.rs` to support quarantine download inspection and runner controller models.
+6. Create automated validation test `tools/image-builder/tests/browser-isolation.sh`.
 
 ## Files to Touch
-- `hub/crates/hh-service/src/power.rs` (NEW)
-- `hub/crates/hh-service/src/main.rs` (EDIT)
-- `hub/crates/hh-net/src/lib.rs` (EDIT)
-- `tools/image-builder/tests/suspend-resume.sh` (NEW)
-- `desktop/assets/os/manifest.json` (NEW)
-- `desktop/assets/os/LICENSES.md` (NEW)
-- `desktop/scripts/check-os-assets.mjs` (NEW)
-- `desktop/package.json` (EDIT)
+- `desktop/web-runner/Cargo.toml` (NEW)
+- `desktop/web-runner/src/main.rs` (NEW)
+- `desktop/web-runner/src/control.rs` (NEW)
+- `desktop/web-runner/src/downloads.rs` (NEW)
+- `desktop/src-tauri/src/browser.rs` (EDIT)
+- `tools/image-builder/tests/browser-isolation.sh` (NEW)
 
 ## Targeted Acceptance Checks
+- `cargo check --manifest-path desktop/web-runner/Cargo.toml`
+- `cargo test --manifest-path desktop/web-runner/Cargo.toml`
 - `cargo check --manifest-path hub/Cargo.toml`
-- `cargo test --manifest-path hub/Cargo.toml -p hh-service -p hh-net`
-- `bash -n tools/image-builder/tests/suspend-resume.sh`
-- `npm --prefix desktop run assets:check`
+- `bash -n tools/image-builder/tests/browser-isolation.sh`
 - `npm --prefix desktop run check`
 - `npm --prefix desktop test`
 
 ## Status
-- Status: P4.3c foundation implemented; Linux power integration pending
-- Gate: G4 (Isolation, Lock Screen, Notifications & Capture Baseline)
-- Checks: workspace cargo check, hh-service/hh-net tests, shell validation, and desktop asset/check/tests pass on macOS.
-- Blockers: logind delay inhibition and sleep notifications are not connected; the coordinator's revocation flags are not enforced by remote input/capture services; font binaries are not yet bundled. Physical sleep/wake and transfer continuity require Linux hardware/QEMU guest validation.
-- Reference: [PHASE4_IMPLEMENTATION_PLAN.md §3, §4.6, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md), [PHASE4_UI_UX_DESIGN.md §2.1, §4.6](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_UI_UX_DESIGN.md)
+- Status: P4.4a READY FOR CODEX GENERATION
+- Gate: G5 (Full Nine-App Suite & Browser Sandbox Verification)
+- Blockers: Linux namespace setup (bwrap/bubblewrap) and WebKitGTK runtime require a Linux host; macOS host validates protocol, quarantine state machines, and contracts.
+- Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.2, §4.5, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md), [PHASE4_SECURITY_ARCHITECTURE.md §6.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_SECURITY_ARCHITECTURE.md)
+

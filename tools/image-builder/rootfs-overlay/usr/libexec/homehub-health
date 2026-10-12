@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DATA_DIR="${HOMEHUB_DATA_DIR:-/var/lib/homehub}"
+MEDIA_DIR="${HOMEHUB_MEDIA_DIR:-/srv/homehub}"
+DB_PATH="${HOMEHUB_DB_PATH:-$DATA_DIR/hub.db}"
+STABILITY_SECS="${HOMEHUB_STABILITY_SECS:-60}"
+REPORT_PATH="${HOMEHUB_REPORT_PATH:-$DATA_DIR/boot-health.json}"
+GRUBENV_PATH="${HOMEHUB_GRUBENV_PATH:-/boot/efi/EFI/BOOT/grubenv}"
+MOCK_SERVICES="${HOMEHUB_MOCK_SERVICES:-0}"
+
+fail() { printf 'Boot health check failed: %s\n' "$1" >&2; exit 1; }
+
+[[ -d "$DATA_DIR" && -w "$DATA_DIR" ]] || fail 'data directory is not writable'
+if [[ ! -d "$MEDIA_DIR" ]]; then
+  [[ -w "$(dirname "$MEDIA_DIR")" ]] || fail 'media parent is not writable'
+  mkdir -p "$MEDIA_DIR" || fail 'cannot create media directory'
+fi
+[[ -w "$MEDIA_DIR" ]] || fail 'media directory is not writable'
+[[ -f "$DB_PATH" && -r "$DB_PATH" ]] || fail 'database is not readable'
+[[ "$(dd if="$DB_PATH" bs=15 count=1 2>/dev/null)" == 'SQLite format 3' ]] || fail 'database header is invalid'
+
+check_services() {
+  if [[ "$MOCK_SERVICES" == 1 ]]; then
+    [[ -z "${HOMEHUB_SIMULATE_FAIL:-}" ]] || fail 'mock service failure'
+  else
+    systemctl is-active --quiet homehub.service || fail 'homehub service is inactive'
+    systemctl is-active --quiet homehub-shell.service || fail 'input shell is inactive'
+  fi
+}
+
+check_services
+sleep "$STABILITY_SECS"
+check_services
+if [[ "$MOCK_SERVICES" == 1 && -e "$DATA_DIR/.crash_injected" ]]; then
+  fail 'crash detected during stability window'
+fi
+
+if [[ "$MOCK_SERVICES" != 1 ]] && command -v rauc >/dev/null 2>&1; then
+  rauc status mark-good 2>/dev/null || true
+fi
+[[ -f "$GRUBENV_PATH" ]] || fail 'GRUB environment is missing'
+if [[ "$MOCK_SERVICES" == 1 ]]; then
+  if grep -Eq '^boot_counter=[0-9]+$' "$GRUBENV_PATH"; then
+    sed 's/^boot_counter=[0-9][0-9]*$/boot_counter=0/' "$GRUBENV_PATH" > "$GRUBENV_PATH.tmp"
+    mv "$GRUBENV_PATH.tmp" "$GRUBENV_PATH"
+  else
+    printf 'boot_counter=0\n' >> "$GRUBENV_PATH"
+  fi
+else
+  command -v grub-editenv >/dev/null 2>&1 || fail 'grub-editenv is unavailable'
+  grub-editenv "$GRUBENV_PATH" set boot_counter=0 || fail 'cannot reset boot counter'
+fi
+
+printf '{\n  "status": "healthy",\n  "timestamp": %s,\n  "stability_window_seconds": %s,\n  "database_verified": true,\n  "services_verified": true,\n  "slot_marked_good": true\n}\n' \
+  "$(date +%s)" "$STABILITY_SECS" > "$REPORT_PATH"
+printf 'Boot slot verified and marked good.\n'

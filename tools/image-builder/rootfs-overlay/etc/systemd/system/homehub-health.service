@@ -1,0 +1,14 @@
+[Unit]
+Description=Home Hub boot slot health and stability watchdog
+ConditionKernelCommandLine=!homehub.mode=trial
+After=homehub.service homehub-shell.service
+Requires=homehub.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/homehub-health
+RemainAfterExit=yes
+TimeoutSec=120s
+
+[Install]
+WantedBy=multi-user.target

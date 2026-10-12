@@ -20,8 +20,7 @@ Implement the boot slot health watchdog and automated A/B rollback test probes (
 - `git diff --check`
 
 ## Status
-- Status: P4.6b READY FOR CODEX GENERATION
+- Status: P4.6b COMPLETE — targeted acceptance checks passed on macOS
 - Gate: G8 (Signed A/B, Rollback, and Measured Budgets)
 - Blockers: None
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §2.5, §5.3](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
-

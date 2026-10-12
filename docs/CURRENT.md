@@ -28,8 +28,7 @@ Implement the native live installer engine (§4.3, §5.3) supporting hardware au
 - `git diff --check`
 
 ## Status
-- Status: P4.5d READY FOR CODEX GENERATION
+- Status: P4.5d implemented; targeted macOS checks pass.
 - Gate: G7 (Installer, Migration, and Data Continuity Verification)
-- Blockers: None
+- Remaining: Linux hardware/EFI write and Windows 2022 checks require their target environments. Keep Windows mode is explicitly rejected until a partition-preserving path exists. The hub check passes with an existing future-incompatibility warning for `block v0.1.6`.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.3, §5.3](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
-

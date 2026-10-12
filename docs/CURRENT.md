@@ -1,40 +1,30 @@
-# Phase 4 — Active Slice: P4.4c (Nine App Views & Frontend State Extraction)
+# Phase 4 — Active Slice: P4.4d (Desktop App Registry & Local Command Bridge)
 
 ## Goal
-Extract nine views from `desktop/src/App.svelte` into modular components under `desktop/src/apps/`, establish modular frontend state in `desktop/src/state/`, and connect local album CRUD:
-1. Implement extracted views: `desktop/src/apps/{Photos,Files,Browser,YouTube,Music,Notes,Calculator,Devices,Settings}.svelte`.
-2. Implement state modules: `desktop/src/state/{hub,private,music,notes}.js`.
-3. Update `desktop/src/App.svelte` to act as an app host router using the extracted components.
-4. Update `desktop/src/api.js` to expose local broker album CRUD and backup summary commands.
+Implement the desktop app authorization registry, map trusted Tauri windows to allowed commands, and bridge local album CRUD and backup summary commands to Tauri:
+1. In `desktop/src-tauri/src/app_registry.rs`: Implement the controller-owned app registry mapping window label + origin + owner session + app ID to authorized commands per §4.4.
+2. In `desktop/src-tauri/src/os_bridge.rs`: Implement Tauri commands for `albums_list`, `albums_create`, `albums_update`, `albums_delete`, `albums_items_list`, `albums_items_add`, `albums_items_remove`, and `backup_summary`.
+3. In `desktop/src-tauri/src/main.rs`: Register `app_registry` and `os_bridge`, replace single-window `trusted()` checks with app registry validation, and register the new commands in the Tauri invoke handler.
+4. In `desktop/src-tauri/capabilities/trusted-shell.json`: Authorize trusted app window labels while strictly denying remote content.
 
 ## Files to Touch
-- `desktop/src/apps/Photos.svelte` (NEW)
-- `desktop/src/apps/Files.svelte` (NEW)
-- `desktop/src/apps/Browser.svelte` (NEW)
-- `desktop/src/apps/YouTube.svelte` (NEW)
-- `desktop/src/apps/Music.svelte` (NEW)
-- `desktop/src/apps/Notes.svelte` (NEW)
-- `desktop/src/apps/Calculator.svelte` (NEW)
-- `desktop/src/apps/Devices.svelte` (NEW)
-- `desktop/src/apps/Settings.svelte` (NEW)
-- `desktop/src/state/hub.js` (NEW)
-- `desktop/src/state/private.js` (NEW)
-- `desktop/src/state/music.js` (NEW)
-- `desktop/src/state/notes.js` (NEW)
-- `desktop/src/App.svelte` (EDIT)
-- `desktop/src/api.js` (EDIT)
+- `desktop/src-tauri/src/app_registry.rs` (NEW)
+- `desktop/src-tauri/src/os_bridge.rs` (NEW)
+- `desktop/src-tauri/src/main.rs` (EDIT)
+- `desktop/src-tauri/capabilities/trusted-shell.json` (EDIT)
 
 ## Targeted Acceptance Checks
+- `cargo check --manifest-path desktop/src-tauri/Cargo.toml`
 - `npm --prefix desktop run check`
 - `npm --prefix desktop test`
-- `npm --prefix desktop run assets:check`
 - `cargo check --manifest-path hub/Cargo.toml`
 - `git diff --check`
 
 ## Status
-- Status: P4.4c frontend extraction implemented; targeted checks pass (desktop check: 0 errors, 0 warnings)
+- Status: P4.4c complete; P4.4d READY FOR CODEX GENERATION
 - Gate: G6 (All Nine Apps Function & Local Data Invariants)
-- Blockers: Desktop Tauri command registry does not yet expose `albums_*` or `backup_summary`; album and backup UI need that bridge before G6 can be accepted. Windows functional checks remain pending on this Mac.
+- Blockers: None
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.4, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
+
 
 

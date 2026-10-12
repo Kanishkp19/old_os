@@ -20,8 +20,7 @@ Implement the release update packaging and system slot configuration for signed 
 - `git diff --check`
 
 ## Status
-- Status: P4.6a READY FOR CODEX GENERATION
+- Status: P4.6a IMPLEMENTED; targeted checks passed on macOS
 - Gate: G8 (Signed A/B, Rollback, and Measured Budgets)
-- Blockers: None
+- Blockers: Signed bundle generation with native RAUC remains unverified on Linux; the macOS fallback is an unsigned mock archive.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §2.5, §5.3](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
-

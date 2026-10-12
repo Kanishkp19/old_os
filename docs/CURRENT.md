@@ -1,28 +1,31 @@
-# Phase 4 — Active Slice: P4.4d (Desktop App Registry & Local Command Bridge)
+# Phase 4 — Active Slice: P4.5a (Authenticated Identity & Storage Migration Foundation)
 
 ## Goal
-Implement the desktop app authorization registry, map trusted Tauri windows to allowed commands, and bridge local album CRUD and backup summary commands to Tauri:
-1. In `desktop/src-tauri/src/app_registry.rs`: Implement the controller-owned app registry mapping window label + origin + owner session + app ID to authorized commands per §4.4.
-2. In `desktop/src-tauri/src/os_bridge.rs`: Implement Tauri commands for `albums_list`, `albums_create`, `albums_update`, `albums_delete`, `albums_items_list`, `albums_items_add`, `albums_items_remove`, and `backup_summary`.
-3. In `desktop/src-tauri/src/main.rs`: Register `app_registry` and `os_bridge`, replace single-window `trusted()` checks with app registry validation, and register the new commands in the Tauri invoke handler.
-4. In `desktop/src-tauri/capabilities/trusted-shell.json`: Authorize trusted app window labels while strictly denying remote content.
+Implement passphrase-encrypted identity migration bundles in `hh-auth` and verifiable storage migration manifests with BLAKE3 checkpointing in `hh-storage` (§4.3, §5.1, §5.2):
+1. In `hub/crates/hh-auth/src/migration.rs`: Implement passphrase-wrapped `IdentityBundle` encryption/decryption using AEAD and KDF, CA key/cert pair validation, and paired device migration records.
+2. In `hub/crates/hh-auth/src/lib.rs`: Expose `pub mod migration;`.
+3. In `hub/crates/hh-storage/src/migration.rs`: Implement `StorageMigrationManifest`, BLAKE3 file copy verification, and resumable `MigrationCheckpoint` tracking.
+4. In `hub/crates/hh-storage/src/lib.rs`: Expose `pub mod migration;`.
+5. Add unit tests verifying: roundtrip encryption/decryption, wrong passphrase rejection, CA fingerprint and key-pair integrity checks, file copy BLAKE3 hash verification, and resumable migration checkpointing.
 
 ## Files to Touch
-- `desktop/src-tauri/src/app_registry.rs` (NEW)
-- `desktop/src-tauri/src/os_bridge.rs` (NEW)
-- `desktop/src-tauri/src/main.rs` (EDIT)
-- `desktop/src-tauri/capabilities/trusted-shell.json` (EDIT)
+- `hub/crates/hh-auth/Cargo.toml` (EDIT)
+- `hub/crates/hh-auth/src/migration.rs` (NEW)
+- `hub/crates/hh-auth/src/lib.rs` (EDIT)
+- `hub/crates/hh-storage/src/migration.rs` (NEW)
+- `hub/crates/hh-storage/src/lib.rs` (EDIT)
 
 ## Targeted Acceptance Checks
-- `cargo check --manifest-path desktop/src-tauri/Cargo.toml`
-- `npm --prefix desktop run check`
-- `npm --prefix desktop test`
 - `cargo check --manifest-path hub/Cargo.toml`
+- `cargo test --manifest-path hub/Cargo.toml -p hh-auth -p hh-storage`
+- `cargo clippy --manifest-path hub/Cargo.toml --workspace --all-targets -- -D warnings`
+- `cargo fmt --all --manifest-path hub/Cargo.toml -- --check`
 - `git diff --check`
 
 ## Status
-- Status: P4.4d prompt implementation complete; targeted checks passed on macOS (desktop and hub cargo check, desktop Svelte check and tests, desktop Clippy with zero warnings, registry unit test, git diff --check).
-- Gate: G6 (All Nine Apps Function & Local Data Invariants)
-- Blockers: Windows packaging and WebView2 runtime validation remain pending on Windows. The supplied prompt specifies label/origin validation only; the broader §4.4 owner-session/app-ID command policy remains future work.
-- Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.4, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
+- Status: P4.5a READY FOR CODEX GENERATION
+- Gate: G7 (Installer, Migration, and Data Continuity Verification)
+- Blockers: None
+- Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.3, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
+
 

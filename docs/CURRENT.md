@@ -21,8 +21,7 @@ Implement the OS metrics measurement engine and idle budget test suite (§2.1, �
 - `git diff --check`
 
 ## Status
-- Status: P4.6c READY FOR CODEX GENERATION
+- Status: P4.6c IMPLEMENTED; targeted checks passed on macOS (2026-10-12)
 - Gate: G8 (Signed A/B, Rollback, and Measured Budgets)
-- Blockers: None
+- Blockers: Live Linux boot-duration measurement and Windows/Ubuntu CI remain pending; mock procfs verifies budget enforcement. `cargo check` reports an existing future-compatibility notice for `block` v0.1.6.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §2.1, §5.3, §8](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
-

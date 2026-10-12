@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 
 mod fake_client;
 mod migration;
+mod os_metrics;
 
 #[derive(Parser)]
 #[command(name = "hh-tools", about = "Home Hub dev/test tooling")]
@@ -25,6 +26,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Measure OS memory, CPU, boot time, and verify resource budgets.
+    OsMetrics {
+        #[arg(long, default_value_t = 1)]
+        sample_seconds: u64,
+        #[arg(long, default_value = "hh-service")]
+        service_name: String,
+        #[arg(long)]
+        procfs: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Migration export, verify, and import CLI.
     Migration {
         #[command(subcommand)]
@@ -85,6 +97,69 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::OsMetrics {
+            sample_seconds,
+            service_name,
+            procfs,
+            json,
+        } => {
+            let report = os_metrics::sample_metrics(
+                procfs.as_deref(),
+                std::time::Duration::from_secs(sample_seconds),
+                &service_name,
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("OS Resource Metrics Report");
+                println!(
+                    "  System Memory: {:.1} MB / limit {:.1} MB (pass: {})",
+                    report.system_memory.used_mb,
+                    report.budgets.system_memory_limit_mb,
+                    report.budgets.system_memory_pass
+                );
+                println!(
+                    "  System CPU:    {:.1}% / limit {:.1}% (pass: {})",
+                    report.system_cpu_percent,
+                    report.budgets.system_cpu_limit_percent,
+                    report.budgets.system_cpu_pass
+                );
+                if let Some(ref service) = report.service {
+                    println!(
+                        "  Service RSS:   {:.1} MB / limit {:.1} MB (pass: {})",
+                        service.rss_mb,
+                        report.budgets.service_memory_limit_mb,
+                        report.budgets.service_memory_pass
+                    );
+                    println!(
+                        "  Service CPU:   {:.1}% / limit {:.1}% (pass: {})",
+                        service.cpu_percent,
+                        report.budgets.service_cpu_limit_percent,
+                        report.budgets.service_cpu_pass
+                    );
+                }
+                if let Some(boot_time) = report.boot_time_secs {
+                    println!(
+                        "  Boot Time:     {:.1} s / limit {:.1} s (pass: {})",
+                        boot_time,
+                        report.budgets.boot_time_limit_secs,
+                        report.budgets.boot_time_pass
+                    );
+                }
+                println!(
+                    "  Overall:       {}",
+                    if report.budgets.overall_pass {
+                        "PASSED"
+                    } else {
+                        "FAILED"
+                    }
+                );
+            }
+            if !report.budgets.overall_pass {
+                std::process::exit(1);
+            }
+        }
         Cmd::Migration { action } => migration::run(action).await?,
         Cmd::FakeClient { action } => fake_client::run(action).await?,
         Cmd::Bench { size, hub } => {

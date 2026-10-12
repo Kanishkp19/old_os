@@ -1,4 +1,30 @@
-# Phase 4 — Active Slice: P4.6c (OS Metrics Engine & Idle Budget Verification)
+# Active Slice — Premium Desktop Shell
+
+## Goal
+Replace the desktop admin layout with a lightweight OS-style shell, preserving all nine apps, translations, native commands, and state stores.
+
+## Files to Touch
+- `desktop/src/App.svelte`
+- `desktop/src/style.css`
+- `desktop/src/shell/{StatusBar,Dock,Window,QuickSettings,Icon}.svelte`
+- `desktop/src/shell/{labels,windows}.js`
+- `desktop/tests/windows.test.mjs`
+- `docs/CURRENT.md`
+
+## Targeted Acceptance Checks
+- `npm --prefix desktop run check`
+- `npm --prefix desktop test`
+- `git diff --check`
+
+## Status
+- IMPLEMENTED (2026-10-12). Svelte check: 0 errors / 0 warnings; frontend tests: 5 passed; git diff whitespace check passed.
+- Browser smoke checks with mocked Hub responses: nine app frames; calculator; minimize/restore/close; pointer drag, keyboard move/resize; per-app search retention; themes; drawer focus restoration; Hindi; clean-profile startup; 1440/1366/390/320px window bounds. No browser runtime errors.
+- CSS-only wallpaper and icons; no new dependencies. API module, state stores, existing translations, native code, and all nine app component files unchanged.
+- Native brightness and secure lock have no existing frontend command. Brightness is unavailable; `hh-lock` is an event request, not a security boundary or confirmed lock. App media volume uses HTML media controls.
+- Real native app, Hindi rendering, and hardware validation remain pending.
+
+## Previous Slice
+### Phase 4 — Completed Slice: P4.6c (OS Metrics Engine & Idle Budget Verification)
 
 ## Goal
 Implement the OS metrics measurement engine and idle budget test suite (§2.1, §5.3, §8, Gate G8):

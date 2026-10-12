@@ -19,8 +19,7 @@ Implement guarded, safety-verified USB creation scripts for Linux/macOS and Wind
 - `git diff --check`
 
 ## Status
-- Status: P4.5c READY FOR CODEX GENERATION
+- Status: P4.5c IMPLEMENTED; host shell checks and cargo check passed
 - Gate: G7 (Installer, Migration, and Data Continuity Verification)
-- Blockers: Windows PowerShell execution cannot run on macOS (marked pending for Windows CI).
+- Blockers: Windows PowerShell execution and physical USB write/readback remain pending on Windows CI and representative hardware.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §5.3](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
-

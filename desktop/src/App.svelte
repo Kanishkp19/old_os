@@ -3,9 +3,21 @@
   import { listen } from '@tauri-apps/api/event';
   import { api, authorize, bytes, command, exportText, items, json, media, native, saveFile } from './api.js';
   import { calculate } from './calculator.js';
+  import { createHubState } from './state/hub.js';
+  import { loadInterface, saveInterface, loadPrivateTrash as privateTrashList } from './state/private.js';
+  import { tracksForPlaylist, createPlaylist, changePlaylist, advanceTrack } from './state/music.js';
+  import { createNoteEditor } from './state/notes.js';
+  import Photos from './apps/Photos.svelte';
+  import Files from './apps/Files.svelte';
+  import Notes from './apps/Notes.svelte';
+  import Browser from './apps/Browser.svelte';
+  import YouTube from './apps/YouTube.svelte';
+  import Music from './apps/Music.svelte';
+  import Calculator from './apps/Calculator.svelte';
+  import Devices from './apps/Devices.svelte';
+  import Settings from './apps/Settings.svelte';
   import { icons, routes, translate } from './i18n.js';
   import Details from './Details.svelte';
-  import PhotoTile from './PhotoTile.svelte';
 
   let route = routes.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'Home';
   let language = 'en', large = false, contrast = false, reduced = true, notifications = true, preferenceId = null;
@@ -30,30 +42,24 @@
   $: document.documentElement.dataset.large = String(large);
   $: document.documentElement.dataset.contrast = String(contrast);
   $: document.documentElement.dataset.reduced = String(reduced);
-  $: musicTracks = playlist ? (json(playlist.body, { ids: [] }).ids || []).map(id => music.find(f => f.id === id)).filter(Boolean) : music;
+  $: musicTracks = tracksForPlaylist(music, playlist);
   $: visibleNotes = records.filter(r => `${r.title}\n${r.body}`.toLowerCase().includes(query.toLowerCase()));
   const date = value => value ? new Date(value).toLocaleString(language === 'hi' ? 'hi-IN' : 'en-IN') : '—';
   const progress = row => row.size ? Math.min(100, Math.round(100 * row.bytes_verified / row.size)) : 0;
   const message = e => translate(language, String(e?.message || e));
-  async function run(action, success = '') {
-    if (busy) return; busy = true; error = ''; notice = '';
-    try { const value = await action(); notice = success; return value; }
-    catch (e) { error = message(e); }
-    finally { busy = false; }
-  }
+  const hub = createHubState(key => translate(language, key));
+  hub.state.subscribe(status => { busy = status.busy; error = status.error; notice = status.notice; });
+  async function run(action, success = '') { return hub.run(action, success); }
   async function preference() {
-    if (native) {
-      const saved = await command('local_list', { kind: 'preference', query: '', trash: false });
-      const row = saved.find(r => r.title === 'interface');
-      if (row) { preferenceId = row.id; const p = json(row.body); language = p.language === 'hi' ? 'hi' : 'en'; large = !!p.large; contrast = !!p.contrast; reduced = p.reduced !== false; notifications = p.notifications !== false; }
-    } else { try { const p = json(localStorage.getItem('hh-interface')); language = p.language === 'hi' ? 'hi' : 'en'; large = !!p.large; contrast = !!p.contrast; reduced = p.reduced !== false; } catch {} }
+    const value = await loadInterface();
+    preferenceId = value.id; language = value.language; large = value.large;
+    contrast = value.contrast; reduced = value.reduced; notifications = value.notifications;
   }
   async function savePreferences() {
-    const value = { language, large, contrast, reduced, notifications };
-    try { if (native) preferenceId = (await command('local_save', { id: preferenceId, kind: 'preference', title: 'interface', body: JSON.stringify(value) })).id; else localStorage.setItem('hh-interface', JSON.stringify(value)); }
+    try { preferenceId = await saveInterface({ id: preferenceId, language, large, contrast, reduced, notifications }); }
     catch (e) { error = message(e); }
   }
-  async function loadPrivateTrash() { privateTrash = (await Promise.all(['note','playlist','bookmark'].map(kind => command('local_list',{kind,query:'',trash:true})))).flat(); }
+  async function loadPrivateTrash() { privateTrash = await privateTrashList(); }
   async function load() {
     const generation = ++loadGeneration, current = route;
     const put = (key, value) => { if (generation === loadGeneration) data = { ...data, [key]: value }; };
@@ -65,13 +71,13 @@
       return;
     }
     if (current === 'Home') {
-      const values = await Promise.all([api('/api/overview'), api('/api/settings'), api('/api/alerts')]);
+      const snapshot = await hub.overview(); const values = [snapshot.overview, snapshot.settings, snapshot.alerts];
       if (generation !== loadGeneration) return;
       [overview, settings] = values; const alerts = items(values[2]); const fresh = alerts.find(a => !alertIds.has(a.id)); if (notifications && alertsInitialized && fresh) notice = fresh.message; alertIds = new Set(alerts.map(a => a.id)); alertsInitialized = true; put('alerts', alerts); connected = true; authNeeded = false;
       if (!settings.setup_complete && !mounted) { setup = true; hubName = settings.hub_name; copyFolder = settings.second_copy_root || ''; }
     } else if (current === 'Files' || current === 'Music') {
       const params = new URLSearchParams({ limit: '100', sort, ...(query ? { q: query } : {}), ...(current === 'Music' ? { category: 'music' } : category ? { category } : {}) });
-      const value = await api(`/api/files?${params}`);
+      const value = await hub.files(params);
       if (generation !== loadGeneration) return;
       put('files', items(value)); cursor = value.next_cursor;
       if (current === 'Music') { music = items(value); if (native) playlists = await command('local_list', { kind: 'playlist', query: '', trash: false }); }
@@ -120,36 +126,30 @@
   }
   async function scanImport() { importScan = await api('/api/import/scan', 'POST', { paths: importFolders.split('\n').map(s => s.trim()).filter(Boolean) }); }
   async function startImport() { if (importChoice === 'later') { importScan = null; return; } await api('/api/import', 'POST', { paths: importFolders.split('\n').map(s => s.trim()).filter(Boolean), mode: importChoice === 'keep' ? 'keep' : 'copy' }); importScan = null; importFolders = ''; await load(); }
-  function queueNote() { noteRevision++; saveState = 'saving'; clearTimeout(saveTimer); saveTimer = setTimeout(() => flushNote(), 650); }
-  async function flushNote() {
-    clearTimeout(saveTimer); if (!note || !['saving','error'].includes(saveState)) return saveQueue;
-    const id = note.id, title = noteTitle, body = noteBody, revision = noteRevision;
-    saveQueue = saveQueue.catch(() => {}).then(async () => {
-      try { const row = await command('local_save', { id, kind: 'note', title, body }); records = records.map(r => r.id === row.id ? row : r); if (note?.id === id && noteRevision === revision) { note = row; saveState = 'saved'; } }
-      catch (e) { saveState = 'error'; error = message(e); }
-    }); return saveQueue;
-  }
-  async function chooseNote(row) { await flushNote(); if (saveState === 'error') return; note = row; noteTitle = row.title; noteBody = row.body; saveState = 'saved'; }
-  async function newNote() { await flushNote(); if (saveState === 'error') return; const row = await command('local_save', { id: null, kind: 'note', title: t('Untitled note'), body: '' }); records = [row, ...records]; await chooseNote(row); }
-  async function noteAction(restore) { await flushNote(); if (saveState === 'error') return; await command(restore ? 'local_restore' : 'local_trash', { id: note.id }); note = null; await load(); }
-  async function noteFile(exportType) { await flushNote(); if (saveState === 'error') return; await command('note_export', { id: note.id, format: exportType }); }
-  async function importNote() { const row = await command('note_import'); if (row) { noteTrash = false; await load(); await chooseNote(row); } }
+  const notes = createNoteEditor(
+    () => ({ records, note, noteTitle, noteBody, noteTrash, saveState }),
+    value => { if ('records' in value) records = value.records; if ('note' in value) note = value.note; if ('noteTitle' in value) noteTitle = value.noteTitle; if ('noteBody' in value) noteBody = value.noteBody; if ('noteTrash' in value) noteTrash = value.noteTrash; if ('saveState' in value) saveState = value.saveState; },
+    load, key => t(key), e => { error = message(e); }
+  );
+  const { queueNote, flushNote, chooseNote, newNote, noteAction, noteFile } = notes;
+  const importNote = notes.noteImport;
   async function website(url = address, isolated = route === 'YouTube') { const label = await command(isolated ? 'youtube_open' : 'browser_open', { url }); await load(); return label; }
   async function restoreTabs() { try { await command('browser_restore'); } finally { await load(); } }
   async function browserAction(tab, action) { await command('browser_action', { label: tab.label, action, url: action === 'navigate' ? address : null }); await load(); }
   async function bookmark(tab) { await command('local_save', { id: null, kind: 'bookmark', title: tab.title, body: JSON.stringify({ url: tab.url }) }); await load(); }
   function permissions(tab) { permissionTab = tab; requestedPermission = ''; websitePermissions = tab.permissions.map(p => p.split('|').pop()); allowDownloads = tab.downloads; }
   async function savePermissions() { await command('browser_permissions', { label: permissionTab.label, downloads: allowDownloads, permissions: websitePermissions }); permissionTab = null; await load(); }
-  async function newPlaylist() { const row = await command('local_save', { id: null, kind: 'playlist', title: formValue.trim() || t('New playlist'), body: JSON.stringify({ ids: [] }) }); playlists = [row, ...playlists]; playlist = row; form = null; }
-  async function addTrack(file, remove = false) { if (!playlist) return; let ids = json(playlist.body, { ids: [] }).ids || []; ids = remove ? ids.filter(id => id !== file.id) : [...new Set([...ids, file.id])]; playlist = await command('local_save', { id: playlist.id, kind: 'playlist', title: playlist.title, body: JSON.stringify({ ids }) }); playlists = playlists.map(row => row.id === playlist.id ? playlist : row); }
+  async function newPlaylist() {
+    const row = await createPlaylist(formValue.trim() || t('New playlist'));
+    playlists = [row, ...playlists]; playlist = row; form = null;
+  }
+  async function addTrack(file, remove = false) {
+    if (!playlist) return;
+    playlist = await changePlaylist(playlist, file, remove);
+    playlists = playlists.map(row => row.id === playlist.id ? playlist : row);
+  }
   function nextTrack(direction = 1, automatic = false) {
-    if (direction > 0 && queuedTracks.length) { playing = queuedTracks[0]; queuedTracks = queuedTracks.slice(1); return; }
-    const choices = musicTracks; if (!choices.length) { playing = null; return; }
-    const index = choices.findIndex(r => r.id === playing?.id);
-    if (automatic && !repeat && index === choices.length - 1 && !shuffle) { playing = null; return; }
-    const shuffled = choices.filter(r => r.id !== playing?.id);
-    const next = shuffle && shuffled.length ? shuffled[Math.floor(Math.random() * shuffled.length)] : choices[(index + direction + choices.length) % choices.length];
-    playing = next;
+    ({ playing, queuedTracks } = advanceTrack({ playing, queuedTracks, tracks: musicTracks, shuffle, repeat }, direction, automatic));
   }
   async function loadCalculatorHistory() {
     const saved = native ? (await command('local_list', { kind: 'preference', query: '', trash: false })).find(row => row.title === 'calculator-history') : null;
@@ -217,7 +217,7 @@
     const change = () => { const next = location.hash.slice(1); if (routes.includes(next) && next !== route) go(next); };
     const hiding = () => { if (document.hidden) flushNote(); else if (!busy && ['Home','Transfers','Storage','Devices','Remote'].includes(route)) refresh(); };
     window.addEventListener('hashchange', change); document.addEventListener('visibilitychange', hiding);
-    return () => { cancelled = true; clearInterval(timer); clearTimeout(saveTimer); for (const unlisten of unlisteners) unlisten(); window.removeEventListener('hashchange', change); document.removeEventListener('visibilitychange', hiding); };
+    return () => { cancelled = true; clearInterval(timer); notes.dispose(); for (const unlisten of unlisteners) unlisten(); window.removeEventListener('hashchange', change); document.removeEventListener('visibilitychange', hiding); };
   });
 </script>
 
@@ -237,18 +237,11 @@
     {#if authNeeded && !native}<section class="card auth"><h2>{t('Unlock dashboard')}</h2><p>{t('No secret is included in this page. Use the installed app, or enter its local session key.')}</p><form on:submit|preventDefault={() => run(unlock)}><label>{t('Local session key')}<input type="password" autocomplete="off" bind:value={authKey} required /></label><button class="primary" disabled={busy}>{t('Unlock dashboard')}</button></form></section>{/if}
 
     {#if route === 'Home'}
-      <section class="welcome"><div><h2>{overview.name || 'Home Hub'}</h2><p>{t('Your private home cloud')}</p></div><button disabled={busy || !connected} on:click={() => run(async () => { await api('/api/pause-sharing', 'POST', { paused: !settings.pause_sharing }); await load(); })}>{t(settings.pause_sharing ? 'Resume sharing' : 'Pause sharing')}</button></section>
-      <div class="metrics"><div class="card"><span>{t('Free space')}</span><strong>{bytes(overview.free_bytes)}</strong><small>{bytes(overview.total_bytes)}</small></div><div class="card"><span>{t('Connected devices')}</span><strong>{overview.devices ?? '—'}</strong></div><div class="card"><span>{t('Active transfers')}</span><strong>{overview.active_transfers ?? '—'}</strong></div><div class="card"><span>{t('Verification')}</span><strong>{overview.copies ?? '—'}</strong><small>{t('A single drive is not a backup.')}</small></div></div>
-      <div class="launcher">{#each routes.slice(1) as item, index}<button class="card app-tile" on:click={() => go(item)}><span aria-hidden="true">{icons[index + 1]}</span><strong>{t(item)}</strong></button>{/each}</div>
-      <section class="card"><h2>{t('Alerts')}</h2>{#each data.alerts || [] as alert}<div class="row"><div><strong>{alert.message}</strong><small>{date(alert.created_at)}</small></div><button on:click={() => run(() => mutate(`/api/alerts/${alert.id}/ack`))}>{t('Confirm')}</button></div>{:else}<p class="muted">{t('Nothing here yet.')}</p>{/each}</section>
+      <Photos {route} bind:busy bind:connected bind:overview bind:settings bind:data bind:cursor bind:photoMonth {t} {date} {run} {load} {more} {mutate} {viewFile} {go} {confirm}/>
     {:else if route === 'Files'}
-      <form class="toolbar filters" on:submit|preventDefault={() => run(load)}><label>{t('Search')}<input bind:value={query}/></label><label>{t('Category')}<select bind:value={category} on:change={() => run(load)}><option value="">{t('All')}</option>{#each [['photo','Photos'],['video','Videos'],['document','Documents'],['music','Music'],['backup','Backups'],['download','Downloads']] as cat}<option value={cat[0]}>{t(cat[1])}</option>{/each}</select></label><label>{t('Sort')}<select bind:value={sort} on:change={() => run(load)}><option value="newest">{t('Newest')}</option><option value="oldest">{t('Oldest')}</option><option value="name">{t('Name')}</option><option value="size">{t('Size')}</option></select></label><button>{t('Search')}</button></form>
-      <section class="card table-wrap"><table><thead><tr><th>{t('Name')}</th><th>{t('Size')}</th><th>{t('Category')}</th><th>{t('Second copy')}</th><th><span class="sr-only">{t('Settings')}</span></th></tr></thead><tbody>{#each data.files || [] as file}<tr><td><button class="link" on:click={() => viewFile(file)}>{file.name}</button></td><td>{bytes(file.size)}</td><td>{t(({photo:'Photos',video:'Videos',document:'Documents',music:'Music',download:'Downloads',backup:'Backups'})[file.category] || file.category)}</td><td>{t(file.second_copy_status === 'verified' ? 'Verified' : file.second_copy_status === 'disconnected' ? 'Drive disconnected' : 'Needs copy')}</td><td><div class="row-actions"><button on:click={() => run(() => saveFile(file))}>{t('Download')}</button><button on:click={() => fileForm(file,'Rename')}>{t('Rename')}</button><button on:click={() => fileForm(file,'Copy')}>{t('Copy')}</button><button on:click={() => fileForm(file,'Move')}>{t('Move')}</button><button on:click={() => confirm(t('Trash'), () => mutate(`/api/files/${file.id}`,'DELETE'),file.name)}>{t('Trash')}</button></div></td></tr>{:else}<tr><td colspan="5">{t('Nothing here yet.')}</td></tr>{/each}</tbody></table></section>
-      {#if cursor}<button on:click={() => run(more)}>{t('Load more')}</button>{/if}
+      <Files bind:data bind:query bind:sort bind:category bind:cursor {t} {run} {load} {more} {mutate} {confirm} {viewFile} {fileForm}/>
     {:else if route === 'Photos'}
-      <p class="muted">{t('Phone storage cleanup requires verified copies and confirmation on your phone.')}</p>
-      <div class="toolbar months"><button class:active={!photoMonth} on:click={() => { photoMonth = ""; run(load); }}>{t("All months")}</button>{#each items(data.years) as month}<button class:active={photoMonth === `${month.year}-${month.month}`} on:click={() => { photoMonth = `${month.year}-${month.month}`; run(load); }}>{month.year} / {month.month} · {month.count}</button>{/each}</div>
-      <section class="photo-grid">{#each data.photos || [] as photo}<button class="photo" on:click={() => viewFile({ ...photo, id: photo.file_id, mime: photo.mime || (photo.type_ === 'video' ? 'video/mp4' : 'image/jpeg'), name: photo.name || date(photo.taken_at) })}><PhotoTile {photo} label={date(photo.taken_at)} {t}/></button>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{#if cursor}<button on:click={() => run(more)}>{t('Load more')}</button>{/if}
+      <Photos {route} bind:busy bind:connected bind:overview bind:settings bind:data bind:cursor bind:photoMonth {t} {date} {run} {load} {more} {mutate} {viewFile} {go} {confirm}/>
     {:else if route === 'Transfers'}
       <section class="card"><h2>{t('Transfers')}</h2>{#each data.transfers || [] as transfer}<article class="transfer"><div class="row"><div><strong>{transfer.name}</strong><small>{transfer.device} · {t(transfer.status)}{transfer.error_code ? ` · ${transfer.error_code}` : ''}</small></div>{#if ['open','verifying'].includes(transfer.status)}<button on:click={() => confirm(t('Cancel'), () => mutate(`/api/transfers/${transfer.id}`,'DELETE'),transfer.name)}>{t('Cancel')}</button>{/if}</div><progress max="100" value={progress(transfer)} aria-label={transfer.name}></progress><small>{bytes(transfer.bytes_verified)} / {bytes(transfer.size)}{transfer.rate_bps ? ` · ${bytes(transfer.rate_bps)}/s` : ''}{transfer.eta_secs != null ? ` · ${transfer.eta_secs} s` : ''}</small></article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
     {:else if route === 'Storage'}
@@ -260,28 +253,21 @@
       <section class="card"><h2>{t('Review duplicates')}</h2>{#each data.duplicates || [] as group}<article><Details {t} value={group}/>{#each group.file_ids || [] as fileId}<button on:click={() => confirm(t('Review duplicates'), () => mutate(`/api/duplicates/${group.id}/resolve`,'POST',{keep_file_id:fileId}),fileId)}>{t('Keep in place')}: {fileId}</button>{/each}</article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
       <section class="card"><h2>{t('Similar photos')}</h2><p>{t('These are suggestions only. No photos are removed automatically.')}</p><div class="toolbar"><button disabled={busy} on:click={() => run(() => mutate('/api/duplicates/scan'))}>{t('Scan for similar photos')}</button><button disabled={busy} on:click={() => run(load)}>{t('Refresh')}</button></div>{#each data.similar || [] as group}<article>{#each group.files || [] as file}<div class="row"><img src={`/api/files/${file.id}/thumb`} alt={file.name} width="64" height="64" loading="lazy"/><span>{file.name}</span></div>{/each}</article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
     {:else if route === 'Notes'}
-      {#if native}<p class="muted">{t('Private to this Windows user. Autosaves offline.')}</p><div class="toolbar"><button class="primary" on:click={() => run(newNote)}>{t('New note')}</button><button on:click={() => run(importNote)}>{t('Import note')}</button><label class="check"><input type="checkbox" bind:checked={noteTrash} on:change={() => run(async () => { await flushNote(); if (saveState === "error") { noteTrash = !noteTrash; return; } note = null; await load(); })}/>{t('Trash')}</label><label>{t('Search')}<input bind:value={query}/></label></div><div class="notes-layout"><section class="card note-list">{#each visibleNotes as row}<button class:active={note?.id === row.id} on:click={() => run(() => chooseNote(row))}><strong>{row.title || t('Untitled note')}</strong><small>{date(row.updated_at)}</small><p>{row.body.slice(0,90)}</p></button>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section><section class="card editor">{#if note}<label>{t('Note title')}<input bind:value={noteTitle} maxlength="120" on:input={queueNote} readonly={noteTrash || busy}/></label><label class="note-body">{t('Note text')}<textarea bind:value={noteBody} on:input={queueNote} readonly={noteTrash || busy} spellcheck="true"></textarea></label><div class="toolbar"><span role="status">{saveState === 'saving' ? t('Saving…') : saveState === 'saved' ? t('Saved') : error}</span>{#if saveState === 'error'}<button on:click={flushNote}>{t('Retry')}</button>{/if}<button on:click={() => run(() => noteFile('md'))}>{t('Export Markdown')}</button><button on:click={() => run(() => noteFile('txt'))}>{t('Export text')}</button><button on:click={() => confirm(t(noteTrash ? 'Restore' : 'Trash'), () => noteAction(noteTrash),noteTitle)}>{t(noteTrash ? 'Restore' : 'Trash')}</button></div>{:else}<p>{t('New note')}</p>{/if}</section></div>{:else}<section class="card">{t('Private apps are available in the installed Windows app.')}</section>{/if}
+      <Notes bind:error bind:busy bind:query bind:note bind:noteTitle bind:noteBody bind:noteTrash bind:saveState {t} {visibleNotes} {date} {run} {load} {confirm} {queueNote} {flushNote} {chooseNote} {newNote} {noteAction} {noteFile} {importNote}/>
     {:else if route === 'Browser' || route === 'YouTube'}
-      <p>{t('Internet required. Website windows cannot access Home Hub or private apps.')}</p>{#if route === 'Browser'}<p>{t('Searches open DuckDuckGo in a separate website window.')}</p>{/if}{#if route === 'YouTube'}<section class="card"><h2>YouTube</h2><p>{t('YouTube opens in a separate private website session. If playback or sign-in is unsupported by WebView2, use your installed browser.')}</p><div class="toolbar"><button class="primary" on:click={() => run(() => website('https://www.youtube.com', true))} disabled={!native}>{t('Open website')}</button><button on:click={() => run(() => command('open_external',{url:'https://www.youtube.com'}))} disabled={!native}>{t('Open in default browser')}</button></div></section>{/if}
-      {#if native}<form class="toolbar address" on:submit|preventDefault={() => run(() => website())}><label>{t('Address or search')}<input type="text" bind:value={address} placeholder="https://example.com or family photos" required/></label><button class="primary">{t('Open website')}</button><button type="button" on:click={() => run(() => command('open_external',{url:address}))}>{t('Open in default browser')}</button></form><section class="card"><h2>{t('Tabs')}</h2>{#if previousTabs.length && !tabs.length}<button class="primary" on:click={() => run(restoreTabs)}>{t('Restore previous tabs')}</button>{/if}{#each tabs as tab}<article class="browser-tab"><strong>{tab.title}</strong><small>{tab.url}</small><div class="toolbar">{#each [['back','Back'],['forward','Next'],['reload','Reload'],['focus','Focus'],['navigate','Open website'],['close','Close']] as action}<button on:click={() => run(() => browserAction(tab,action[0]))}>{t(action[1])}</button>{/each}{#if tab.isolated}<button on:click={() => run(() => browserAction(tab,'fullscreen'))}>{t('Fullscreen')}</button>{/if}<button on:click={() => run(() => bookmark(tab))}>{t('Bookmark')}</button><button on:click={() => permissions(tab)}>{t('Website permissions')}</button></div></article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section><section class="card"><h2>{t('Bookmarks')}</h2>{#each bookmarks as row}<div class="row"><button class="link" on:click={() => run(() => website(json(row.body).url))}>{row.title}</button><button on:click={() => run(async () => { await command('local_trash',{id:row.id}); await load(); })}>{t('Remove')}</button></div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section><section class="card"><h2>{t('Downloads')}</h2>{#each downloads as row}<div class="row"><span>{row.title} · {t(json(row.body).status)}</span><div class="toolbar"><button disabled={json(row.body).status !== 'complete'} on:click={() => run(() => command('save_download',{id:row.id}))}>{t('Save')}</button><button disabled={json(row.body).status === 'downloading'} on:click={() => confirm(t('Remove'),async () => { await command('discard_download',{id:row.id}); await load(); },row.title)}>{t('Remove')}</button></div></div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section><button class="danger" on:click={() => confirm(t('Clear website data'), async () => { await command('browser_clear'); await load(); })}>{t('Clear website data')}</button>{:else}<section class="card">{t('Private apps are available in the installed Windows app.')}</section>{/if}
+      {#if route === 'Browser'}<Browser bind:address bind:tabs bind:previousTabs bind:bookmarks bind:downloads {t} {run} {load} {confirm} {website} {restoreTabs} {browserAction} {bookmark} {permissions}/>{:else}<YouTube bind:address bind:tabs bind:previousTabs bind:bookmarks bind:downloads {t} {run} {load} {confirm} {website} {restoreTabs} {browserAction} {bookmark} {permissions}/>{/if}
     {:else if route === 'Music'}
-      {#if !native}<p>{t('Private playlists are available in the installed Windows app.')}</p>{/if}
-      <div class="toolbar"><button class:active={!playlist} on:click={() => playlist = null}>{t('All music')}</button>{#each playlists as row}<button class:active={playlist?.id === row.id} on:click={() => playlist = row}>{row.title}</button>{/each}{#if native}<button on:click={() => { form = { action: 'playlist' }; formValue = ''; }}>{t('New playlist')}</button>{/if}<label class="check"><input type="checkbox" bind:checked={shuffle}/>{t('Shuffle')}</label><label class="check"><input type="checkbox" bind:checked={repeat}/>{t('Repeat')}</label></div>
-      {#if playing}<section class="card player"><strong>{playing.name}</strong><audio src={media(playing.id)} controls autoplay loop={repeat} on:ended={() => nextTrack(1,true)} on:error={() => { error = t("This track could not be played."); playing = null; }}></audio><button on:click={() => nextTrack(-1)}>{t('Previous')}</button><button on:click={() => nextTrack()}>{t('Next')}</button></section>{/if}
-      <section class="card"><h2>{t("Up next")}</h2>{#each queuedTracks as queued, index}<div class="row"><span>{queued.name}</span><button on:click={() => queuedTracks = queuedTracks.filter((_, i) => i !== index)}>{t("Remove")}</button></div>{:else}<p>{t("Queue is empty")}</p>{/each}</section><section class="card">{#each musicTracks as track}<div class="row"><button class="link" on:click={() => playing = track}>{t('Play')} · {track.name}</button><span>{bytes(track.size)}</span><button on:click={() => queuedTracks = [...queuedTracks, track]}>{t("Add to queue")}</button>{#if playlist}<button on:click={() => run(() => addTrack(track,true))}>{t('Remove')}</button>{/if}</div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{#if playlist}<section class="card"><h2>{t('Add to playlist')}</h2>{#each music.filter(f => !json(playlist.body,{ids:[]}).ids?.includes(f.id)) as track}<button on:click={() => run(() => addTrack(track))}>{track.name}</button>{/each}<button class="danger" on:click={() => confirm(t('Remove'), async () => { await command('local_trash',{id:playlist.id}); playlist = null; await load(); })}>{t('Remove')} {playlist.title}</button></section>{/if}{#if cursor}<button on:click={() => run(more)}>{t('Load more')}</button>{/if}
+      <Music bind:error bind:cursor bind:playlists bind:playlist bind:music bind:playing bind:queuedTracks bind:shuffle bind:repeat bind:form bind:formValue {t} {musicTracks} {run} {load} {more} {confirm} {addTrack} {nextTrack}/>
     {:else if route === 'Calculator'}
-      <section class="card calculator"><form on:submit|preventDefault={calc}><label>{t('Expression')}<input bind:value={expression} inputmode="decimal" placeholder="(24 + 36) / 2" autocomplete="off"/></label><output aria-live="polite">{answer || '0'}</output><div class="keypad">{#each ['(',')','%','/','7','8','9','*','4','5','6','-','1','2','3','+','0','.','^','='] as key}<button type="button" aria-label={t(({'+':'Add','-':'Subtract','*':'Multiply','/':'Divide','^':'Power','%':'Percent','=':'Calculate','(':'Open bracket',')':'Close bracket'})[key] || key)} on:click={() => key === '=' ? calc() : expression += key}>{key}</button>{/each}</div><div class="toolbar"><button class="primary">{t('Calculate')}</button><button type="button" on:click={() => { expression = ''; answer = ''; }}>{t('Clear')}</button></div></form></section><section class="card"><h2>{t('History')}</h2><button disabled={!history.length} on:click={async () => { history = []; try { await saveCalculatorHistory(); error = ""; } catch (e) { error = message(e); } }}>{t('Clear history')}</button>{#each history as row}<button class="history" on:click={() => expression = row.expression}>{row.expression} = {row.answer}</button>{/each}</section>
+      <Calculator bind:error bind:expression bind:answer bind:history {t} {calc} {saveCalculatorHistory} {message}/>
     {:else if route === 'Devices'}
-      <section class="card">{#each data.devices || [] as device}<article class="device"><div class="row"><div><h2>{device.name}</h2><small>{device.platform} · {device.status === 'revoked' ? t('revoked') : `${t('Last seen')}: ${date(device.last_seen_at)}`}</small></div><button class="danger" disabled={device.status === 'revoked'} on:click={() => confirm(t('Revoke device'),() => mutate(`/api/devices/${device.id}`,'DELETE'),device.name)}>{t('Revoke device')}</button></div><fieldset disabled={device.status === 'revoked'}><legend>{t('Device permissions')}</legend>{#each ['files','transfer','photos','remote','admin'] as scope}<label class="check"><input type="checkbox" checked={(Array.isArray(device.scopes) ? device.scopes : String(device.scopes || '').split(',')).includes(scope)} on:change={event => changeScope(device,scope,event.currentTarget.checked)}/>{t(scope === 'files' ? 'Files' : scope === 'transfer' ? 'Transfers' : scope === 'photos' ? 'Photos' : scope === 'remote' ? 'Remote' : 'Admin')}</label>{/each}</fieldset><button on:click={() => { form = { action:'device',file:device }; formValue = device.name; }}>{t('Rename')}</button></article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
-      <section class="card"><h2>{t('Security activity')}</h2>{#each data.activity || [] as event}<div class="row"><span>{t(event.action)} · {event.device}</span><small>{date(event.ts)}</small></div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
+      <Devices bind:data bind:form bind:formValue {t} {date} {mutate} {confirm} {changeScope}/>
     {:else if route === 'Hardware'}
       <section class="card"><h2>{t('Hardware')}</h2><button disabled={busy} on:click={() => run(async () => { data = { ...data, hardware: await api('/api/hardware/audit/run','POST') }; })}>{t('Run hardware check')}</button><Details {t} value={data.hardware}/></section><section class="card"><h2>{t('Connected locally')}</h2><Details {t} value={data.network}/><p>{t('Wake support varies by laptop. Files stay queued when the Hub is asleep.')}</p><Details {t} value={caps}/></section>{#if caps.hotspot}<section class="card"><h2>{t('Windows hotspot')}</h2><p>{t('Available through the Windows session helper.')}</p><label>{t('Network name')}<input bind:value={hotspotName} maxlength="32" autocomplete="off"/></label><label>{t('Password')}<input type="password" bind:value={hotspotPassword} minlength="8" maxlength="63" autocomplete="new-password"/></label><div class="toolbar"><button disabled={busy || !hotspotName || hotspotPassword.length < 8} on:click={() => run(async () => { await api('/api/network/hotspot','POST',{enable:true,ssid:hotspotName,passphrase:hotspotPassword}); hotspotPassword=''; })}>{t('Turn on hotspot')}</button><button disabled={busy} on:click={() => run(() => api('/api/network/hotspot','POST',{enable:false}))}>{t('Turn off hotspot')}</button></div></section>{/if}
     {:else if route === 'Remote'}
       <section class="card"><h2>{t('Remote')}</h2><p>{t('Remote is off until you grant a device permission.')}</p><label class="check"><input type="checkbox" bind:checked={settings.remote_enabled} disabled={caps.helper_available === false} on:change={() => run(saveSettings)}/>{t('Enable remote control')}</label><Details {t} value={remoteStatus}/><button on:click={() => go('Devices')}>{t('Device permissions')}</button><p>{t('Wake support varies by laptop. Files stay queued when the Hub is asleep.')}</p></section><section class="card"><h2>{t('Remote sessions')}</h2><p>{t('Start Cast on your phone to show its screen on this laptop. Video only; the phone keeps control.')}</p>{#each remoteSessions as session}<div class="row"><span>{session.device_name || session.device_id || session.id} · {t(session.direction)} · {t(session.state || session.status)}</span><button on:click={() => run(() => stopSession(session.id))}>{t('Stop session')}</button></div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>
     {:else if route === 'Settings'}
-      <section class="card"><h2>{t('Settings')}</h2><form on:submit|preventDefault={() => run(saveSettings,t('Saved'))}><label>{t('Hub name')}<input bind:value={hubName} maxlength="120" required/></label><label>{t('Library folder')}<input value={settings.library_root || ''} readonly/></label><label>{t('Second-copy folder')}<input bind:value={copyFolder}/></label><h3>{t('Backup and second-copy schedules')}</h3><label>{t('Backup interval (minutes)')}<input type="number" min="1" max="10080" bind:value={settings.backup_interval_minutes}/></label><label>{t('Scrub interval (hours)')}<input type="number" min="1" max="720" bind:value={settings.scrub_interval_hours}/></label><label>{t('Second-copy interval (minutes)')}<input type="number" min="1" max="43200" bind:value={settings.second_copy_interval_minutes}/></label><label class="check"><input type="checkbox" bind:checked={settings.screen_enabled}/>{t('Allow screen sharing')}</label><label class="check"><input type="checkbox" bind:checked={settings.wake_enabled}/>{t('Request scheduled wake')}</label>{#if settings.wake_enabled}<label>{t('Wake time')}<input type="time" bind:value={settings.wake_time}/></label>{/if}<label class="check"><input type="checkbox" bind:checked={settings.update_enabled}/>{t('Check for signed updates')}</label>{#if settings.update_enabled}<label>{t('Update manifest URL')}<input type="url" bind:value={settings.update_manifest_url}/></label><label>{t('Update public key')}<input maxlength="64" bind:value={settings.update_pubkey_hex}/></label>{/if}<button class="primary" disabled={busy}>{t('Save')}</button></form><button on:click={() => { setup = true; setupStep = 0; }}>{t('Setup')}</button></section><section class="card"><h2>{t('Language')}</h2><label>{t('Language')}<select bind:value={language} on:change={savePreferences}><option value="en">English</option><option value="hi">हिन्दी</option></select></label><h3>{t('Notification preferences')}</h3>{#each [['large','Larger text'],['contrast','High contrast'],['reduced','Reduce motion'],['notifications','Notifications in this app']] as option}<label class="check"><input type="checkbox" checked={option[0] === 'large' ? large : option[0] === 'contrast' ? contrast : option[0] === 'reduced' ? reduced : notifications} on:change={event => { if (option[0] === 'large') large = event.currentTarget.checked; else if (option[0] === 'contrast') contrast = event.currentTarget.checked; else if (option[0] === 'reduced') reduced = event.currentTarget.checked; else notifications = event.currentTarget.checked; savePreferences(); }}/>{t(option[1])}</label>{/each}</section><section class="card"><h2>{t('Protect your memories')}</h2><p>{t('Turn on BitLocker in Windows to protect data at rest.')}</p><p>{t('A single drive is not a backup.')}</p><p>{t('Diagnostics include system status and omit file names and contents.')}</p><div class="toolbar"><button on:click={() => run(diagnostics)}>{t('Export diagnostics')}</button>{#if native}<button on:click={() => run(async () => { await flushNote(); await command('local_export'); })}>{t('Export private apps')}</button><button on:click={() => run(async () => { await command('local_import'); await loadPrivateTrash(); })}>{t('Import private apps')}</button>{/if}</div></section>
-      <section class="card"><h2>{t('Privacy')}</h2><p>{t('No telemetry is sent by default.')}</p><button disabled={busy} on:click={() => run(async () => { await api('/api/pause-sharing', 'POST', { paused: !settings.pause_sharing }); await load(); })}>{t(settings.pause_sharing ? 'Resume sharing' : 'Pause sharing')}</button></section>
-      <section class="card"><h2>{t('Updates')}</h2><button disabled={busy} on:click={() => run(checkUpdates)}>{t('Check now')}</button>{#if updateCheck}<p role="status">{updateCheck.available ? `${t('Update available')}: ${updateCheck.latest_version}` : updateCheck.reason === 'updates_disabled' ? t('Turn on signed update checks and save settings first.') : updateCheck.reason === 'channel_not_configured' ? t('Set the update URL and public key, then save settings.') : updateCheck.reason ? t('Update check failed.') : t('Up to date.')}</p>{/if}</section>
+      <Settings bind:language bind:large bind:contrast bind:reduced bind:notifications bind:busy bind:settings bind:setup bind:setupStep bind:hubName bind:copyFolder bind:privateTrash bind:updateCheck {t} {run} {load} {confirm} {saveSettings} {flushNote} {savePreferences} {diagnostics} {checkUpdates} {loadPrivateTrash}/>
     {/if}
 
     {#if route === 'Settings' && native}<section class="card"><h2>{t('Private app trash')}</h2>{#each privateTrash as row}<div class="row"><span>{row.title} · {t(row.kind)}</span><div class="toolbar"><button on:click={() => run(async () => { await command('local_restore',{id:row.id}); await loadPrivateTrash(); })}>{t('Restore')}</button><button class="danger" on:click={() => confirm(t('Delete permanently'),async () => { await command('local_purge',{id:row.id}); await loadPrivateTrash(); },row.title)}>{t('Delete permanently')}</button></div></div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{/if}

@@ -45,3 +45,13 @@ export function exportText(name, text, type = 'text/plain') {
 export function items(value) { return Array.isArray(value) ? value : value?.items || []; }
 export function json(value, fallback = {}) { try { return JSON.parse(value); } catch { return fallback; } }
 export function bytes(value) { if (value == null || !Number.isFinite(Number(value))) return '—'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; let n = Number(value), i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${units[i]}`; }
+
+// Album and backup data are delegated through the owner-only local broker.
+export async function albumsList(cursor = null, limit = 50) { return command('albums_list', { cursor, limit }); }
+export async function albumsCreate(id, name) { return command('albums_create', { id, name }); }
+export async function albumsUpdate(id, expected_name, name) { return command('albums_update', { id, expectedName: expected_name, name }); }
+export async function albumsDelete(id) { return command('albums_delete', { id }); }
+export async function albumsItemsList(id, cursor = null, limit = 50) { return command('albums_items_list', { id, cursor, limit }); }
+export async function albumsItemsAdd(id, file_ids) { return command('albums_items_add', { id, fileIds: file_ids }); }
+export async function albumsItemsRemove(id, file_ids) { return command('albums_items_remove', { id, fileIds: file_ids }); }
+export async function backupSummary() { return command('backup_summary'); }

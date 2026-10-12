@@ -32,9 +32,9 @@ Extract nine views from `desktop/src/App.svelte` into modular components under `
 - `git diff --check`
 
 ## Status
-- Status: P4.4b complete; P4.4c READY FOR CODEX GENERATION
+- Status: P4.4c frontend extraction implemented; targeted checks pass (desktop check: 0 errors, 0 warnings)
 - Gate: G6 (All Nine Apps Function & Local Data Invariants)
-- Blockers: None
+- Blockers: Desktop Tauri command registry does not yet expose `albums_*` or `backup_summary`; album and backup UI need that bridge before G6 can be accepted. Windows functional checks remain pending on this Mac.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.4, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
 
 

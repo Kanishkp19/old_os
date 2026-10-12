@@ -21,10 +21,8 @@ Implement the desktop app authorization registry, map trusted Tauri windows to a
 - `git diff --check`
 
 ## Status
-- Status: P4.4c complete; P4.4d READY FOR CODEX GENERATION
+- Status: P4.4d prompt implementation complete; targeted checks passed on macOS (desktop and hub cargo check, desktop Svelte check and tests, desktop Clippy with zero warnings, registry unit test, git diff --check).
 - Gate: G6 (All Nine Apps Function & Local Data Invariants)
-- Blockers: None
+- Blockers: Windows packaging and WebView2 runtime validation remain pending on Windows. The supplied prompt specifies label/origin validation only; the broader §4.4 owner-session/app-ID command policy remains future work.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.4, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
-
-
 

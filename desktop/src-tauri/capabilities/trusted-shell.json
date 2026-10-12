@@ -1,6 +1,6 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "trusted-shell", "description": "Only the bundled main shell can use Home Hub commands. Internet webviews receive no capability.",
-  "local": true, "windows": ["main"],
+  "identifier": "trusted-shell", "description": "Only the bundled main shell and modular app views can use Home Hub commands. Internet webviews receive no capability.",
+  "local": true, "windows": ["main", "photos", "files", "browser", "youtube", "music", "notes", "calculator", "devices", "settings"],
   "permissions": ["shell-commands", "core:event:allow-listen", "core:event:allow-unlisten"]
 }

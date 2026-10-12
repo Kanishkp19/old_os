@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod browser;
+mod app_registry;
+mod os_bridge;
 mod proxy;
 mod store;
 use tauri::{Emitter, Manager, WebviewWindow, WebviewWindowBuilder, WebviewUrl};
@@ -8,11 +10,13 @@ use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 pub struct AppState {store:Store, hub:proxy::Hub, browser:browser::Browser, ready:std::sync::atomic::AtomicBool, exiting:std::sync::atomic::AtomicBool, restoring:std::sync::atomic::AtomicBool, saving:std::sync::Mutex<std::collections::BTreeMap<String,std::sync::Arc<std::sync::atomic::AtomicBool>>>}
+impl AppState {
+    pub fn hub_db_path(&self) -> PathBuf {
+        self.hub.token_path.parent().unwrap_or(std::path::Path::new(".")).join("hub.db")
+    }
+}
 fn trusted(window:&WebviewWindow)->Result<()> {
-    let url=window.url().map_err(|_|"Cannot identify app window")?;
-    let local=url.scheme()=="tauri"&&url.host_str()==Some("localhost") || matches!(url.scheme(),"http"|"https")&&url.host_str()==Some("tauri.localhost") || cfg!(debug_assertions)&&url.scheme()=="http"&&url.host_str()==Some("127.0.0.1")&&url.port()==Some(1420);
-    if window.label()!="main" || !local {return Err("This command is only available in Home Hub".into());}
-    Ok(())
+    app_registry::verify_caller(window,"command")
 }
 #[tauri::command] async fn hub_request(window:WebviewWindow,state:tauri::State<'_,AppState>,path:String,method:String,body:Option<String>)->Result<proxy::Reply> {trusted(&window)?;state.hub.reply(&path,&method,body).await}
 #[tauri::command] fn local_list(window:WebviewWindow,state:tauri::State<'_,AppState>,kind:String,query:String,trash:bool)->Result<Vec<Record>> {trusted(&window)?;state.store.list(&kind,&query,trash)}
@@ -67,7 +71,8 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
     let state=app.state::<AppState>();
     {let saving=state.saving.lock().map_err(|_|"Downloads are busy")?;for flag in saving.values(){flag.store(true,std::sync::atomic::Ordering::Release);}}
     let started=std::time::Instant::now();
-    loop {let empty=state.saving.lock().map_err(|_|"Downloads are busy")?.is_empty();if empty{break;}if started.elapsed()>std::time::Duration::from_secs(20){return Err("A drive is still finishing a file save. Wait and close Home Hub again.".into());}tokio::time::sleep(std::time::Duration::from_millis(50)).await;}
+    loop {let empty=state.saving.lock().map_err(|_|"Downloads are busy")?.is_empty();if empty{break;}
+        if started.elapsed()>std::time::Duration::from_secs(20){return Err("A drive is still finishing a file save. Wait and close Home Hub again.".into());}tokio::time::sleep(std::time::Duration::from_millis(50)).await;}
     browser::remember(&state)?;
     state.exiting.store(true,std::sync::atomic::Ordering::Release);
     app.exit(0);Ok(())
@@ -235,7 +240,7 @@ fn main() {
                 else {window.app_handle().exit(0);}
             }}
         })
-        .invoke_handler(tauri::generate_handler![hub_request,local_list,local_save,local_trash,local_restore,local_purge,local_export,local_import,note_export,note_import,shell_ready,finish_close,browser_open,youtube_open,browser_action,browser_list,browser_previous,browser_restore,browser_permissions,browser_clear,open_external,save_download,discard_download,save_hub_file,cancel_save])
+        .invoke_handler(tauri::generate_handler![hub_request,local_list,local_save,local_trash,local_restore,local_purge,local_export,local_import,note_export,note_import,shell_ready,finish_close,browser_open,youtube_open,browser_action,browser_list,browser_previous,browser_restore,browser_permissions,browser_clear,open_external,save_download,discard_download,save_hub_file,cancel_save,os_bridge::albums_list,os_bridge::albums_create,os_bridge::albums_update,os_bridge::albums_delete,os_bridge::albums_items_list,os_bridge::albums_items_add,os_bridge::albums_items_remove,os_bridge::backup_summary])
         .run(tauri::generate_context!());
     if let Err(error)=app {eprintln!("Home Hub could not start: {error}");}
 }

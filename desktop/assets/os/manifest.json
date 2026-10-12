@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "apps": [
+    { "id": "photos", "name_en": "Photos", "name_hi": "फ़ोटो", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "files", "name_en": "Files", "name_hi": "फ़ाइलें", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "browser", "name_en": "Browser", "name_hi": "ब्राउज़र", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "youtube", "name_en": "YouTube", "name_hi": "यूट्यूब", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "music", "name_en": "Music", "name_hi": "संगीत", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "notes", "name_en": "Notes", "name_hi": "नोट्स", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "calculator", "name_en": "Calculator", "name_hi": "कैलकुलेटर", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "devices", "name_en": "Devices", "name_hi": "उपकरण", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true },
+    { "id": "settings", "name_en": "Settings", "name_hi": "सेटिंग्स", "icon_sizes": [16, 32, 64, 128], "available_in_trial": true }
+  ],
+  "fonts": [
+    { "family": "Roboto", "license": "Apache-2.0", "path": "fonts/Roboto-Regular.ttf" },
+    { "family": "Noto Sans Devanagari", "license": "OFL-1.1", "path": "fonts/NotoSansDevanagari-Regular.ttf" }
+  ]
+}

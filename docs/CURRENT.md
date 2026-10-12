@@ -28,7 +28,8 @@ Implement system power management, connection shutdown/drain handles before slee
 - `npm --prefix desktop test`
 
 ## Status
-- Status: P4.3c READY FOR CODEX GENERATION
+- Status: P4.3c foundation implemented; Linux power integration pending
 - Gate: G4 (Isolation, Lock Screen, Notifications & Capture Baseline)
-- Blockers: Physical sleep/wake cycle tests require Linux hardware/QEMU guest host
+- Checks: workspace cargo check, hh-service/hh-net tests, shell validation, and desktop asset/check/tests pass on macOS.
+- Blockers: logind delay inhibition and sleep notifications are not connected; the coordinator's revocation flags are not enforced by remote input/capture services; font binaries are not yet bundled. Physical sleep/wake and transfer continuity require Linux hardware/QEMU guest validation.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §3, §4.6, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md), [PHASE4_UI_UX_DESIGN.md §2.1, §4.6](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_UI_UX_DESIGN.md)

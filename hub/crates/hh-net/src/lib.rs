@@ -19,6 +19,7 @@ pub mod tls;
 pub mod update;
 
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use hh_auth::{HubIdentity, PairingManager, RevocationList};
@@ -30,13 +31,55 @@ use hh_remote::RemoteService;
 use hh_storage::StorageService;
 use hh_stream::StreamService;
 use hh_transfer::TransferEngine;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 
 use crate::sse::EventBus;
+
+#[derive(Clone, Default)]
+pub struct ConnectionTracker {
+    active: Arc<AtomicUsize>,
+    drain_notify: Arc<Notify>,
+}
+
+pub struct ConnectionGuard {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl ConnectionTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn track(&self) -> ConnectionGuard {
+        self.active.fetch_add(1, Ordering::SeqCst);
+        ConnectionGuard {
+            active: self.active.clone(),
+        }
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    pub fn drain_all(&self) {
+        self.drain_notify.notify_waiters();
+    }
+
+    pub fn drain_notifier(&self) -> Arc<Notify> {
+        self.drain_notify.clone()
+    }
+}
 
 /// Shared state for all routes.
 #[derive(Clone)]
 pub struct AppState {
+    pub connections: ConnectionTracker,
     pub db: Db,
     pub cfg: Config,
     pub ca: Arc<HubIdentity>,
@@ -96,6 +139,7 @@ impl AppState {
     ) -> Self {
         let (tx, _) = broadcast::channel(256);
         Self {
+            connections: ConnectionTracker::default(),
             transfers: TransferEngine::new(db.clone(), cfg.clone()),
             storage: StorageService::new(db.clone(), cfg.clone()),
             photos: PhotoService::new(db.clone(), cfg.clone()),
@@ -180,12 +224,19 @@ pub mod serve {
             let state = state.clone();
             tokio::spawn(async move {
                 let _permit = permit;
-                let tls = match tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    acceptor.accept(tcp),
-                )
-                .await
-                {
+                let _tracked = state.connections.track();
+                let drain = state.connections.drain_notifier();
+                let draining = drain.notified();
+                tokio::pin!(draining);
+                draining.as_mut().enable();
+                let accepted = tokio::select! {
+                    _ = &mut draining => return,
+                    result = tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        acceptor.accept(tcp),
+                    ) => result,
+                };
+                let tls = match accepted {
                     Ok(result) => match result {
                         Ok(t) => t,
                         Err(e) => {
@@ -240,6 +291,7 @@ pub mod serve {
                 let connection = builder.serve_connection_with_upgrades(io, svc);
                 tokio::select! {
                     _=connection=>{},
+                    _=&mut draining=>{},
                     _=async move {loop {tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         let Some(peer)=&watch_identity else {break;};
                         if !watch_db.device_accepts_serial(&peer.device_id,&peer.cert_serial).unwrap_or(false) || watch_db.is_serial_revoked(&peer.cert_serial).unwrap_or(true) || watch_db.get_setting("sharing.paused").ok().flatten().as_deref()==Some("true"){break;}
@@ -312,5 +364,23 @@ pub mod serve {
         );
         axum::serve(listener, router).await?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[tokio::test]
+        async fn connection_tracker_lifecycle() {
+            let tracker = crate::ConnectionTracker::new();
+            let guard = tracker.track();
+            assert_eq!(tracker.active_count(), 1);
+            let drain = tracker.drain_notifier();
+            let notified = drain.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            tracker.drain_all();
+            notified.await;
+            drop(guard);
+            assert_eq!(tracker.active_count(), 0);
+        }
     }
 }

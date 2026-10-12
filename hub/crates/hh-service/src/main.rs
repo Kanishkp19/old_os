@@ -15,6 +15,7 @@
 
 mod local_security;
 mod logging;
+pub mod power;
 #[cfg(target_os = "linux")]
 mod systemd;
 use std::sync::Arc;
@@ -153,6 +154,7 @@ async fn run_hub(
     ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<()> {
     tracing::info!(version = hh_core::HUB_VERSION, "home hub starting");
+    let mut power_coordinator = power::PowerCoordinator::new();
 
     let db = Db::open(&cfg.db_path())?;
     let cfg = hh_storage::StorageService::new(db.clone(), cfg).recover_library_moves()?;
@@ -314,6 +316,8 @@ async fn run_hub(
         r = pairing_srv => { tracing::error!("pairing server exited: {r:?}"); }
         r = dashboard => { tracing::error!("dashboard exited: {r:?}"); }
         _ = &mut stop => {
+            power_coordinator.prepare_sleep().map_err(|error| hh_core::Error::Internal(error.to_string()))?;
+            state.connections.drain_all();
             state.events.emit("hub.shutting_down", serde_json::json!({}));
             tracing::info!("shutting down");
         }

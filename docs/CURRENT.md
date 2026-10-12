@@ -1,26 +1,27 @@
-# Phase 4 — Active Slice: P4.6a (Signed A/B Update Bundles & RAUC Configuration)
+# Phase 4 — Active Slice: P4.6b (Boot Health Watchdog & A/B Rollback Probes)
 
 ## Goal
-Implement the release update packaging and system slot configuration for signed A/B updates (§2.5, §5.3):
-1. In `tools/image-builder/scripts/update-bundle.sh`: Create the release update bundler script supporting RAUC bundle manifest generation, compatible-device metadata (`homehub-x86_64`), versioning, signing key/cert validation, and reproducible bundle creation with dry-run support.
-2. In `tools/image-builder/rootfs-overlay/etc/rauc/system.conf`: Define the target system's RAUC slot layout (`root_a`, `root_b`), GRUB bootloader integration, status file, and update keyring trust root location.
-3. In `tools/image-builder/tests/update-bundle-test.sh`: Automated test verifying bundle argument parsing, dry-run manifest synthesis, certificate verification, and bundle structure.
+Implement the boot slot health watchdog and automated A/B rollback test probes (§2.5, §5.3):
+1. In `tools/image-builder/rootfs-overlay/etc/systemd/system/homehub-health.service`: Systemd oneshot health service triggered after service and shell startup, conditioned on non-trial mode.
+2. In `tools/image-builder/rootfs-overlay/usr/libexec/homehub-health`: System health monitor performing data filesystem check, DB readability verification, service readiness, input/shell check, 60-second stability window, and explicit slot mark-good.
+3. In `tools/image-builder/tests/ab-rollback.sh`: Automated fault injection test suite verifying healthy mark-good flow, unhealthy boot refusal, crash detection during stability window, and GRUB boot-counter exhaustion rollback.
 
 ## Files to Touch
-- `tools/image-builder/scripts/update-bundle.sh` (NEW)
-- `tools/image-builder/rootfs-overlay/etc/rauc/system.conf` (NEW)
-- `tools/image-builder/tests/update-bundle-test.sh` (NEW)
+- `tools/image-builder/rootfs-overlay/etc/systemd/system/homehub-health.service` (NEW)
+- `tools/image-builder/rootfs-overlay/usr/libexec/homehub-health` (NEW)
+- `tools/image-builder/tests/ab-rollback.sh` (NEW)
 
 ## Targeted Acceptance Checks
-- `bash -n tools/image-builder/scripts/update-bundle.sh`
-- `bash -n tools/image-builder/tests/update-bundle-test.sh`
-- `bash tools/image-builder/tests/update-bundle-test.sh`
+- `bash -n tools/image-builder/rootfs-overlay/usr/libexec/homehub-health`
+- `bash -n tools/image-builder/tests/ab-rollback.sh`
+- `bash tools/image-builder/tests/ab-rollback.sh`
 - `cargo check --manifest-path hub/Cargo.toml`
 - `cargo check --manifest-path tools/image-builder/installer/Cargo.toml`
 - `git diff --check`
 
 ## Status
-- Status: P4.6a IMPLEMENTED; targeted checks passed on macOS
+- Status: P4.6b READY FOR CODEX GENERATION
 - Gate: G8 (Signed A/B, Rollback, and Measured Budgets)
-- Blockers: Signed bundle generation with native RAUC remains unverified on Linux; the macOS fallback is an unsigned mock archive.
+- Blockers: None
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §2.5, §5.3](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
+

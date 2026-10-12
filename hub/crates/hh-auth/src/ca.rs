@@ -468,6 +468,37 @@ fn read_protected_key(path: &Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
+/// Convert an on-disk identity key to PEM bytes for an encrypted migration bundle.
+pub fn unprotect(encrypted: &[u8]) -> Result<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        let blob = encrypted
+            .strip_prefix(DPAPI_MAGIC)
+            .ok_or_else(|| Error::Crypto("identity key is not DPAPI-protected".into()))?;
+        dpapi::unprotect(blob).map_err(Error::Crypto)
+    }
+    #[cfg(unix)]
+    {
+        Ok(encrypted.to_vec())
+    }
+}
+
+/// Encode PEM bytes in the platform's existing identity-key file format.
+pub fn protect(plain: &[u8]) -> Result<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        let mut blob = DPAPI_MAGIC.to_vec();
+        blob.extend_from_slice(
+            &dpapi::protect(plain, "Home Hub migration key").map_err(Error::Crypto)?,
+        );
+        Ok(blob)
+    }
+    #[cfg(unix)]
+    {
+        Ok(plain.to_vec())
+    }
+}
+
 #[cfg(all(test, unix))]
 mod unix_identity_tests {
     use super::*;

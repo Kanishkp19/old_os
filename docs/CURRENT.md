@@ -11,6 +11,7 @@ Implement the migration CLI subcommands in `hh-tools` and an automated end-to-en
 - `hub/crates/hh-tools/Cargo.toml` (EDIT)
 - `hub/crates/hh-tools/src/migration.rs` (NEW)
 - `hub/crates/hh-tools/src/main.rs` (EDIT)
+- `hub/crates/hh-auth/src/ca.rs` (EDIT: expose existing platform key encoding for CLI)
 - `tools/image-builder/tests/migration-roundtrip.sh` (NEW)
 
 ## Targeted Acceptance Checks
@@ -23,9 +24,7 @@ Implement the migration CLI subcommands in `hh-tools` and an automated end-to-en
 - `git diff --check`
 
 ## Status
-- Status: P4.5b READY FOR CODEX GENERATION
+- Status: P4.5b COMPLETE (all targeted acceptance checks passed on macOS)
 - Gate: G7 (Installer, Migration, and Data Continuity Verification)
 - Blockers: None
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.3, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
-
-

@@ -14,6 +14,7 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 
 mod fake_client;
+mod migration;
 
 #[derive(Parser)]
 #[command(name = "hh-tools", about = "Home Hub dev/test tooling")]
@@ -24,6 +25,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Migration export, verify, and import CLI.
+    Migration {
+        #[command(subcommand)]
+        action: migration::MigrationAction,
+    },
     /// Scripted client for CI (pair/upload/resume).
     FakeClient {
         #[command(subcommand)]
@@ -79,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Migration { action } => migration::run(action).await?,
         Cmd::FakeClient { action } => fake_client::run(action).await?,
         Cmd::Bench { size, hub } => {
             let bytes = parse_size(&size);

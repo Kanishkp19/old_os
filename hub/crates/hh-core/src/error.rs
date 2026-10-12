@@ -24,6 +24,8 @@ pub enum Error {
     TooLarge(String),
     #[error("whole-file verification failed (root hash mismatch)")]
     RootHashMismatch,
+    #[error("integrity error: {0}")]
+    Integrity(String),
     #[error("pairing locked after too many attempts")]
     PairingLocked,
     #[error("rate limited")]
@@ -64,6 +66,7 @@ impl Error {
             Error::TransferGone => "TRANSFER_GONE",
             Error::TooLarge(_) => "TOO_LARGE",
             Error::RootHashMismatch => "ROOT_HASH_MISMATCH",
+            Error::Integrity(_) => "INTEGRITY",
             Error::PairingLocked => "PAIRING_LOCKED",
             Error::RateLimited => "RATE_LIMITED",
             Error::StorageFull => "STORAGE_FULL",
@@ -84,7 +87,7 @@ impl Error {
             Error::HashMismatch { .. } | Error::Conflict(_) => 409,
             Error::TransferGone | Error::TokenExpired => 410,
             Error::TooLarge(_) => 413,
-            Error::RootHashMismatch => 422,
+            Error::RootHashMismatch | Error::Integrity(_) => 422,
             Error::PairingLocked => 423,
             Error::RateLimited => 429,
             Error::StorageFull => 507,

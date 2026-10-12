@@ -10,6 +10,7 @@ pub mod dedupe;
 pub mod health;
 pub mod jobs;
 pub mod library;
+pub mod migration;
 pub mod perceptual;
 pub mod scrub;
 pub mod second_copy;

@@ -55,7 +55,7 @@ impl Db {
 
 // ---- devices ----
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DeviceRow {
     pub id: String,
     pub name: String,

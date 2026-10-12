@@ -1,6 +1,7 @@
 //! hh-auth: Hub CA, pairing, device certificates, revocation (TRD §5, SECURITY §4–6).
 
 pub mod ca;
+pub mod migration;
 pub mod pairing;
 pub mod revoke;
 

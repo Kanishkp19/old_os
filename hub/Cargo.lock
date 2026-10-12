@@ -2035,6 +2035,7 @@ dependencies = [
  "qrcode",
  "rand 0.8.8",
  "rcgen",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
@@ -2042,6 +2043,7 @@ dependencies = [
  "time",
  "tracing",
  "ulid",
+ "x509-parser",
 ]
 
 [[package]]

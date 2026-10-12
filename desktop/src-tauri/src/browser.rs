@@ -5,6 +5,20 @@ use tauri::{Emitter,Manager, WebviewUrl, webview::{DownloadEvent, NewWindowRespo
 use crate::{AppState, store::{BrowserSessionTab, Result, now}};
 #[derive(Clone,Serialize)] pub struct Tab {pub label:String,pub url:String,pub title:String,pub downloads:bool,pub permissions:Vec<String>,pub isolated:bool}
 #[derive(Default)] pub struct Browser {pub tabs:Mutex<BTreeMap<String,Tab>>}
+// Reserved for the trusted controller's quarantine inspection endpoint.
+#[allow(dead_code)]
+#[derive(Clone, Serialize)]
+pub struct QuarantinedItem {
+    pub id: String,
+    pub filename: String,
+    pub url: String,
+    pub status: String,
+}
+
+#[allow(dead_code)]
+pub fn quarantine_directory(state: &AppState) -> std::path::PathBuf {
+    state.store.root.join("downloads-quarantine")
+}
 
 pub fn remember(state:&AppState)->Result<()> {
     let tabs=state.browser.tabs.lock().map_err(|_|"Browser is busy")?;

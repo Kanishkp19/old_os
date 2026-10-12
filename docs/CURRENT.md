@@ -26,8 +26,7 @@ Implement the standalone unprivileged web-runner foundation, bounded IPC control
 - `npm --prefix desktop test`
 
 ## Status
-- Status: P4.4a READY FOR CODEX GENERATION
+- Status: P4.4a foundation implemented; macOS acceptance checks passed. Linux sandbox and hostile-content validation remain pending for G5.
 - Gate: G5 (Full Nine-App Suite & Browser Sandbox Verification)
-- Blockers: Linux namespace setup (bwrap/bubblewrap) and WebKitGTK runtime require a Linux host; macOS host validates protocol, quarantine state machines, and contracts.
+- Blockers: Linux namespace setup (bwrap/bubblewrap), WebKitGTK runtime, connection-time egress enforcement, and trusted desktop runner/download wiring require follow-up on a Linux host. The shell isolation test checks source contracts only.
 - Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.2, §4.5, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md), [PHASE4_SECURITY_ARCHITECTURE.md §6.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_SECURITY_ARCHITECTURE.md)
-

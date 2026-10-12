@@ -9,6 +9,7 @@
 
 pub mod admin;
 pub mod dashboard;
+pub mod local_ipc;
 pub mod mdns;
 pub mod pair_server;
 pub mod ratelimit;

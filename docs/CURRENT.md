@@ -1,27 +1,40 @@
-# Phase 4 — Active Slice: P4.4b (Local Broker Album CRUD & Backup Dispatch)
+# Phase 4 — Active Slice: P4.4c (Nine App Views & Frontend State Extraction)
 
 ## Goal
-Implement transactional album CRUD in `hh-db` using existing `albums` and `album_items` tables (§4.4.1), along with the local broker dispatcher for albums and backup summary in `hh-net`:
-1. In `hub/crates/hh-db/src/queries.rs`: Add bounded transactional album operations (`albums_list`, `albums_create`, `albums_update`, `albums_delete`, `albums_items_list`, `albums_items_add`, `albums_items_remove`) and `backup_summary`. Exclude trashed or unavailable media from visible counts and covers.
-2. In `hub/crates/hh-net/src/local_ipc.rs`: Implement the local broker request dispatcher mapping `LocalIpcRequest` to `LocalOp::Albums*` and `LocalOp::BackupSummary` operations, returning typed `LocalIpcResponse`.
-3. In `hub/crates/hh-net/src/lib.rs`: Expose `pub mod local_ipc;`.
-4. Add focused unit tests across `hh-db` and `hh-net` for duplicate requests, stale rename, non-existent media errors, hidden/restored media, empty album, paging ties, and album deletion preserving underlying file bytes.
+Extract nine views from `desktop/src/App.svelte` into modular components under `desktop/src/apps/`, establish modular frontend state in `desktop/src/state/`, and connect local album CRUD:
+1. Implement extracted views: `desktop/src/apps/{Photos,Files,Browser,YouTube,Music,Notes,Calculator,Devices,Settings}.svelte`.
+2. Implement state modules: `desktop/src/state/{hub,private,music,notes}.js`.
+3. Update `desktop/src/App.svelte` to act as an app host router using the extracted components.
+4. Update `desktop/src/api.js` to expose local broker album CRUD and backup summary commands.
 
 ## Files to Touch
-- `hub/crates/hh-db/src/queries.rs` (EDIT)
-- `hub/crates/hh-net/src/local_ipc.rs` (NEW)
-- `hub/crates/hh-net/src/lib.rs` (EDIT)
+- `desktop/src/apps/Photos.svelte` (NEW)
+- `desktop/src/apps/Files.svelte` (NEW)
+- `desktop/src/apps/Browser.svelte` (NEW)
+- `desktop/src/apps/YouTube.svelte` (NEW)
+- `desktop/src/apps/Music.svelte` (NEW)
+- `desktop/src/apps/Notes.svelte` (NEW)
+- `desktop/src/apps/Calculator.svelte` (NEW)
+- `desktop/src/apps/Devices.svelte` (NEW)
+- `desktop/src/apps/Settings.svelte` (NEW)
+- `desktop/src/state/hub.js` (NEW)
+- `desktop/src/state/private.js` (NEW)
+- `desktop/src/state/music.js` (NEW)
+- `desktop/src/state/notes.js` (NEW)
+- `desktop/src/App.svelte` (EDIT)
+- `desktop/src/api.js` (EDIT)
 
 ## Targeted Acceptance Checks
+- `npm --prefix desktop run check`
+- `npm --prefix desktop test`
+- `npm --prefix desktop run assets:check`
 - `cargo check --manifest-path hub/Cargo.toml`
-- `cargo test --manifest-path hub/Cargo.toml -p hh-db -p hh-net`
-- `cargo clippy --manifest-path hub/Cargo.toml --workspace --all-targets -- -D warnings`
-- `cargo fmt --all --manifest-path hub/Cargo.toml -- --check`
 - `git diff --check`
 
 ## Status
-- Status: P4.4b READY FOR CODEX GENERATION
+- Status: P4.4b complete; P4.4c READY FOR CODEX GENERATION
 - Gate: G6 (All Nine Apps Function & Local Data Invariants)
-- Blockers: None on macOS; fully validated via local SQLite memory tests and typed IPC dispatch.
-- Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.4.1, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
+- Blockers: None
+- Reference: [PHASE4_IMPLEMENTATION_PLAN.md §4.4, §5.1, §5.2](file:///Users/kanishk_pandey/Desktop/build/home-hub/docs/PHASE4_IMPLEMENTATION_PLAN.md)
+
 

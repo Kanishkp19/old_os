@@ -3,6 +3,10 @@
 //! connection (AGENTS.md §4).
 
 use hh_core::error::{Error, Result};
+use hh_core::local_ipc::{
+    validate_album_name, AlbumItemRecord, AlbumRecord, AlbumsItemsAddReq, AlbumsItemsRemoveReq,
+    BackupSummary,
+};
 use hh_core::time::now_ms;
 use hh_core::types::{ChunkBitmap, Device, TransferStatus};
 use rusqlite::params;
@@ -830,6 +834,326 @@ fn transfer_row(r: &rusqlite::Row<'_>) -> std::result::Result<TransferRow, rusql
     })
 }
 
+// ---- owner albums and backup ----
+
+fn album_id(id: &str) -> Result<()> {
+    id.parse::<ulid::Ulid>()
+        .map(|_| ())
+        .map_err(|_| Error::BadRequest("identifier must be a ULID".into()))
+}
+
+fn album_cursor(cursor: Option<&str>) -> Result<Option<(i64, String)>> {
+    cursor
+        .map(|value| {
+            let (timestamp, id) = value
+                .split_once(':')
+                .ok_or_else(|| Error::BadRequest("invalid album cursor".into()))?;
+            let timestamp = timestamp
+                .parse::<i64>()
+                .map_err(|_| Error::BadRequest("invalid album cursor".into()))?;
+            album_id(id)?;
+            Ok((timestamp, id.to_owned()))
+        })
+        .transpose()
+}
+
+fn album_record(c: &rusqlite::Connection, id: &str) -> Result<AlbumRecord> {
+    c.query_row(
+        "SELECT a.id, a.name, a.created_at,
+                (SELECT COUNT(DISTINCT ai.file_id) FROM album_items ai
+                 JOIN files f ON f.id=ai.file_id JOIN media m ON m.file_id=f.id
+                 WHERE ai.album_id=a.id AND f.deleted_at IS NULL),
+                (SELECT ai.file_id FROM album_items ai
+                 JOIN files f ON f.id=ai.file_id JOIN media m ON m.file_id=f.id
+                 WHERE ai.album_id=a.id AND f.deleted_at IS NULL
+                 ORDER BY ai.added_at ASC, ai.file_id ASC LIMIT 1)
+         FROM albums a WHERE a.id=?1",
+        params![id],
+        |r| {
+            Ok(AlbumRecord {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                created_at: r.get(2)?,
+                item_count: r.get::<_, u32>(3)?,
+                cover_file_id: r.get(4)?,
+            })
+        },
+    )
+    .map_err(db_err)
+}
+
+impl Db {
+    pub fn albums_list(
+        &self,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<(Vec<AlbumRecord>, Option<String>)> {
+        let cursor = album_cursor(cursor)?;
+        let limit = limit.unwrap_or(50).clamp(1, 100) as usize;
+        let c = self.lock()?;
+        let mut statement = c
+            .prepare(
+                "SELECT id FROM albums a
+                 WHERE (?1 IS NULL OR a.created_at < ?1 OR (a.created_at = ?1 AND a.id < ?2))
+                 ORDER BY a.created_at DESC, a.id DESC LIMIT ?3",
+            )
+            .map_err(db_err)?;
+        let ids = statement
+            .query_map(
+                params![
+                    cursor.as_ref().map(|v| v.0),
+                    cursor.as_ref().map(|v| &v.1),
+                    (limit + 1) as i64
+                ],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let has_more = ids.len() > limit;
+        let items = ids
+            .into_iter()
+            .take(limit)
+            .map(|id| album_record(&c, &id))
+            .collect::<Result<Vec<_>>>()?;
+        let next_cursor = if has_more {
+            items.last().map(|a| format!("{}:{}", a.created_at, a.id))
+        } else {
+            None
+        };
+        Ok((items, next_cursor))
+    }
+
+    pub fn albums_create(&self, id: &str, name: &str) -> Result<AlbumRecord> {
+        album_id(id)?;
+        let name = validate_album_name(name).map_err(|e| Error::BadRequest(e.to_string()))?;
+        let mut c = self.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let existing: Option<String> = tx
+            .query_row("SELECT name FROM albums WHERE id=?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(db_err)?;
+        if let Some(existing) = existing {
+            if existing != name {
+                return Err(Error::Conflict(
+                    "album ID already exists with different name".into(),
+                ));
+            }
+            let record = album_record(&tx, id)?;
+            tx.commit().map_err(db_err)?;
+            return Ok(record);
+        }
+        tx.execute(
+            "INSERT INTO albums (id, name, created_at) VALUES (?1, ?2, ?3)",
+            params![id, name, now_ms()],
+        )
+        .map_err(db_err)?;
+        let record = album_record(&tx, id)?;
+        tx.commit().map_err(db_err)?;
+        Ok(record)
+    }
+
+    pub fn albums_update(&self, id: &str, expected_name: &str, name: &str) -> Result<AlbumRecord> {
+        album_id(id)?;
+        let name = validate_album_name(name).map_err(|e| Error::BadRequest(e.to_string()))?;
+        let mut c = self.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let current: Option<String> = tx
+            .query_row("SELECT name FROM albums WHERE id=?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(db_err)?;
+        let current = current.ok_or_else(|| Error::NotFound("album".into()))?;
+        if current != expected_name {
+            return Err(Error::Conflict("stale album name".into()));
+        }
+        tx.execute("UPDATE albums SET name=?1 WHERE id=?2", params![name, id])
+            .map_err(db_err)?;
+        let record = album_record(&tx, id)?;
+        tx.commit().map_err(db_err)?;
+        Ok(record)
+    }
+
+    pub fn albums_delete(&self, id: &str) -> Result<bool> {
+        album_id(id)?;
+        let mut c = self.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        tx.execute("DELETE FROM album_items WHERE album_id=?1", params![id])
+            .map_err(db_err)?;
+        tx.execute("DELETE FROM albums WHERE id=?1", params![id])
+            .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(true)
+    }
+
+    pub fn albums_items_list(
+        &self,
+        album_id_value: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<(Vec<AlbumItemRecord>, Option<String>)> {
+        album_id(album_id_value)?;
+        let cursor = album_cursor(cursor)?;
+        let limit = limit.unwrap_or(50).clamp(1, 100) as usize;
+        let c = self.lock()?;
+        let exists: bool = c
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM albums WHERE id=?1)",
+                params![album_id_value],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if !exists {
+            return Err(Error::NotFound("album".into()));
+        }
+        let mut statement = c
+            .prepare(
+                "SELECT ai.album_id, ai.file_id, ai.added_at FROM album_items ai
+                 JOIN files f ON f.id=ai.file_id JOIN media m ON m.file_id=f.id
+                 WHERE ai.album_id=?1 AND f.deleted_at IS NULL
+                   AND (?2 IS NULL OR ai.added_at > ?2 OR (ai.added_at = ?2 AND ai.file_id > ?3))
+                 ORDER BY ai.added_at ASC, ai.file_id ASC LIMIT ?4",
+            )
+            .map_err(db_err)?;
+        let items = statement
+            .query_map(
+                params![
+                    album_id_value,
+                    cursor.as_ref().map(|v| v.0),
+                    cursor.as_ref().map(|v| &v.1),
+                    (limit + 1) as i64
+                ],
+                |r| {
+                    Ok(AlbumItemRecord {
+                        album_id: r.get(0)?,
+                        file_id: r.get(1)?,
+                        added_at: r.get(2)?,
+                    })
+                },
+            )
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let has_more = items.len() > limit;
+        let items: Vec<_> = items.into_iter().take(limit).collect();
+        let next_cursor = if has_more {
+            items
+                .last()
+                .map(|i| format!("{}:{}", i.added_at, i.file_id))
+        } else {
+            None
+        };
+        Ok((items, next_cursor))
+    }
+
+    pub fn albums_items_add(&self, id: &str, file_ids: &[String]) -> Result<(u32, u32)> {
+        AlbumsItemsAddReq {
+            id: id.into(),
+            file_ids: file_ids.to_vec(),
+        }
+        .validate()
+        .map_err(|e| Error::BadRequest(e.to_string()))?;
+        let mut c = self.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM albums WHERE id=?1)",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if !exists {
+            return Err(Error::NotFound("album".into()));
+        }
+        for file_id in file_ids {
+            let visible: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM files f JOIN media m ON m.file_id=f.id
+                     WHERE f.id=?1 AND f.deleted_at IS NULL)",
+                    params![file_id],
+                    |r| r.get(0),
+                )
+                .map_err(db_err)?;
+            if !visible {
+                return Err(Error::NotFound(format!("available media file {file_id}")));
+            }
+        }
+        let mut added = 0;
+        for file_id in file_ids {
+            added += tx.execute(
+                "INSERT OR IGNORE INTO album_items (album_id, file_id, added_at) VALUES (?1, ?2, ?3)",
+                params![id, file_id, now_ms()],
+            ).map_err(db_err)? as u32;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok((added, file_ids.len() as u32 - added))
+    }
+
+    pub fn albums_items_remove(&self, id: &str, file_ids: &[String]) -> Result<u32> {
+        AlbumsItemsRemoveReq {
+            id: id.into(),
+            file_ids: file_ids.to_vec(),
+        }
+        .validate()
+        .map_err(|e| Error::BadRequest(e.to_string()))?;
+        let mut c = self.lock()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM albums WHERE id=?1)",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if !exists {
+            return Err(Error::NotFound("album".into()));
+        }
+        let mut removed = 0;
+        for file_id in file_ids {
+            removed += tx
+                .execute(
+                    "DELETE FROM album_items WHERE album_id=?1 AND file_id=?2",
+                    params![id, file_id],
+                )
+                .map_err(db_err)? as u32;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(removed)
+    }
+
+    pub fn backup_summary(&self) -> Result<BackupSummary> {
+        let c = self.lock()?;
+        c.query_row(
+            "SELECT COUNT(*), COUNT(CASE WHEN status='verified' THEN 1 END),
+                    COUNT(CASE WHEN status='pending' THEN 1 END), MAX(verified_at)
+             FROM backup_items",
+            [],
+            |r| {
+                Ok(BackupSummary {
+                    total_items: r.get(0)?,
+                    verified_items: r.get(1)?,
+                    pending_items: r.get(2)?,
+                    last_backup_at: r.get(3)?,
+                })
+            },
+        )
+        .map_err(db_err)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -975,5 +1299,213 @@ mod tests {
         assert_eq!(bm.ranges, vec![(0, 1), (3, 3)]);
         let t = db.get_transfer("t1").unwrap().unwrap();
         assert_eq!(t.bytes_verified, 12);
+    }
+
+    fn test_id() -> String {
+        ulid::Ulid::new().to_string()
+    }
+
+    fn add_media(db: &Db, file_id: &str) {
+        let c = db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO storage_roots (id, kind, path, created_at)
+             VALUES ('album-test-root', 'library', '/album-test', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO files (id, root_id, rel_path, name, category, size, hash, created_at)
+             VALUES (?1, 'album-test-root', ?1, 'photo.jpg', 'photo', 4, 'hash', 1)",
+            params![file_id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO media (file_id, type, taken_at, taken_at_source)
+             VALUES (?1, 'photo', 1, 'upload')",
+            params![file_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn duplicate_requests_and_empty_album() {
+        let db = Db::open_memory().unwrap();
+        let id = test_id();
+        let first = db.albums_create(&id, "  One  ").unwrap();
+        assert_eq!(first.item_count, 0);
+        assert_eq!(first.cover_file_id, None);
+        assert_eq!(db.albums_create(&id, "One").unwrap(), first);
+        assert!(matches!(
+            db.albums_create(&id, "Different"),
+            Err(Error::Conflict(_))
+        ));
+        let file_id = test_id();
+        add_media(&db, &file_id);
+        assert_eq!(
+            db.albums_items_add(&id, std::slice::from_ref(&file_id))
+                .unwrap(),
+            (1, 0)
+        );
+        assert_eq!(
+            db.albums_items_add(&id, std::slice::from_ref(&file_id))
+                .unwrap(),
+            (0, 1)
+        );
+        assert_eq!(
+            db.albums_items_remove(&id, std::slice::from_ref(&file_id))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_rename() {
+        let db = Db::open_memory().unwrap();
+        let id = test_id();
+        db.albums_create(&id, "First").unwrap();
+        assert!(matches!(
+            db.albums_update(&id, "Old", "Second"),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(
+            db.albums_update(&id, "First", "Second").unwrap().name,
+            "Second"
+        );
+    }
+
+    #[test]
+    fn foreign_key_and_unavailable_failure() {
+        let db = Db::open_memory().unwrap();
+        let id = test_id();
+        db.albums_create(&id, "Album").unwrap();
+        let good = test_id();
+        let missing = test_id();
+        add_media(&db, &good);
+        assert!(matches!(
+            db.albums_items_add(&id, &[good.clone(), missing]),
+            Err(Error::NotFound(_))
+        ));
+        assert!(db.albums_items_list(&id, None, None).unwrap().0.is_empty());
+        db.lock()
+            .unwrap()
+            .execute("UPDATE files SET deleted_at=2 WHERE id=?1", params![good])
+            .unwrap();
+        assert!(matches!(
+            db.albums_items_add(&id, &[good]),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn hidden_restored_media_and_album_delete_preserves_file_bytes() {
+        let db = Db::open_memory().unwrap();
+        let id = test_id();
+        let file_id = test_id();
+        add_media(&db, &file_id);
+        db.albums_create(&id, "Album").unwrap();
+        db.albums_items_add(&id, std::slice::from_ref(&file_id))
+            .unwrap();
+        assert_eq!(db.albums_list(None, None).unwrap().0[0].item_count, 1);
+        assert_eq!(
+            db.albums_list(None, None).unwrap().0[0]
+                .cover_file_id
+                .as_deref(),
+            Some(file_id.as_str())
+        );
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE files SET deleted_at=2 WHERE id=?1",
+                params![file_id],
+            )
+            .unwrap();
+        assert_eq!(db.albums_list(None, None).unwrap().0[0].item_count, 0);
+        assert_eq!(db.albums_list(None, None).unwrap().0[0].cover_file_id, None);
+        assert!(db.albums_items_list(&id, None, None).unwrap().0.is_empty());
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE files SET deleted_at=NULL WHERE id=?1",
+                params![file_id],
+            )
+            .unwrap();
+        assert_eq!(db.albums_items_list(&id, None, None).unwrap().0.len(), 1);
+        db.albums_delete(&id).unwrap();
+        let c = db.lock().unwrap();
+        let file_count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE id=?1",
+                params![file_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let media_count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM media WHERE file_id=?1",
+                params![file_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let album_item_count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM album_items WHERE album_id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((file_count, media_count, album_item_count), (1, 1, 0));
+    }
+
+    #[test]
+    fn paging_ties() {
+        let db = Db::open_memory().unwrap();
+        let album_ids = [test_id(), test_id(), test_id()];
+        for id in &album_ids {
+            db.albums_create(id, "Album").unwrap();
+        }
+        {
+            let c = db.lock().unwrap();
+            c.execute("UPDATE albums SET created_at=1", []).unwrap();
+        }
+        let (first, cursor) = db.albums_list(None, Some(1)).unwrap();
+        let (second, cursor2) = db.albums_list(cursor.as_deref(), Some(1)).unwrap();
+        let (third, cursor3) = db.albums_list(cursor2.as_deref(), Some(1)).unwrap();
+        assert!(cursor3.is_none());
+        let mut actual = vec![
+            first[0].id.clone(),
+            second[0].id.clone(),
+            third[0].id.clone(),
+        ];
+        actual.sort();
+        let mut expected = album_ids.to_vec();
+        expected.sort();
+        assert_eq!(actual, expected);
+
+        let file_ids = [test_id(), test_id(), test_id()];
+        for file_id in &file_ids {
+            add_media(&db, file_id);
+        }
+        db.albums_items_add(&album_ids[0], &file_ids).unwrap();
+        db.lock()
+            .unwrap()
+            .execute("UPDATE album_items SET added_at=1", [])
+            .unwrap();
+        let (first, cursor) = db.albums_items_list(&album_ids[0], None, Some(1)).unwrap();
+        let (second, cursor2) = db
+            .albums_items_list(&album_ids[0], cursor.as_deref(), Some(1))
+            .unwrap();
+        let (third, cursor3) = db
+            .albums_items_list(&album_ids[0], cursor2.as_deref(), Some(1))
+            .unwrap();
+        assert!(cursor3.is_none());
+        let mut actual = vec![
+            first[0].file_id.clone(),
+            second[0].file_id.clone(),
+            third[0].file_id.clone(),
+        ];
+        actual.sort();
+        let mut expected = file_ids.to_vec();
+        expected.sort();
+        assert_eq!(actual, expected);
     }
 }

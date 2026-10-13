@@ -136,7 +136,10 @@ pub async fn open(app:&tauri::AppHandle,input:&str,isolated:bool,permissions:Vec
                 _=>false
             }
         });
-    if builder.build().is_err() {forget(&state,&label)?;return Err("Could not open the browser. Install WebView2 or open the site in your default browser.".into());}
+    let _webview = match builder.build() {
+        Ok(w) => { let _ = w.set_focus(); w },
+        Err(_) => { forget(&state,&label)?; return Err("Could not open the browser. Install WebView2 or open the site in your default browser.".into()); }
+    };
     if let Err(error)=remember(&state) {
         if let Some(window)=app.get_webview_window(&label) {let _=window.close();}
         let _=forget(&state,&label);

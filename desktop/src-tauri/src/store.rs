@@ -154,7 +154,7 @@ fn validate_record(r:&Record)->Result<()> {
     if r.title.len()>512 || r.body.len()>1024*1024 { return Err("Item is too large".into()); }
     if r.kind != "note" {
         let value=serde_json::from_str::<serde_json::Value>(&r.body).map_err(|_| "Invalid app data")?;
-        if !value.is_object() {return Err("Invalid app data".into());}
+        if !value.is_object() && !(r.kind == "preference" && value.is_array()) {return Err("Invalid app data".into());}
         if r.kind=="playlist" {
             let ids=value["ids"].as_array().ok_or("Invalid playlist")?;
             if ids.len()>1500 {return Err("Playlist is too large".into());}

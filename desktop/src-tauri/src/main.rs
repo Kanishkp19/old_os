@@ -141,8 +141,32 @@ fn write_export(path:&std::path::Path,bytes:&[u8])->Result<()> {
 }
 #[tauri::command] async fn open_external(window:WebviewWindow,url:String)->Result<()> {
     trusted(&window)?;let url=browser::address_or_search(&url)?;
-    #[cfg(windows)] {std::process::Command::new(r"C:\Windows\System32\rundll32.exe").arg("url.dll,FileProtocolHandler").arg(url.as_str()).spawn().map_err(|_|"Could not open your default browser")?;Ok(())}
-    #[cfg(not(windows))] {let _=url;Err("Default-browser fallback is available on Windows".into())}
+    #[cfg(target_os = "macos")] {
+        // Try Google Chrome first; fallback to system default browser via "open"
+        let chrome = std::process::Command::new("open").args(["-a", "Google Chrome", url.as_str()]).status();
+        if !chrome.map(|s| s.success()).unwrap_or(false) {
+            std::process::Command::new("open").arg(url.as_str()).spawn().map_err(|_|"Could not open your default browser")?;
+        }
+        Ok(())
+    }
+    #[cfg(windows)] {
+        // Try chrome command first; fallback to system protocol handler
+        let chrome = std::process::Command::new("cmd").args(["/c", "start", "chrome", url.as_str()]).spawn();
+        if chrome.is_err() {
+            std::process::Command::new(r"C:\Windows\System32\rundll32.exe").arg("url.dll,FileProtocolHandler").arg(url.as_str()).spawn().map_err(|_|"Could not open your default browser")?;
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")] {
+        let chrome = std::process::Command::new("google-chrome").arg(url.as_str()).spawn();
+        if chrome.is_err() {
+            std::process::Command::new("xdg-open").arg(url.as_str()).spawn().map_err(|_|"Could not open your default browser")?;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))] {
+        let _=url;Err("Default-browser fallback is unavailable on this platform".into())
+    }
 }
 #[tauri::command] async fn save_download(window:WebviewWindow,app:tauri::AppHandle,id:String)->Result<bool> {
     trusted(&window)?; store::validate_id(&id)?;

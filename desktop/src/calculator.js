@@ -1,7 +1,7 @@
 // Recursive descent over a bounded numeric grammar. No code evaluation or implicit globals.
 export function calculate(source) {
   if (typeof source !== 'string' || source.length > 512) throw new Error('Expression is too long.');
-  const text = source.replace(/×/g, '*').replace(/÷/g, '/');
+  const text = source.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-');
   let pos = 0, depth = 0;
   const space = () => { while (/\s/.test(text[pos] || '') && pos < text.length) pos++; };
   const take = c => { space(); if (text[pos] === c) { pos++; return true; } return false; };

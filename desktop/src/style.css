@@ -297,6 +297,7 @@ button.danger { color: var(--os-danger); }
 .os-window-controls .minimize { --control-color: #e6bc69; }
 .os-window-controls .maximize { --control-color: #82c695; }
 .os-window-body { flex: 1; overflow: auto; min-height: 0; padding: 20px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.os-window-body:has(.notes-app), .os-window-body:has(.calculator-app), .os-window-body:has(.devices-app), .os-window-body:has(.music-app), .os-window-body:has(.youtube-app), .os-window-body:has(.files-app), .os-window-body:has(.photos-app), .os-window-body:has(.browser-app) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 .os-window-body .card { box-shadow: none; border-radius: 12px; padding: 18px; }
 .os-app-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
 .os-app-toolbar > span { font-weight: 600; font-size: 18px; }

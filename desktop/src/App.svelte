@@ -124,6 +124,18 @@
       route = next; selected = null; confirmation = null; quickOpen = false;
       location.hash = next;
       if (!existing || next === 'Home') await run(load);
+      if (next === 'YouTube' && native) {
+        const ytTab = (tabs || []).find(t => t.isolated || (t.url && t.url.includes('youtube.com')));
+        if (!ytTab) {
+          website('https://www.youtube.com', true).catch(() => {});
+        } else if (existing && route === 'YouTube') {
+          command('browser_action', { label: ytTab.label, action: 'focus', url: null }).catch(() => {});
+        }
+      }
+      if (next === 'Browser' && native) {
+        const targetUrl = views.Browser.address || 'https://www.google.com';
+        command('open_external', { url: targetUrl }).catch(() => {});
+      }
       await tick(); document.getElementById('content')?.focus();
     } finally { navigating = false; }
   }
@@ -229,16 +241,26 @@
     historyId = saved?.id || null;
     let raw = saved?.body;
     if (!native) { try { raw = localStorage.getItem('hh-calculator-history'); } catch { raw = null; } }
-    const value = json(raw, []);
-    history = Array.isArray(value) ? value.filter(row => typeof row?.expression === 'string' && row.expression.length <= 512 && typeof row.answer === 'string').slice(0, 30) : [];
+    const value = json(raw, {});
+    const list = Array.isArray(value) ? value : Array.isArray(value?.history) ? value.history : [];
+    history = list.filter(row => typeof row?.expression === 'string' && row.expression.length <= 512 && typeof row.answer === 'string').slice(0, 30);
   }
   async function saveCalculatorHistory() {
-    if (native) historyId = (await command('local_save', { id: historyId, kind: 'preference', title: 'calculator-history', body: JSON.stringify(history) })).id;
-    else localStorage.setItem('hh-calculator-history', JSON.stringify(history));
+    const payload = JSON.stringify({ history });
+    if (native) historyId = (await command('local_save', { id: historyId, kind: 'preference', title: 'calculator-history', body: payload })).id;
+    else localStorage.setItem('hh-calculator-history', payload);
   }
   async function calc() {
-    try { const value = calculate(expression); answer = String(value); history = [{ expression, answer }, ...history].slice(0, 30); error = ''; await saveCalculatorHistory(); }
-    catch (e) { answer = ''; error = message(e); }
+    try {
+      const value = calculate(expression);
+      answer = String(value);
+      history = [{ expression, answer }, ...history.filter(h => h.expression !== expression || h.answer !== answer)].slice(0, 30);
+      error = '';
+      try { await saveCalculatorHistory(); } catch { /* persist failure must not wipe calculated result */ }
+    } catch (e) {
+      answer = '';
+      error = message(e);
+    }
   }
   async function unlock() { await authorize(authKey); authKey = ''; authNeeded = false; await load(); }
   async function diagnostics() { const value = await api('/api/diagnostics'); exportText(`homehub-diagnostics-${Date.now()}.json`, JSON.stringify(value, null, 2), 'application/json'); }
@@ -315,7 +337,9 @@
     {#each windows as win, order (win.app)}
       {@const app = win.app}
       <Window bind:win {t} active={route === app} desktop={route === 'Home'} {order} busy={busy || navigating} focus={() => go(app)} minimize={() => windowAction(app)} close={() => windowAction(app, true)}>
-        <div class="os-app-toolbar"><span>{t(app)}</span><div class="toolbar"><button disabled={busy} on:click={() => run(load)}>{t('Refresh')}</button>{#if app === 'Devices'}<button class="primary" disabled={busy} on:click={() => run(pair)}>{t('Pair a device')}</button>{/if}</div></div>
+        {#if !['Notes', 'Calculator', 'Devices', 'Settings', 'Music', 'YouTube', 'Files', 'Photos', 'Browser'].includes(app)}
+          <div class="os-app-toolbar"><span>{t(app)}</span><div class="toolbar"><button disabled={busy} on:click={() => run(load)}>{t('Refresh')}</button></div></div>
+        {/if}
     {#if app === 'Files'}
       <Files bind:data bind:query={views[app].query} bind:sort={views[app].sort} bind:category={views[app].category} bind:cursor={views[app].cursor} {t} {run} {load} {more} {mutate} {confirm} {viewFile} {fileForm}/>
     {:else if app === 'Photos'}
@@ -337,9 +361,9 @@
     {:else if app === 'Music'}
       <Music bind:error bind:cursor={views[app].cursor} bind:playlists bind:playlist bind:music bind:playing bind:queuedTracks bind:shuffle bind:repeat bind:form bind:formValue {t} {musicTracks} {run} {load} {more} {confirm} {addTrack} {nextTrack}/>
     {:else if app === 'Calculator'}
-      <Calculator bind:error bind:expression bind:answer bind:history {t} {calc} {saveCalculatorHistory} {message}/>
+      <Calculator bind:error bind:expression bind:answer bind:history {t} {calc} {saveCalculatorHistory} {message} active={route === 'Calculator'}/>
     {:else if app === 'Devices'}
-      <Devices bind:data bind:form bind:formValue {t} {date} {mutate} {confirm} {changeScope}/>
+      <Devices bind:data bind:form bind:formValue {t} {date} {mutate} {confirm} {changeScope} pair={() => run(pair)} load={() => run(load)} {busy}/>
     {:else if app === 'Hardware'}
       <section class="card"><h2>{t('Hardware')}</h2><button disabled={busy} on:click={() => run(async () => { data = { ...data, hardware: await api('/api/hardware/audit/run','POST') }; })}>{t('Run hardware check')}</button><Details {t} value={data.hardware}/></section><section class="card"><h2>{t('Connected locally')}</h2><Details {t} value={data.network}/><p>{t('Wake support varies by laptop. Files stay queued when the Hub is asleep.')}</p><Details {t} value={caps}/></section>{#if caps.hotspot}<section class="card"><h2>{t('Windows hotspot')}</h2><p>{t('Available through the Windows session helper.')}</p><label>{t('Network name')}<input bind:value={hotspotName} maxlength="32" autocomplete="off"/></label><label>{t('Password')}<input type="password" bind:value={hotspotPassword} minlength="8" maxlength="63" autocomplete="new-password"/></label><div class="toolbar"><button disabled={busy || !hotspotName || hotspotPassword.length < 8} on:click={() => run(async () => { await api('/api/network/hotspot','POST',{enable:true,ssid:hotspotName,passphrase:hotspotPassword}); hotspotPassword=''; })}>{t('Turn on hotspot')}</button><button disabled={busy} on:click={() => run(() => api('/api/network/hotspot','POST',{enable:false}))}>{t('Turn off hotspot')}</button></div></section>{/if}
     {:else if app === 'Remote'}
@@ -347,8 +371,6 @@
     {:else if app === 'Settings'}
       <Settings bind:language bind:large bind:contrast bind:reduced bind:notifications bind:busy bind:settings bind:setup bind:setupStep bind:hubName bind:copyFolder bind:privateTrash bind:updateCheck {t} {run} {load} {confirm} {saveSettings} {flushNote} {savePreferences} {diagnostics} {checkUpdates} {loadPrivateTrash}/>
     {/if}
-
-    {#if app === 'Settings' && native}<section class="card"><h2>{t('Private app trash')}</h2>{#each privateTrash as row}<div class="row"><span>{row.title} · {t(row.kind)}</span><div class="toolbar"><button on:click={() => run(async () => { await command('local_restore',{id:row.id}); await loadPrivateTrash(); })}>{t('Restore')}</button><button class="danger" on:click={() => confirm(t('Delete permanently'),async () => { await command('local_purge',{id:row.id}); await loadPrivateTrash(); },row.title)}>{t('Delete permanently')}</button></div></div>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{/if}
     {#if ['Transfers','Storage'].includes(app)}<section class="card"><h2>{t('Jobs')}</h2>{#each data.jobs || [] as job}<article class="transfer"><div class="row"><strong>{t(job.kind)} · {t(job.status)}</strong>{#if ['queued','running'].includes(job.status)}<button disabled={job.cancel_requested} on:click={() => confirm(t('Cancel'),() => mutate(`/api/jobs/${job.id}`,'DELETE'),job.kind)}>{t('Cancel')}</button>{/if}</div><progress max={Math.max(1,job.total)} value={job.done} aria-label={job.kind}></progress><small>{job.done} / {job.total}{job.error ? ` · ${job.error}` : ''}</small>{#if job.result}<Details {t} value={job.result}/>{/if}</article>{:else}<p>{t('Nothing here yet.')}</p>{/each}</section>{/if}
       </Window>
     {/each}
